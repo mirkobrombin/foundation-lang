@@ -558,6 +558,52 @@ fn inferSemanticType(
     )
 }
 
+fn inferSemanticFunctionValueType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &pattern semanticType,
+    &actual semanticType,
+    &inferred arena<Option<semanticType>>,
+    span sourceSpan,
+    context String
+) void {
+    if pattern.kind.Matches("Parameter") ||
+        !containsSemanticTypeParameter(&actual) {
+        inferSemanticType(
+            &analyzer,
+            &source,
+            &pattern,
+            &actual,
+            &inferred,
+            span,
+            context
+        )
+        return
+    }
+    if actual.kind.Matches("Parameter") ||
+        !sameSemanticTypeKind(pattern.kind, actual.kind) ||
+        (!pattern.kind.Matches("Function") &&
+        pattern.declaration != actual.declaration) ||
+        pattern.arguments.len() != actual.arguments.len() {
+        return
+    }
+    var index u64 = 0
+    while index < pattern.arguments.len() {
+        var patternArgument = semanticTypeArgument(&pattern, index)
+        var actualArgument = semanticTypeArgument(&actual, index)
+        inferSemanticFunctionValueType(
+            &analyzer,
+            &source,
+            &patternArgument,
+            &actualArgument,
+            &inferred,
+            span,
+            context
+        )
+        index += 1
+    }
+}
+
 fn completeSemanticInference(
     &analyzer semanticAnalyzer,
     &inferred arena<Option<semanticType>>,

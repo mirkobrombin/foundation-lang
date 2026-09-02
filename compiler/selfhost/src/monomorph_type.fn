@@ -1,0 +1,557 @@
+package foundation.compiler
+
+import std.text
+
+fn monomorphTypeKey(&value semanticType) String {
+    semanticTypeKey(&value)
+}
+
+fn monomorphU64Present(value Option<u64>) bool {
+    match value {
+        None: false
+        Some(found): {
+            discard found
+            true
+        }
+    }
+}
+
+fn monomorphSourceTypeCopy(
+    &source firProgram,
+    &value semanticType
+) bool {
+    var active = newArena<String>()
+    monomorphSourceTypeCopyActive(&source, &value, &active)
+}
+
+fn monomorphResultTypeCopy(
+    &program firProgram,
+    &value semanticType
+) bool {
+    var active = newArena<String>()
+    monomorphResultTypeCopyActive(&program, &value, &active)
+}
+
+fn monomorphResultTypeCopyActive(
+    &program firProgram,
+    &value semanticType,
+    &active arena<String>
+) bool {
+    if isSemanticMachineScalar(&value) && !value.kind.Matches("Void") &&
+        !value.kind.Matches("Never") {
+        return true
+    }
+    if value.kind.Matches("Raw") || value.kind.Matches("RawConst") {
+        return value.arguments.len() == 1
+    }
+    if isCSemanticFunction(&value) return true
+    if value.kind.Matches("Array") && value.arguments.len() == 1 {
+        var element = match value.arguments.take(0) {
+            None: panic("array element type is missing")
+            Some(found): found
+        }
+        const copy = monomorphResultTypeCopyActive(&program, &element, &active)
+        value.arguments.restore(0, $element)
+        return copy
+    }
+    if !value.kind.Matches("StructValue") && !value.kind.Matches("EnumValue") {
+        return false
+    }
+    const key = monomorphTypeKey(&value)
+    if arenaContainsString(&active, key) return false
+    discard active.add(text.Copy(key))
+    var copy = true
+    if value.kind.Matches("StructValue") {
+        if value.declaration >= program.structs.len() {
+            copy = false
+        } else {
+            var declaration = match program.structs.take(value.declaration) {
+                None: panic("result struct slot is empty")
+                Some(found): found
+            }
+            if monomorphU64Present(declaration.dropFunction) {
+                copy = false
+            }
+            var index u64 = 0
+            while index < declaration.fields.len() && copy {
+                var field = match declaration.fields.take(index) {
+                    None: panic("result struct field slot is empty")
+                    Some(found): found
+                }
+                copy = monomorphResultTypeCopyActive(
+                    &program, &field.type, &active)
+                declaration.fields.restore(index, $field)
+                index += 1
+            }
+            program.structs.restore(value.declaration, $declaration)
+        }
+    } else {
+        if value.declaration >= program.enums.len() {
+            copy = false
+        } else {
+            var declaration = match program.enums.take(value.declaration) {
+                None: panic("result enum slot is empty")
+                Some(found): found
+            }
+            var index u64 = 0
+            while index < declaration.variants.len() && copy {
+                var variant = match declaration.variants.take(index) {
+                    None: panic("result enum variant slot is empty")
+                    Some(found): found
+                }
+                match replace variant.payload with .None {
+                    None: {}
+                    Some(payload): {
+                        var original = payload
+                        copy = monomorphResultTypeCopyActive(
+                            &program, &original, &active)
+                        variant.payload = .Some(original)
+                    }
+                }
+                declaration.variants.restore(index, $variant)
+                index += 1
+            }
+            program.enums.restore(value.declaration, $declaration)
+        }
+    }
+    active.truncate(active.len() - 1)
+    copy
+}
+
+fn monomorphParameterTypeCopy(
+    &state monomorphizer,
+    &source firProgram,
+    &value semanticType
+) bool {
+    if state.preserveSourceTypes {
+        return monomorphSourceTypeCopy(&source, &value)
+    }
+    monomorphResultTypeCopy(&state.result, &value)
+}
+
+fn monomorphSourceTypeCopyActive(
+    &source firProgram,
+    &value semanticType,
+    &active arena<String>
+) bool {
+    if isSemanticMachineScalar(&value) && !value.kind.Matches("Void") &&
+        !value.kind.Matches("Never") {
+        return true
+    }
+    if value.kind.Matches("Raw") || value.kind.Matches("RawConst") {
+        return value.arguments.len() == 1
+    }
+    if isCSemanticFunction(&value) return true
+    if value.kind.Matches("Array") && value.arguments.len() == 1 {
+        var element = match value.arguments.take(0) {
+            None: panic("array element type is missing")
+            Some(found): found
+        }
+        const copy = monomorphSourceTypeCopyActive(&source, &element, &active)
+        value.arguments.restore(0, $element)
+        return copy
+    }
+    if !value.kind.Matches("StructValue") && !value.kind.Matches("EnumValue") {
+        return false
+    }
+    const key = monomorphTypeKey(&value)
+    if arenaContainsString(&active, key) return false
+    discard active.add(text.Copy(key))
+    var copy = true
+    if value.kind.Matches("StructValue") {
+        if value.declaration >= source.structs.len() {
+            copy = false
+        } else {
+            var declaration = match source.structs.take(value.declaration) {
+                None: panic("source struct slot is empty")
+                Some(found): found
+            }
+            if monomorphU64Present(declaration.dropFunction) {
+                copy = false
+            }
+            var index u64 = 0
+            while index < declaration.fields.len() && copy {
+                var field = match declaration.fields.take(index) {
+                    None: panic("source struct field slot is empty")
+                    Some(found): found
+                }
+                var substituted = substituteSemanticType(
+                    &field.type, &value.arguments)
+                copy = monomorphSourceTypeCopyActive(
+                    &source, &substituted, &active)
+                declaration.fields.restore(index, $field)
+                index += 1
+            }
+            source.structs.restore(value.declaration, $declaration)
+        }
+    } else {
+        if value.declaration >= source.enums.len() {
+            copy = false
+        } else {
+            var declaration = match source.enums.take(value.declaration) {
+                None: panic("source enum slot is empty")
+                Some(found): found
+            }
+            var index u64 = 0
+            while index < declaration.variants.len() && copy {
+                var variant = match declaration.variants.take(index) {
+                    None: panic("source enum variant slot is empty")
+                    Some(found): found
+                }
+                const selected = replace variant.payload with .None
+                match selected {
+                    None: {}
+                    Some(payload): {
+                        var original = payload
+                        var substituted = substituteSemanticType(
+                            &original, &value.arguments)
+                        copy = monomorphSourceTypeCopyActive(
+                            &source, &substituted, &active)
+                        variant.payload = .Some(original)
+                    }
+                }
+                declaration.variants.restore(index, $variant)
+                index += 1
+            }
+            source.enums.restore(value.declaration, $declaration)
+        }
+    }
+    active.truncate(active.len() - 1)
+    copy
+}
+
+fn monomorphUnaryType(
+    kind semanticTypeKind,
+    declaration u64,
+    $target semanticType
+) semanticType {
+    var arguments = newArena<semanticType>()
+    discard arguments.add($target)
+    semanticType { kind = kind declaration = declaration arguments = arguments }
+}
+
+fn instantiateMonomorphType(
+    &state monomorphizer,
+    &source firProgram,
+    &value semanticType
+) semanticType {
+    if value.kind.Matches("Parameter") || value.kind.Matches("Invalid") {
+        panic("unresolved type reached monomorphization")
+    }
+    if value.kind.Matches("Function") {
+        var result = declaredSemanticType(.Function, value.declaration)
+        var index u64 = 0
+        while index < value.arguments.len() {
+            var argument = match value.arguments.take(index) {
+                None: panic("function type argument slot is empty")
+                Some(found): found
+            }
+            discard result.arguments.add(instantiateMonomorphType(
+                    &state, &source, &argument))
+            value.arguments.restore(index, $argument)
+            index += 1
+        }
+        return result
+    }
+    if state.preserveSourceTypes && (value.kind.Matches("StructValue") ||
+        value.kind.Matches("EnumValue") || value.kind.Matches("ContractValue")) {
+        var result = declaredSemanticType(value.kind, value.declaration)
+        var index u64 = 0
+        while index < value.arguments.len() {
+            var argument = match value.arguments.take(index) {
+                None: panic("preserved type argument slot is empty")
+                Some(found): found
+            }
+            discard result.arguments.add(instantiateMonomorphType(
+                    &state, &source, &argument))
+            value.arguments.restore(index, $argument)
+            index += 1
+        }
+        return result
+    }
+    if monomorphWrapperType(value.kind) {
+        if value.arguments.len() != 1 {
+            panic("invalid wrapper type reached monomorphization")
+        }
+        var argument = match value.arguments.take(0) {
+            None: panic("wrapper type argument is missing")
+            Some(found): found
+        }
+        var target = instantiateMonomorphType(&state, &source, &argument)
+        value.arguments.restore(0, $argument)
+        if value.kind.Matches("View") && value.declaration == 1 &&
+            monomorphParameterTypeCopy(&state, &source, &target) {
+            return target
+        }
+        return monomorphUnaryType(value.kind, value.declaration, $target)
+    }
+    if value.kind.Matches("ContractValue") {
+        return instantiateMonomorphContract(&state, &source, &value)
+    }
+    if value.kind.Matches("StructValue") {
+        return instantiateMonomorphStruct(&state, &source, &value)
+    }
+    if value.kind.Matches("EnumValue") {
+        return instantiateMonomorphEnum(&state, &source, &value)
+    }
+    copySemanticType(&value)
+}
+
+fn monomorphWrapperType(kind semanticTypeKind) bool {
+    kind.Matches("Own") || kind.Matches("View") || kind.Matches("Edit") ||
+        kind.Matches("Array") || kind.Matches("Slice") || kind.Matches("Raw") ||
+        kind.Matches("RawConst") || kind.Matches("Task") ||
+        kind.Matches("Channel") || kind.Matches("Sender") ||
+        kind.Matches("Receiver")
+}
+
+fn instantiateMonomorphContract(
+    &state monomorphizer,
+    &source firProgram,
+    &value semanticType
+) semanticType {
+    const key = monomorphTypeKey(&value)
+    match findMonomorphEntry(&state.contracts, key) {
+        Some(id): { return declaredSemanticType(.ContractValue, id) }
+        None: {}
+    }
+    if value.declaration >= source.contracts.len() {
+        panic("contract declaration is out of range")
+    }
+    const id = state.result.contracts.len()
+    addMonomorphEntry(&state.contracts, key, id)
+    discard state.result.contracts.add(emptyFirContract())
+    const selected = match source.contracts.take(value.declaration) {
+        None: panic("source contract slot is empty")
+        Some(found): found
+    }
+    const firContractCopy { original value as declarationCopy } = copyFirContract($selected)
+    source.contracts.restore(value.declaration, $original)
+    var declaration = declarationCopy
+    var instance = emptyFirContract()
+    instance.name = text.Copy(declaration.name)
+    instance.exported = declaration.exported
+    var methodIndex u64 = 0
+    while methodIndex < declaration.methodList.len() {
+        const method = match declaration.methodList.take(methodIndex) {
+            None: panic("contract method slot is empty")
+            Some(found): found
+        }
+        const firContractMethod {
+            receiver
+            name
+            returnType
+            parameters as sourceParameters
+            readParameters
+            parameterNames
+            exported
+            attributes
+            parameterAttributes
+            originContract
+            originArguments
+            defaultFunction
+        } = method
+        var parameters = sourceParameters
+        var sourceReturn = returnType
+        var substitutedReturn = substituteSemanticType(
+            &sourceReturn, &value.arguments)
+        var target = firContractMethod {
+            receiver = receiver
+            name = name
+            returnType = instantiateMonomorphType(
+                &state, &source, &substitutedReturn)
+            parameters = newArena<semanticType>()
+            readParameters = readParameters
+            parameterNames = parameterNames
+            exported = exported
+            attributes = attributes
+            parameterAttributes = parameterAttributes
+            originContract = originContract
+            originArguments = originArguments
+            defaultFunction = defaultFunction
+        }
+        var parameterIndex u64 = 0
+        while parameterIndex < parameters.len() {
+            var parameter = match parameters.take(parameterIndex) {
+                None: panic("contract parameter slot is empty")
+                Some(found): found
+            }
+            var substituted = substituteSemanticType(
+                &parameter, &value.arguments)
+            var concrete = instantiateMonomorphType(
+                &state, &source, &substituted)
+            const read = firBoolAt(&target.readParameters, parameterIndex)
+            if read && concrete.kind.Matches("View") &&
+                concrete.arguments.len() == 1 {
+                var readTarget = match concrete.arguments.take(0) {
+                    None: panic("read parameter target is missing")
+                    Some(found): found
+                }
+                if monomorphParameterTypeCopy(&state, &source, &readTarget) {
+                    concrete = readTarget
+                } else {
+                    concrete.arguments.restore(0, $readTarget)
+                }
+            }
+            discard target.parameters.add($concrete)
+            parameterIndex += 1
+        }
+        discard instance.methodList.add($target)
+        methodIndex += 1
+    }
+    var parentIndex u64 = 0
+    while parentIndex < declaration.parents.len() {
+        var parent = match declaration.parents.take(parentIndex) {
+            None: panic("contract parent slot is empty")
+            Some(found): found
+        }
+        var substituted = substituteSemanticType(&parent, &value.arguments)
+        discard instance.parents.add(instantiateMonomorphType(
+                &state, &source, &substituted))
+        parentIndex += 1
+    }
+    setArenaValue(&state.result.contracts, id, $instance)
+    declaredSemanticType(.ContractValue, id)
+}
+
+fn firBoolAt(&values arena<bool>, index u64) bool {
+    if index >= values.len() return false
+    const value = match values.take(index) {
+        None: panic("boolean slot is empty")
+        Some(found): found
+    }
+    values.restore(index, value)
+    value
+}
+
+fn instantiateMonomorphStruct(
+    &state monomorphizer,
+    &source firProgram,
+    &value semanticType
+) semanticType {
+    const key = monomorphTypeKey(&value)
+    match findMonomorphEntry(&state.structs, key) {
+        Some(id): { return declaredSemanticType(.StructValue, id) }
+        None: {}
+    }
+    if value.declaration >= source.structs.len() {
+        panic("struct declaration is out of range")
+    }
+    const id = state.result.structs.len()
+    addMonomorphEntry(&state.structs, key, id)
+    discard state.result.structs.add(emptyFirStruct())
+    const selected = match source.structs.take(value.declaration) {
+        None: panic("source struct slot is empty")
+        Some(found): found
+    }
+    const firStructCopy { original value as declarationCopy } = copyFirStruct($selected)
+    source.structs.restore(value.declaration, $original)
+    var declaration = declarationCopy
+    var instance = emptyFirStruct()
+    instance.name = text.Copy(declaration.name)
+    instance.sourcePath = text.Copy(declaration.sourcePath)
+    instance.sourceSpan = declaration.sourceSpan
+    instance.exported = declaration.exported
+    instance.serviceType = declaration.serviceType
+    instance.attributes = copyFirAttributeUseArena(&declaration.attributes)
+    instance.implementationDelegates = copyFirOptionalU64Arena(
+        &declaration.implementationDelegates)
+    var implementationIndex u64 = 0
+    while implementationIndex < declaration.implementations.len() {
+        var implementation = match declaration.implementations.take(
+            implementationIndex) {
+            None: panic("struct implementation slot is empty")
+            Some(found): found
+        }
+        var substituted = substituteSemanticType(
+            &implementation, &value.arguments)
+        discard instance.implementations.add(instantiateMonomorphType(
+                &state, &source, &substituted))
+        implementationIndex += 1
+    }
+    var fieldIndex u64 = 0
+    while fieldIndex < declaration.fields.len() {
+        var field = match declaration.fields.take(fieldIndex) {
+            None: panic("struct field slot is empty")
+            Some(found): found
+        }
+        var substituted = substituteSemanticType(&field.type, &value.arguments)
+        discard instance.fields.add(firStructField {
+            name = text.Copy(field.name)
+            type = instantiateMonomorphType(&state, &source, &substituted)
+            exported = field.exported
+            attributes = copyFirAttributeUseArena(&field.attributes)
+            hasDefault = field.hasDefault
+        })
+        fieldIndex += 1
+    }
+    match declaration.dropFunction {
+        None: {}
+        Some(function): {
+            instance.dropFunction = .Some(instantiateMonomorphFunction(
+                    &state, &source, function, &value.arguments))
+        }
+    }
+    setArenaValue(&state.result.structs, id, $instance)
+    declaredSemanticType(.StructValue, id)
+}
+
+fn instantiateMonomorphEnum(
+    &state monomorphizer,
+    &source firProgram,
+    &value semanticType
+) semanticType {
+    const key = monomorphTypeKey(&value)
+    match findMonomorphEntry(&state.enums, key) {
+        Some(id): { return declaredSemanticType(.EnumValue, id) }
+        None: {}
+    }
+    if value.declaration >= source.enums.len() {
+        panic("enum declaration is out of range")
+    }
+    const id = state.result.enums.len()
+    addMonomorphEntry(&state.enums, key, id)
+    discard state.result.enums.add(emptyFirEnum())
+    const selected = match source.enums.take(value.declaration) {
+        None: panic("source enum slot is empty")
+        Some(found): found
+    }
+    const firEnumCopy { original value as declarationCopy } = copyFirEnum($selected)
+    source.enums.restore(value.declaration, $original)
+    var declaration = declarationCopy
+    var instance = emptyFirEnum()
+    instance.name = text.Copy(declaration.name)
+    instance.exported = declaration.exported
+    instance.builtin = declaration.builtin
+    instance.stateMachine = declaration.stateMachine
+    instance.attributes = copyFirAttributeUseArena(&declaration.attributes)
+    var variantIndex u64 = 0
+    while variantIndex < declaration.variants.len() {
+        var variant = match declaration.variants.take(variantIndex) {
+            None: panic("enum variant slot is empty")
+            Some(found): found
+        }
+        var payload Option<semanticType> = .None
+        match replace variant.payload with .None {
+            None: {}
+            Some(sourcePayload): {
+                var originalPayload = sourcePayload
+                var substituted = substituteSemanticType(
+                    &originalPayload, &value.arguments)
+                if !instance.builtin || !substituted.kind.Matches("Void") {
+                    payload = .Some(instantiateMonomorphType(
+                            &state, &source, &substituted))
+                }
+            }
+        }
+        discard instance.variants.add(firEnumVariant {
+            name = text.Copy(variant.name)
+            payload = payload
+            exported = variant.exported
+            attributes = copyFirAttributeUseArena(&variant.attributes)
+        })
+        variantIndex += 1
+    }
+    setArenaValue(&state.result.enums, id, $instance)
+    declaredSemanticType(.EnumValue, id)
+}

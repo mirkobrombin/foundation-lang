@@ -145,7 +145,7 @@ fn parallelSemanticTransferSafeActive(
                         None: panic("semantic field type slot is empty")
                         Some(field): field
                     }
-                    var resolved = substituteSemanticType(
+                    var resolved = substituteCheckedSemanticType(&analyzer, &source,
                         &field, &type.arguments)
                     safe = parallelSemanticTransferSafeActive(
                         &analyzer, &source, &resolved, &active)
@@ -176,7 +176,7 @@ fn parallelSemanticTransferSafeActive(
                     }
                     Some(payload): {
                         var current = payload
-                        var resolved = substituteSemanticType(
+                        var resolved = substituteCheckedSemanticType(&analyzer, &source,
                             &current, &type.arguments)
                         safe = parallelSemanticTransferSafeActive(
                             &analyzer, &source, &resolved, &active)
@@ -269,7 +269,7 @@ fn verifySemanticContractTypeArguments(
             Some(constraint): {
                 var pattern = constraint
                 if pattern.kind.Matches("ContractValue") {
-                    var required = substituteSemanticType(
+                    var required = substituteCheckedSemanticType(&analyzer, &source,
                         &pattern, &arguments)
                     var argument = semanticTypeArenaAt(&arguments, index)
                     var satisfied = false
@@ -496,6 +496,11 @@ fn rejectSemanticPolymorphicRecursion(
                     setSemanticBool(&seen, current, true)
                     var edgeIndex u64 = 0
                     while edgeIndex < analyzer.state.genericCalls.len() {
+                        if edgeIndex == callIndex {
+                            if call.from == current { discard pending.add(call.to) }
+                            edgeIndex += 1
+                            continue
+                        }
                         var edge = match analyzer.state.genericCalls.take(edgeIndex) {
                             None: panic("generic edge slot is empty")
                             Some(edge): edge

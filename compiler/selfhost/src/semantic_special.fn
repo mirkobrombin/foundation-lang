@@ -395,15 +395,15 @@ fn analyzeSemanticWorkflowTarget(
         span,
         name
     )
-    var resolvedParameter = substituteSemanticType(
+    var resolvedParameter = substituteCheckedSemanticType(&analyzer, &source,
         &parameter, &typeArguments)
     requireSameSemanticType(
         &analyzer, &source, &resolvedParameter, &input, span, role)
-    var resolvedError = substituteSemanticType(
+    var resolvedError = substituteCheckedSemanticType(&analyzer, &source,
         &returnError, &typeArguments)
     requireSameSemanticType(
         &analyzer, &source, &errorType, &resolvedError, span, role)
-    var success = substituteSemanticType(
+    var success = substituteCheckedSemanticType(&analyzer, &source,
         &returnSuccess, &typeArguments)
     if expectedPresent {
         requireSameSemanticType(

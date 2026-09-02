@@ -735,28 +735,59 @@ fn analyzeSemanticAssignment(
     &assignment assignmentStatement,
     span sourceSpan
 ) bool {
-    var target = analyzeSemanticExpressionWithoutExpected(
-        &analyzer, &source, assignment.target, .Inspect)
-    var expected = expectedSemanticType(&target)
-    if !assignment.operation.Matches("Assign") && !isSemanticNumeric(&target) &&
-        !target.kind.Matches("StringValue") && !target.kind.Matches("Raw") &&
-        !target.kind.Matches("RawConst") {
-        expected = absentSemanticType()
-    }
-    var value = analyzeSemanticExpression(
-        &analyzer, &source, assignment.value, $expected,
-        .Inspect if !assignment.operation.Matches("Assign") else .Consume)
-    if !isSemanticEditablePlace(&analyzer, &source, assignment.target) {
-        analyzer.diagnostics.reportError(
-            "FDN2077",
-            "assignment requires a mutable binding or edit borrow",
-            span
-        )
-    }
-    if assignment.operation.Matches("Assign") {
-        requireSameSemanticType(
-            &analyzer, &source, &target, &value, span, "assignment")
-    } else {
+    if !assignment.operation.Matches("Assign") {
+        var target = analyzeSemanticExpressionWithoutExpected(
+            &analyzer, &source, assignment.target, .Inspect)
+        const editable = isSemanticEditablePlace(
+            &analyzer, &source, assignment.target)
+        const root = semanticPlaceRootLocal(
+            &analyzer, &source, assignment.target)
+        const loanCount = analyzer.state.loanStates.len()
+        var loansBefore = semanticLoanPrefix(
+            &analyzer.state.loanStates, loanCount)
+        if editable {
+            match root {
+                None: {}
+                Some(local): {
+                    const loan = semanticLoanAt(
+                        &analyzer.state.loanStates, local)
+                    if !loan.Matches("None") {
+                        analyzer.diagnostics.reportError(
+                            "FDN2075",
+                            "cannot edit borrowed binding " +
+                            semanticLocalName(&analyzer, local),
+                            span
+                        )
+                    } else {
+                        setSemanticLoan(
+                            &analyzer.state.loanStates, local, .Edit)
+                    }
+                }
+            }
+        }
+        if target.kind.Matches("Edit") && target.arguments.len() == 1 {
+            target = semanticTypeArgument(&target, 0)
+            setSemanticExpressionType(&analyzer, assignment.target, &target)
+            setSemanticExpressionRead(&analyzer, assignment.target, true)
+        }
+        var expected = absentSemanticType()
+        if isSemanticNumeric(&target) || target.kind.Matches("StringValue") {
+            expected = expectedSemanticType(&target)
+        }
+        if target.kind.Matches("Raw") || target.kind.Matches("RawConst") {
+            var offset = usizeSemanticType()
+            expected = expectedSemanticType(&offset)
+        }
+        var value = analyzeSemanticExpression(
+            &analyzer, &source, assignment.value, $expected, .Inspect)
+        restoreSemanticLoans(&analyzer.state.loanStates, &loansBefore)
+        if !editable {
+            analyzer.diagnostics.reportError(
+                "FDN2077",
+                "compound assignment requires a mutable binding or edit borrow",
+                span
+            )
+        }
         discard validateSemanticArithmetic(
             &analyzer,
             &source,
@@ -765,51 +796,105 @@ fn analyzeSemanticAssignment(
             &value,
             span
         )
+        return false
     }
-    const borrowedClosure = semanticBoolAt(
-        &analyzer.model.expressionBorrowedClosures, assignment.value)
-    if borrowedClosure {
-        analyzer.diagnostics.reportError(
-            "FDN2127", "borrowed closure cannot be assigned", span)
-    }
-    var name = semanticNameAt(&source, assignment.target)
-    match semanticPlaceRootLocal(&analyzer, &source, assignment.target) {
-        None: {}
-        Some(local): {
-            var localType = semanticLocalType(&analyzer, local)
-            const directEdit = localType.kind.Matches("Edit") &&
-                localType.arguments.len() == 1
-            if assignment.operation.Matches("Assign") && name.matched &&
-                !semanticLocalMutable(&analyzer, local) && !directEdit {
-                analyzer.diagnostics.reportError(
-                    "FDN2013",
-                    "cannot assign to immutable binding " + name.name,
-                    span
-                )
-            }
-            const loan = semanticLoanAt(&analyzer.state.loanStates, local)
-            if !loan.Matches("None") {
-                const localName = semanticLocalName(&analyzer, local)
-                analyzer.diagnostics.reportError(
-                    "FDN2075",
-                    "cannot replace borrowed binding " + localName,
-                    span
-                )
-            }
-            setSemanticStatementLocal(&analyzer, statement, local)
-            if requiresSemanticDrop(&analyzer, &source, &target) {
-                setSemanticMove(&analyzer.state.moveStates, local, .Available)
-            }
-            if isSemanticResult(&source, &target) {
-                if semanticBoolAt(&analyzer.state.resultOutstanding, local) {
-                    analyzer.diagnostics.reportError(
-                        "FDN2052", "assignment replaces an unhandled Result", span)
-                }
-                setSemanticBool(
-                    &analyzer.state.resultOutstanding, local, true)
-            }
+
+    const name = semanticNameAt(&source, assignment.target)
+    if name.matched {
+        const selected = findSemanticLocal(&analyzer, name.name, span)
+        var localFound = false
+        var local u64 = 0
+        match selected {
+            None: {}
+            Some(value): { localFound = true local = value }
         }
+        var expected = absentSemanticType()
+        var localType = invalidSemanticType()
+        var directEdit = false
+        var readBinding = false
+        if localFound {
+            localType = semanticLocalType(&analyzer, local)
+            readBinding = semanticLocalReadBinding(&analyzer, local)
+            directEdit = localType.kind.Matches("Edit") &&
+                localType.arguments.len() == 1
+            var targetType = copySemanticType(&localType)
+            if (readBinding || directEdit) &&
+                (targetType.kind.Matches("View") ||
+                targetType.kind.Matches("Edit")) &&
+                targetType.arguments.len() == 1 {
+                targetType = semanticTypeArgument(&targetType, 0)
+            }
+            expected = expectedSemanticType(&targetType)
+        }
+        var value = analyzeSemanticExpression(
+            &analyzer, &source, assignment.value, $expected, .Consume)
+        if !localFound return false
+        var targetType = copySemanticType(&localType)
+        if (readBinding || directEdit) &&
+            (targetType.kind.Matches("View") ||
+            targetType.kind.Matches("Edit")) &&
+            targetType.arguments.len() == 1 {
+            targetType = semanticTypeArgument(&targetType, 0)
+        }
+        setSemanticExpressionLocal(&analyzer, assignment.target, local)
+        setSemanticExpressionType(&analyzer, assignment.target, &targetType)
+        setSemanticExpressionRead(
+            &analyzer, assignment.target, readBinding || directEdit)
+        setSemanticStatementLocal(&analyzer, statement, local)
+        if !semanticLocalMutable(&analyzer, local) && !directEdit {
+            analyzer.diagnostics.reportError(
+                "FDN2013",
+                "cannot assign to immutable binding " + name.name,
+                span
+            )
+        }
+        if !semanticLoanAt(
+            &analyzer.state.loanStates, local).Matches("None") {
+            analyzer.diagnostics.reportError(
+                "FDN2075",
+                "cannot replace borrowed binding " +
+                semanticLocalName(&analyzer, local),
+                span
+            )
+        }
+        requireSameSemanticType(
+            &analyzer, &source, &targetType, &value, span, "assignment")
+        if semanticBoolAt(
+            &analyzer.model.expressionBorrowedClosures, assignment.value) {
+            analyzer.diagnostics.reportError(
+                "FDN2127", "borrowed closure cannot be assigned", span)
+        }
+        if requiresSemanticDrop(&analyzer, &source, &localType) {
+            setSemanticMove(&analyzer.state.moveStates, local, .Available)
+        }
+        if isSemanticResult(&source, &localType) {
+            if semanticBoolAt(&analyzer.state.resultOutstanding, local) {
+                analyzer.diagnostics.reportError(
+                    "FDN2052", "assignment replaces an unhandled Result", span)
+            }
+            setSemanticBool(&analyzer.state.resultOutstanding, local, true)
+        }
+        return false
     }
+
+    var target = analyzeSemanticExpressionWithoutExpected(
+        &analyzer, &source, assignment.target, .Inspect)
+    var value = analyzeSemanticExpression(
+        &analyzer,
+        &source,
+        assignment.value,
+        expectedSemanticType(&target),
+        .Consume
+    )
+    if !isSemanticEditablePlace(&analyzer, &source, assignment.target) {
+        analyzer.diagnostics.reportError(
+            "FDN2077",
+            "field assignment requires a mutable binding or edit borrow",
+            span
+        )
+    }
+    requireSameSemanticType(
+        &analyzer, &source, &target, &value, span, "assignment")
     false
 }
 

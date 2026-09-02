@@ -1,0 +1,370 @@
+package foundation.compiler
+
+import std.text
+
+fn cEmitBlockStatements(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    blockID u64,
+    depth u64
+) bool {
+    var block = cBlockAt(&function, blockID)
+    var index u64 = 0
+    while index < block.statements.len() {
+        const statement = cU64At(&block.statements, index)
+        if state.taskPoll && cEmitSuspendingStatement(
+            &builder, &program, &function, &state, statement, depth) {
+            index += 1
+            continue
+        }
+        if cEmitStatement(&builder, &program, &function, &state,
+            statement, depth) {
+            return true
+        }
+        index += 1
+    }
+    false
+}
+
+fn cEmitConditionalBranch(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    blockID u64,
+    expression u64,
+    temporary String,
+    depth u64
+) bool {
+    if cEmitBlockStatements(
+        &builder, &program, &function, &state, blockID, depth) {
+        return true
+    }
+    var result = cEmitExpression(
+        &builder, &program, &function, &state, expression, depth)
+    if result.diverges return true
+    if temporary != "" {
+        cWrite(&builder, cIndent(depth) + temporary + " = " + result.value +
+            ";\n")
+    } else {
+        cEmitDiscardValue(&builder, &result, depth)
+    }
+    cEmitCleanups(&builder, &program, &result, depth)
+    var block = cBlockAt(&function, blockID)
+    cEmitDrops(&builder, &program, &function, &state, &block.drops, depth)
+    false
+}
+
+fn cEmitConditionalExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    conditional firConditionalExpression,
+    &valueType semanticType,
+    depth u64
+) cEmittedExpression {
+    const condition = cEmitExpression(&builder, &program, &function,
+        &state, conditional.condition, depth)
+    if condition.diverges return condition
+    var temporary = ""
+    if !valueType.kind.Matches("Void") {
+        temporary = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+            temporary + ";\n")
+    }
+    cWrite(&builder, cIndent(depth) + "if (" + condition.value + ") {\n")
+    const thenExits = cEmitConditionalBranch(&builder, &program, &function,
+        &state, conditional.thenBlock, conditional.thenValue,
+        temporary, depth + 1)
+    cWrite(&builder, cIndent(depth) + "} else {\n")
+    const elseExits = cEmitConditionalBranch(&builder, &program, &function,
+        &state, conditional.elseBlock, conditional.elseValue,
+        temporary, depth + 1)
+    cWrite(&builder, cIndent(depth) + "}\n")
+    if thenExits && elseExits return cEmitted("", true)
+    cEmitted($temporary, false)
+}
+
+fn cMatchArmAt(&arms arena<firMatchArm>, index u64) firMatchArm {
+    var selected = match arms.take(index) {
+        None: panic("FIR match arm slot is empty")
+        Some(found): found
+    }
+    const result = copyFirMatchArm(&selected)
+    arms.restore(index, $selected)
+    result
+}
+
+fn cEnumPayloadType(
+    &program firProgram,
+    enumID u64,
+    variantID u64
+) semanticType {
+    if enumID >= program.enums.len() return invalidSemanticType()
+    var declaration = match program.enums.take(enumID) {
+        None: panic("FIR enum slot is empty")
+        Some(found): found
+    }
+    if variantID >= declaration.variants.len() {
+        program.enums.restore(enumID, $declaration)
+        return invalidSemanticType()
+    }
+    var variant = match declaration.variants.take(variantID) {
+        None: panic("FIR enum variant slot is empty")
+        Some(found): found
+    }
+    var result = invalidSemanticType()
+    match replace variant.payload with .None {
+        None: {}
+        Some(payloadValue): {
+            var payload = payloadValue
+            result = copySemanticType(&payload)
+            variant.payload = .Some(payload)
+        }
+    }
+    declaration.variants.restore(variantID, $variant)
+    program.enums.restore(enumID, $declaration)
+    result
+}
+
+fn cMatchArmsDiverge(
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &matchValue firMatchExpression
+) bool {
+    if matchValue.arms.len() == 0 return false
+    var index u64 = 0
+    while index < matchValue.arms.len() {
+        const arm = cMatchArmAt(&matchValue.arms, index)
+        const firMatchArm {
+            wildcard variant binding guardBinding pattern guard
+            block expression drops
+        } = arm
+        discard wildcard
+        discard variant
+        discard binding
+        discard guardBinding
+        discard pattern
+        discard guard
+        discard drops
+        const flow = firBlockFlow(
+            &program, &function, state.function, block)
+        if firFlowContinues(flow) {
+            match expression {
+                None: {
+                    return false
+                }
+                Some(value): {
+                    if !firExpressionDiverges(
+                        &program, &function, state.function, value) {
+                        return false
+                    }
+                }
+            }
+        }
+        index += 1
+    }
+    true
+}
+
+fn cEmitMatchExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &matchValue firMatchExpression,
+    &valueType semanticType,
+    span sourceSpan,
+    depth u64
+) cEmittedExpression {
+    var emittedValue = cEmitExpression(&builder, &program, &function,
+        &state, matchValue.value, depth)
+    if emittedValue.diverges return emittedValue
+    const diverges = cMatchArmsDiverge(
+        &program, &function, &state, &matchValue) ||
+        valueType.kind.Matches("Never")
+    var temporary = ""
+    if !valueType.kind.Matches("Void") && !diverges {
+        temporary = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+            temporary + " = {0};\n")
+    }
+    const matched = cNextTemporary(&state)
+    const done = "fdn_match_done_" + matched
+    var needsDone = false
+    cWrite(&builder, cIndent(depth) + "bool " + matched + " = false;\n")
+    var sourceType = cExpressionTypeAt(&function, matchValue.value)
+    const valueAccess = emittedValue.value +
+        if sourceType.kind.Matches("View") || sourceType.kind.Matches("Edit") {
+        "->"
+    } else {
+        "."
+    }
+    var armIndex u64 = 0
+    while armIndex < matchValue.arms.len() {
+        const arm = cMatchArmAt(&matchValue.arms, armIndex)
+        const firMatchArm {
+            wildcard variant binding guardBinding pattern guard
+            block expression drops
+        } = arm
+        const payload = if wildcard {
+            ""
+        } else {
+            valueAccess + "fdn_data." + cPayloadName(variant)
+        }
+        var patternValue = cEmitted("", false)
+        var hasPattern = false
+        match pattern {
+            None: {}
+            Some(patternExpression): {
+                patternValue = cEmitExpression(&builder, &program, &function,
+                    &state, patternExpression, depth)
+                hasPattern = true
+            }
+        }
+        cWrite(&builder, cIndent(depth) + "if (!" + matched)
+        if !wildcard {
+            cWrite(&builder, " && " + valueAccess + "fdn_tag == " +
+                cEnumTag(matchValue.type.declaration, variant))
+        }
+        if !wildcard && hasPattern {
+            cWrite(&builder, " && ")
+            var patternType = match pattern {
+                None: invalidSemanticType()
+                Some(patternExpression): cExpressionTypeAt(
+                    &function, patternExpression)
+            }
+            if patternType.kind.Matches("StringValue") {
+                cWrite(&builder, "fdn_string_equal(" + payload + ", " +
+                    patternValue.value + ")")
+            } else {
+                cWrite(&builder, payload + " == " + patternValue.value)
+            }
+        }
+        cWrite(&builder, ") {\n")
+        var armDepth = depth + 1
+        match guardBinding {
+            None: {}
+            Some(local): {
+                var localType = cLocalTypeAt(&function, local)
+                var payloadType = match binding {
+                    None: invalidSemanticType()
+                    Some(payloadLocal): cLocalTypeAt(&function, payloadLocal)
+                }
+                cWrite(&builder, cIndent(armDepth))
+                if !state.taskPoll {
+                    cWrite(&builder, cTypeName(&localType) + " ")
+                }
+                const localValue = cLocalValue(&function, local, state.taskPoll)
+                cWrite(&builder, localValue + " = ")
+                if localType.kind.Matches("View") &&
+                    !payloadType.kind.Matches("Own") &&
+                    !payloadType.kind.Matches("View") &&
+                    !payloadType.kind.Matches("Edit") {
+                    cWrite(&builder, "&(" + payload + ")")
+                } else {
+                    cWrite(&builder, payload)
+                }
+                cWrite(&builder, ";\n")
+            }
+        }
+        var guardValue = cEmitted("", false)
+        var hasGuard = false
+        match guard {
+            None: {}
+            Some(guardExpression): {
+                guardValue = cEmitExpression(&builder, &program, &function,
+                    &state, guardExpression, armDepth)
+                cWrite(&builder, cIndent(armDepth) + "if (" + guardValue.value +
+                    ") {\n")
+                armDepth += 1
+                hasGuard = true
+            }
+        }
+        cWrite(&builder, cIndent(armDepth) + matched + " = true;\n")
+        match binding {
+            None: {}
+            Some(local): {
+                var localType = cLocalTypeAt(&function, local)
+                var payloadType = cEnumPayloadType(
+                    &program, matchValue.type.declaration, variant)
+                var assigned = "" + payload
+                if cTypeRequiresDrop(&program, &localType) {
+                    const moved = cEmitMoveValue(&builder, &program, &state,
+                        &localType, payload, armDepth)
+                    assigned = "" + moved.value
+                } else {
+                    if localType.kind.Matches("View") &&
+                        !payloadType.kind.Matches("Own") &&
+                        !payloadType.kind.Matches("View") &&
+                        !payloadType.kind.Matches("Edit") {
+                        assigned = "&(" + payload + ")"
+                    }
+                }
+                cWrite(&builder, cIndent(armDepth))
+                if !state.taskPoll {
+                    cWrite(&builder, cTypeName(&localType) + " ")
+                }
+                const localValue = cLocalValue(&function, local, state.taskPoll)
+                cWrite(&builder, localValue + " = " + assigned + ";\n")
+                cActivateLocal(
+                    &builder, &program, &function, &state, local, armDepth)
+                cWrite(&builder, cIndent(armDepth) + "(void)" + localValue +
+                    ";\n")
+            }
+        }
+        const armExits = cEmitBlockStatements(
+            &builder, &program, &function, &state, block, armDepth)
+        var armValue = cEmitted("", armExits)
+        if !armExits {
+            match expression {
+                None: {}
+                Some(armExpression): {
+                    armValue = cEmitExpression(&builder,
+                        &program, &function, &state, armExpression, armDepth)
+                }
+            }
+        }
+        if !armExits && !armValue.diverges {
+            if !valueType.kind.Matches("Void") &&
+                !valueType.kind.Matches("Never") {
+                cWrite(&builder, cIndent(armDepth) + temporary + " = " +
+                    armValue.value + ";\n")
+            }
+            var dropValues = drops
+            cEmitDrops(&builder, &program, &function,
+                &state, &dropValues, armDepth)
+            cEmitDropValue(&builder, &program, &sourceType,
+                emittedValue.value, armDepth)
+            if hasGuard {
+                cEmitCleanups(&builder, &program, &guardValue, armDepth)
+            }
+            cWrite(&builder, cIndent(armDepth) + "goto " + done + ";\n")
+            needsDone = true
+        }
+        if hasGuard {
+            armDepth -= 1
+            cWrite(&builder, cIndent(armDepth) + "}\n")
+            cEmitCleanups(&builder, &program, &guardValue, armDepth)
+        }
+        cWrite(&builder, cIndent(depth) + "}\n")
+        armIndex += 1
+    }
+    cWrite(&builder, cIndent(depth) + "if (!" + matched + ") {\n")
+    cEmitLocation(&builder, span, depth + 1)
+    cWrite(&builder, cIndent(depth + 1) + "fdn_invalid_enum_tag();\n")
+    cWrite(&builder, cIndent(depth) + "}\n")
+    if diverges {
+        cWrite(&builder, cIndent(depth) +
+            "fdn_panic_cstr(\"unreachable match\");\n")
+    }
+    if needsDone {
+        cWrite(&builder, done + ":;\n")
+    }
+    if diverges return cEmitted("", true)
+    cEmitted($temporary, false)
+}

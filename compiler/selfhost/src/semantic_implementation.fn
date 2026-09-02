@@ -206,7 +206,7 @@ fn semanticContractMethodTarget(
                         None: panic("semantic field type slot is empty")
                         Some(fieldType): fieldType
                     }
-                    var delegated = substituteSemanticType(
+                    var delegated = substituteCheckedSemanticType(&analyzer, &source,
                         &fieldType, &concrete.arguments)
                     structModel.fieldTypes.restore(delegateField, $fieldType)
                     analyzer.model.structs.restore(
@@ -250,7 +250,7 @@ fn semanticContractMethodTarget(
                     None: panic("contract origin argument slot is empty")
                     Some(argument): argument
                 }
-                discard typeArguments.add(substituteSemanticType(
+                discard typeArguments.add(substituteCheckedSemanticType(&analyzer, &source,
                         &argument, &contractTypeValue.arguments))
                 originArguments.restore(index, $argument)
                 index += 1
@@ -406,7 +406,7 @@ fn findSemanticDefaultMethod(
             None: panic("semantic implementation slot is empty")
             Some(value): value
         }
-        var contractTypeValue = substituteSemanticType(
+        var contractTypeValue = substituteCheckedSemanticType(&analyzer, &source,
             &rawContract, &base.arguments)
         if contractTypeValue.kind.Matches("ContractValue") &&
             contractTypeValue.declaration < analyzer.model.contracts.len() {
@@ -513,6 +513,11 @@ fn analyzeSemanticDefaultMethod(
         )
     }
 
+    const previousTransient = analyzer.state.transientBorrowsAllowed
+    const loanCount = analyzer.state.loanStates.len()
+    var previousLoans = semanticLoanPrefix(
+        &analyzer.state.loanStates, loanCount)
+    analyzer.state.transientBorrowsAllowed = true
     var arguments = semanticCallArgumentIDs(&member.arguments)
     var argumentNames = semanticCallArgumentNames(&member.argumentNames)
     var parameterMap = semanticMapArgumentParameters(
@@ -541,7 +546,7 @@ fn analyzeSemanticDefaultMethod(
                 None: panic("contract parameter type slot is empty")
                 Some(pattern): pattern
             }
-            pattern = substituteSemanticType(
+            pattern = substituteCheckedSemanticType(&analyzer, &source,
                 &pattern, &candidate.contractType.arguments)
             if parameter < method.parameterModes.len() {
                 mode = match method.parameterModes.take(parameter) {
@@ -584,6 +589,8 @@ fn analyzeSemanticDefaultMethod(
         discard parameters.add(parameter)
         index += 1
     }
+    analyzer.state.transientBorrowsAllowed = previousTransient
+    restoreSemanticLoans(&analyzer.state.loanStates, &previousLoans)
 
     var concreteType = copySemanticType(&base)
     var contractTypeValue = copySemanticType(&candidate.contractType)
@@ -626,7 +633,7 @@ fn analyzeSemanticDefaultMethod(
     target.argumentConversions = conversions
     target.argumentParameters = parameters
     setSemanticCallTarget(&analyzer, expression, $target)
-    substituteSemanticType(
+    substituteCheckedSemanticType(&analyzer, &source,
         &method.returnType, &candidate.contractType.arguments)
 }
 
@@ -766,7 +773,7 @@ fn verifySemanticImplementations(
                         None: {}
                         Some(fieldType): {
                             var fieldValue = fieldType
-                            var delegatedType = substituteSemanticType(
+                            var delegatedType = substituteCheckedSemanticType(&analyzer, &source,
                                 &fieldValue, &concrete.arguments)
                             const matched = implementedSemanticContract(
                                 &analyzer,
@@ -887,7 +894,7 @@ fn verifySemanticImplementations(
                                         None: panic("method parameter type slot is empty")
                                         Some(type): type
                                     }
-                                    var substituted = substituteSemanticType(
+                                    var substituted = substituteCheckedSemanticType(&analyzer, &source,
                                         &expected, &implementation.arguments)
                                     requireSameSemanticType(
                                         &analyzer,
@@ -906,7 +913,7 @@ fn verifySemanticImplementations(
                                     argument += 1
                                 }
                             }
-                            var expectedReturn = substituteSemanticType(
+                            var expectedReturn = substituteCheckedSemanticType(&analyzer, &source,
                                 &required.returnType,
                                 &implementation.arguments
                             )

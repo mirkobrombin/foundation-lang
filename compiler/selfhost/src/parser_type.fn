@@ -154,14 +154,15 @@ methods parser {
                 .RightParen, "FDN1122", "expected ) in function type")
             const returnType = self.parseTypeSyntax(
                 "FDN1123", "expected function return type")
-            arguments.PushFront($returnType)
+            var ordered = reverseList($arguments)
+            ordered.PushFront($returnType)
             discard code
             discard message
             return typeSyntax {
                 name = "[c-function]" if cFunction else
                 "[transferable-function]" if transferableFunction else
                 "[function]"
-                arguments = reverseList($arguments)
+                arguments = ordered
                 span = start.span
                 arrayLength = 0
             }

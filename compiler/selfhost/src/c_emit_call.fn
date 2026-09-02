@@ -1,0 +1,654 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn cCallKindFunction(value firCallKind) bool {
+    match value { Function: true _: false }
+}
+
+fn cCallKindFunctionValue(value firCallKind) bool {
+    match value { FunctionValue: true _: false }
+}
+
+fn cCallKindContract(value firCallKind) bool {
+    match value { ContractValue: true _: false }
+}
+
+fn cCallKindConstrained(value firCallKind) bool {
+    match value { Constrained: true _: false }
+}
+
+fn cCallKindPrint(value firCallKind) bool {
+    match value { Print: true _: false }
+}
+
+fn cCallKindPanic(value firCallKind) bool {
+    match value { Panic: true _: false }
+}
+
+fn cCallKindLen(value firCallKind) bool {
+    match value { Len: true _: false }
+}
+
+fn cCallKindNull(value firCallKind) bool {
+    match value { Null: true _: false }
+}
+
+fn cCallKindIsNull(value firCallKind) bool {
+    match value { IsNull: true _: false }
+}
+
+fn cCallKindCString(value firCallKind) bool {
+    match value { CString: true _: false }
+}
+
+fn cCallKindSizeOf(value firCallKind) bool {
+    match value { SizeOf: true _: false }
+}
+
+fn cCallKindPointerCast(value firCallKind) bool {
+    match value { PointerCast: true _: false }
+}
+
+fn cCallKindNumericConversion(value firCallKind) bool {
+    match value { NumericConversion: true _: false }
+}
+
+fn cReceiverOwn(value firReceiverKind) bool {
+    match value { Own: true _: false }
+}
+
+fn cIntegerMinimum(&value semanticType) String {
+    match value.kind {
+        I8: "INT8_MIN"
+        I16: "INT16_MIN"
+        I32: "INT32_MIN"
+        I64: "INT64_MIN"
+        Isize: "INTPTR_MIN"
+        _: "0"
+    }
+}
+
+fn cIntegerMaximum(&value semanticType) String {
+    match value.kind {
+        I8: "INT8_MAX"
+        I16: "INT16_MAX"
+        I32: "INT32_MAX"
+        I64: "INT64_MAX"
+        Isize: "INTPTR_MAX"
+        U8: "UINT8_MAX"
+        U16: "UINT16_MAX"
+        U32: "UINT32_MAX"
+        U64: "UINT64_MAX"
+        Usize: "SIZE_MAX"
+        _: "0"
+    }
+}
+
+fn cIntegerRangeCondition(
+    &value semanticType,
+    expression String
+) String {
+    if isSignedSemanticInteger(&value) {
+        return "((long double)(" + expression + ") >= (long double)" +
+            cIntegerMinimum(&value) + " && (long double)(" + expression +
+            ") < ((long double)" + cIntegerMaximum(&value) + " + 1.0L))"
+    }
+    "((long double)(" + expression +
+        ") >= 0.0L && (long double)(" + expression +
+        ") < ((long double)" + cIntegerMaximum(&value) + " + 1.0L))"
+}
+
+fn cNumericConversionErrorType(
+    &program firProgram,
+    &resultType semanticType
+) semanticType {
+    if !resultType.kind.Matches("EnumValue") ||
+        resultType.declaration >= program.enums.len() {
+        panic("fallible numeric conversion has an invalid Result type")
+    }
+    var resultDeclaration = match program.enums.take(resultType.declaration) {
+        None: panic("numeric conversion Result slot is empty")
+        Some(found): found
+    }
+    const firEnumCopy {
+        original
+        value as copied
+    } = copyFirEnum($resultDeclaration)
+    program.enums.restore(resultType.declaration, $original)
+    resultDeclaration = copied
+    if resultDeclaration.name != "Result" ||
+        resultDeclaration.variants.len() != 2 {
+        panic("fallible numeric conversion has an invalid Result type")
+    }
+    var success = match resultDeclaration.variants.take(0) {
+        None: panic("numeric conversion Result success slot is empty")
+        Some(found): found
+    }
+    match replace success.payload with .None {
+        None: panic("numeric conversion Result success payload is missing")
+        Some(payload): {
+            success.payload = .Some(payload)
+        }
+    }
+    resultDeclaration.variants.restore(0, $success)
+    var failure = match resultDeclaration.variants.take(1) {
+        None: panic("numeric conversion Result failure slot is empty")
+        Some(found): found
+    }
+    var errorType = match replace failure.payload with .None {
+        None: panic("numeric conversion Result failure payload is missing")
+        Some(payload): payload
+    }
+    failure.payload = .Some(copySemanticType(&errorType))
+    resultDeclaration.variants.restore(1, $failure)
+    if !errorType.kind.Matches("EnumValue") ||
+        errorType.declaration >= program.enums.len() {
+        panic("fallible numeric conversion has an invalid NumberError type")
+    }
+    var errorDeclaration = match program.enums.take(errorType.declaration) {
+        None: panic("numeric conversion NumberError slot is empty")
+        Some(found): found
+    }
+    const valid = errorDeclaration.name == "NumberError" &&
+        errorDeclaration.variants.len() == 3
+    program.enums.restore(errorType.declaration, $errorDeclaration)
+    if !valid {
+        panic("fallible numeric conversion has an invalid NumberError type")
+    }
+    errorType
+}
+
+fn cEmitNumericSuccess(
+    &builder text.Builder,
+    result String,
+    converted String,
+    &resultType semanticType,
+    depth u64
+) void {
+    cWrite(&builder, cIndent(depth) + result + ".fdn_data." +
+        cPayloadName(0) + " = " + converted + ";\n")
+    cWrite(&builder, cIndent(depth) + result + ".fdn_tag = " +
+        cEnumTag(resultType.declaration, 0) + ";\n")
+}
+
+fn cEmitNumericFailure(
+    &builder text.Builder,
+    &state cFunctionEmissionState,
+    result String,
+    &resultType semanticType,
+    &errorType semanticType,
+    variant u64,
+    depth u64
+) void {
+    const error = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&errorType) + " " + error +
+        " = {0};\n")
+    cWrite(&builder, cIndent(depth) + error + ".fdn_tag = " +
+        cEnumTag(errorType.declaration, variant) + ";\n")
+    cWrite(&builder, cIndent(depth) + result + ".fdn_data." +
+        cPayloadName(1) + " = " + error + ";\n")
+    cWrite(&builder, cIndent(depth) + result + ".fdn_tag = " +
+        cEnumTag(resultType.declaration, 1) + ";\n")
+}
+
+fn cEmitNumericConversion(
+    &builder text.Builder,
+    &program firProgram,
+    &state cFunctionEmissionState,
+    &call firCallExpression,
+    &resultType semanticType,
+    argument String,
+    depth u64
+) cEmittedExpression {
+    if call.typeArguments.len() != 2 {
+        panic("numeric conversion has invalid type metadata")
+    }
+    var source = semanticTypeArenaAt(&call.typeArguments, 0)
+    var target = semanticTypeArenaAt(&call.typeArguments, 1)
+    if sameSemanticType(&resultType, &target) {
+        const temporary = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + cTypeName(&target) + " " +
+            temporary + " = (" + cTypeName(&target) + ")(" + argument +
+            ");\n")
+        return cEmitted($temporary, false)
+    }
+
+    var errorType = cNumericConversionErrorType(&program, &resultType)
+    const result = cNextTemporary(&state)
+    const converted = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&resultType) + " " + result +
+        " = {0};\n")
+    cWrite(&builder, cIndent(depth) + cTypeName(&target) + " " + converted +
+        " = {0};\n")
+
+    if isSemanticInteger(&source) && isSemanticInteger(&target) {
+        var condition = ""
+        if isSignedSemanticInteger(&source) &&
+            isSignedSemanticInteger(&target) {
+            condition = "((intmax_t)(" + argument + ") >= (intmax_t)" +
+                cIntegerMinimum(&target) + " && (intmax_t)(" + argument +
+                ") <= (intmax_t)" + cIntegerMaximum(&target) + ")"
+        } else {
+            if isSignedSemanticInteger(&source) {
+                condition = "((intmax_t)(" + argument +
+                    ") >= 0 && (uintmax_t)(" + argument +
+                    ") <= (uintmax_t)" + cIntegerMaximum(&target) + ")"
+            } else {
+                condition = "((uintmax_t)(" + argument +
+                    ") <= (uintmax_t)" + cIntegerMaximum(&target) + ")"
+            }
+        }
+        cWrite(&builder, cIndent(depth) + "if (" + condition + ") {\n")
+        cWrite(&builder, cIndent(depth + 1) + converted + " = (" +
+            cTypeName(&target) + ")(" + argument + ");\n")
+        cEmitNumericSuccess(
+            &builder, result, converted, &resultType, depth + 1)
+        cWrite(&builder, cIndent(depth) + "} else {\n")
+        cEmitNumericFailure(&builder, &state, result, &resultType,
+            &errorType, 0, depth + 1)
+        cWrite(&builder, cIndent(depth) + "}\n")
+        return cEmitted($result, false)
+    }
+
+    if isSemanticFloating(&source) && isSemanticInteger(&target) {
+        cWrite(&builder, cIndent(depth) + "if (!isfinite(" + argument +
+            ")) {\n")
+        cEmitNumericFailure(&builder, &state, result, &resultType,
+            &errorType, 1, depth + 1)
+        cWrite(&builder, cIndent(depth) + "} else if (!" +
+            cIntegerRangeCondition(&target, argument) + ") {\n")
+        cEmitNumericFailure(&builder, &state, result, &resultType,
+            &errorType, 0, depth + 1)
+        cWrite(&builder, cIndent(depth) + "} else {\n")
+        cWrite(&builder, cIndent(depth + 1) + converted + " = (" +
+            cTypeName(&target) + ")(" + argument + ");\n")
+        cWrite(&builder, cIndent(depth + 1) + "if ((" + cTypeName(&source) +
+            ")" + converted + " == " + argument + ") {\n")
+        cEmitNumericSuccess(
+            &builder, result, converted, &resultType, depth + 2)
+        cWrite(&builder, cIndent(depth + 1) + "} else {\n")
+        cEmitNumericFailure(&builder, &state, result, &resultType,
+            &errorType, 2, depth + 2)
+        cWrite(&builder, cIndent(depth + 1) + "}\n")
+        cWrite(&builder, cIndent(depth) + "}\n")
+        return cEmitted($result, false)
+    }
+
+    cWrite(&builder, cIndent(depth) + "if (" +
+        if isSemanticFloating(&source) {
+        "!isfinite(" + argument + ")"
+    } else { "false" } + ") {\n")
+    cEmitNumericFailure(&builder, &state, result, &resultType,
+        &errorType, 1, depth + 1)
+    cWrite(&builder, cIndent(depth) + "} else {\n")
+    cWrite(&builder, cIndent(depth + 1) + converted + " = (" +
+        cTypeName(&target) + ")(" + argument + ");\n")
+    cWrite(&builder, cIndent(depth + 1) + "if (" +
+        if isSemanticFloating(&target) {
+        "!isfinite(" + converted + ")"
+    } else { "false" } + ") {\n")
+    cEmitNumericFailure(&builder, &state, result, &resultType,
+        &errorType, 0, depth + 2)
+    cWrite(&builder, cIndent(depth + 1) + "} else if (" +
+        if isSemanticInteger(&source) {
+        cIntegerRangeCondition(&source, converted) + " && (" +
+            cTypeName(&source) + ")" + converted + " == " + argument
+    } else {
+        "(" + cTypeName(&source) + ")" + converted + " == " + argument
+    } + ") {\n")
+    cEmitNumericSuccess(
+        &builder, result, converted, &resultType, depth + 2)
+    cWrite(&builder, cIndent(depth + 1) + "} else {\n")
+    cEmitNumericFailure(&builder, &state, result, &resultType,
+        &errorType, 2, depth + 2)
+    cWrite(&builder, cIndent(depth + 1) + "}\n")
+    cWrite(&builder, cIndent(depth) + "}\n")
+    cEmitted($result, false)
+}
+
+fn cU64At(&values arena<u64>, index u64) u64 {
+    const selected = match values.take(index) {
+        None: panic("FIR integer slot is empty")
+        Some(found): found
+    }
+    values.restore(index, selected)
+    selected
+}
+
+fn cStringAt(&values arena<String>, index u64) String {
+    const selected = match values.take(index) {
+        None: panic("C string slot is empty")
+        Some(found): found
+    }
+    const result = "" + selected
+    values.restore(index, $selected)
+    result
+}
+
+fn cOrderedArgument(
+    &call firCallExpression,
+    &values arena<String>,
+    parameter u64
+) String {
+    if call.argumentParameters.len() == 0 {
+        return cStringAt(&values, parameter)
+    }
+    if call.argumentParameters.len() != values.len() {
+        panic("call argument mapping has the wrong size")
+    }
+    var source u64 = 0
+    while source < call.argumentParameters.len() {
+        if cU64At(&call.argumentParameters, source) == parameter {
+            return cStringAt(&values, source)
+        }
+        source += 1
+    }
+    panic("call argument mapping is invalid")
+}
+
+fn cContractCallConsumesReceiver(
+    &program firProgram,
+    &call firCallExpression
+) bool {
+    if !cCallKindContract(call.kind) ||
+        call.contractID >= program.contracts.len() {
+        return false
+    }
+    var declaration = match program.contracts.take(call.contractID) {
+        None: panic("FIR contract slot is empty")
+        Some(found): found
+    }
+    if call.method >= declaration.methodList.len() {
+        program.contracts.restore(call.contractID, $declaration)
+        return false
+    }
+    var method = match declaration.methodList.take(call.method) {
+        None: panic("FIR contract method slot is empty")
+        Some(found): found
+    }
+    const result = cReceiverOwn(method.receiver)
+    declaration.methodList.restore(call.method, $method)
+    program.contracts.restore(call.contractID, $declaration)
+    result
+}
+
+fn cEmitArgumentCleanups(
+    &builder text.Builder,
+    &program firProgram,
+    &arguments arena<cEmittedExpression>,
+    depth u64
+) void {
+    var index = arguments.len()
+    while index != 0 {
+        index -= 1
+        var argument = match arguments.take(index) {
+            None: panic("C emitted argument slot is empty")
+            Some(found): found
+        }
+        cEmitCleanups(&builder, &program, &argument, depth)
+        arguments.restore(index, $argument)
+    }
+}
+
+fn cCallInvocation(
+    &program firProgram,
+    &function firFunction,
+    &call firCallExpression,
+    &arguments arena<String>
+) String {
+    var builder = text.NewBuilder()
+    if cCallKindContract(call.kind) {
+        if arguments.len() == 0 {
+            panic("contract call has no receiver")
+        }
+        const receiver = cOrderedArgument(&call, &arguments, 0)
+        var receiverType = cExpressionTypeAt(&function, cU64At(&call.arguments, 0))
+        const member = if receiverType.kind.Matches("Own") { "->" } else { "." }
+        cWrite(&builder, receiver + member + "fdn_vtable->fdn_method_" +
+            format.U64(call.method) + "(" + receiver + member + "fdn_data")
+        var index u64 = 1
+        while index < arguments.len() {
+            cWrite(&builder, ", " + cOrderedArgument(&call, &arguments, index))
+            index += 1
+        }
+        cWrite(&builder, ")")
+        return cFinish(&builder)
+    }
+    if cCallKindFunctionValue(call.kind) {
+        const callable = cLocalValue(&function, call.local, false)
+        var callableType = cLocalTypeAt(&function, call.local)
+        const pointer = callableType.kind.Matches("View") ||
+            callableType.kind.Matches("Edit")
+        if pointer && callableType.arguments.len() == 1 {
+            callableType = semanticTypeArgument(&callableType, 0)
+        }
+        if isCSemanticFunction(&callableType) {
+            cWrite(&builder, if pointer { "(*" + callable + ")" } else {
+                callable
+            })
+            cWrite(&builder, "(")
+            var index u64 = 0
+            while index < arguments.len() {
+                if index != 0 {
+                    cWrite(&builder, ", ")
+                }
+                cWrite(&builder, cOrderedArgument(&call, &arguments, index))
+                index += 1
+            }
+            cWrite(&builder, ")")
+            return cFinish(&builder)
+        }
+        const member = if pointer { "->" } else { "." }
+        cWrite(&builder, callable + member + "fdn_call(" + callable + member +
+            "fdn_env")
+        var index u64 = 0
+        while index < arguments.len() {
+            cWrite(&builder, ", " + cOrderedArgument(&call, &arguments, index))
+            index += 1
+        }
+        cWrite(&builder, ")")
+        return cFinish(&builder)
+    }
+    if cCallKindPrint(call.kind) {
+        cWrite(&builder, "fdn_println")
+    } else {
+        if cCallKindPanic(call.kind) {
+            cWrite(&builder, "fdn_panic")
+        } else {
+            cWrite(&builder, cFunctionName(&program, call.function))
+        }
+    }
+    cWrite(&builder, "(")
+    var index u64 = 0
+    while index < arguments.len() {
+        if index != 0 {
+            cWrite(&builder, ", ")
+        }
+        cWrite(&builder, cOrderedArgument(&call, &arguments, index))
+        index += 1
+    }
+    cWrite(&builder, ")")
+    cFinish(&builder)
+}
+
+fn cEmitCallExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &call firCallExpression,
+    &valueType semanticType,
+    span sourceSpan,
+    depth u64
+) cEmittedExpression {
+    if cCallKindCString(call.kind) {
+        if call.arguments.len() != 1 || call.typeArguments.len() != 0 {
+            panic("cString has invalid arguments")
+        }
+        const argument = cExpressionAt(&function, cU64At(&call.arguments, 0))
+        const firExpression { value type span as argumentSpan } = argument
+        discard type
+        discard argumentSpan
+        const literal = match value {
+            StringValue(found): {
+                const firStringExpression { value as textValue } = found
+                textValue
+            }
+            _: panic("cString argument is not a string literal")
+        }
+        const temporary = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + "const uint8_t *" + temporary +
+            " = (const uint8_t *)" + cStringLiteral(literal) + ";\n")
+        return cEmitted($temporary, false)
+    }
+
+    var emittedArguments = newArena<cEmittedExpression>()
+    var arguments = newArena<String>()
+    var index u64 = 0
+    while index < call.arguments.len() {
+        const argument = cU64At(&call.arguments, index)
+        if firExpressionDiverges(&program, &function, state.function, argument) {
+            cEmitArgumentCleanups(
+                &builder, &program, &emittedArguments, depth)
+            return cEmitExpression(
+                &builder, &program, &function, &state, argument, depth)
+        }
+        const emitted = cEmitExpression(
+            &builder, &program, &function, &state, argument, depth)
+        if emitted.diverges return emitted
+        discard arguments.add("" + emitted.value)
+        discard emittedArguments.add($emitted)
+        index += 1
+    }
+
+    if cCallKindConstrained(call.kind) {
+        panic("C backend received an unresolved constrained call")
+    }
+    if cCallKindNull(call.kind) {
+        if arguments.len() != 0 {
+            panic("null has value arguments")
+        }
+        const temporary = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+            temporary + " = NULL;\n")
+        return cEmitted($temporary, false)
+    }
+    if cCallKindIsNull(call.kind) {
+        if arguments.len() != 1 {
+            panic("isNull does not have one argument")
+        }
+        const temporary = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + "bool " + temporary + " = " +
+            cOrderedArgument(&call, &arguments, 0) + " == NULL;\n")
+        return cEmitted($temporary, false)
+    }
+    if cCallKindSizeOf(call.kind) {
+        if arguments.len() != 0 || call.typeArguments.len() != 1 {
+            panic("sizeOf has invalid arguments")
+        }
+        var target = semanticTypeArenaAt(&call.typeArguments, 0)
+        const temporary = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + "size_t " + temporary + " = sizeof(" +
+            cTypeName(&target) + ");\n")
+        return cEmitted($temporary, false)
+    }
+    if cCallKindPointerCast(call.kind) {
+        if arguments.len() != 1 || call.typeArguments.len() != 2 {
+            panic("pointerCast has invalid arguments")
+        }
+        const argument = cOrderedArgument(&call, &arguments, 0)
+        const temporary = cNextTemporary(&state)
+        if isCSemanticFunction(&valueType) {
+            var sourceType = cExpressionTypeAt(
+                &function, cU64At(&call.arguments, 0))
+            const source = cNextTemporary(&state)
+            cWrite(&builder, cIndent(depth) + cTypeName(&sourceType) + " " +
+                source + " = " + argument + ";\n")
+            cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+                temporary + " = NULL;\n")
+            cWrite(&builder, cIndent(depth) + "_Static_assert(sizeof(" +
+                temporary + ") == sizeof(" + source +
+                "), \"incompatible function pointer representation\");\n")
+            cWrite(&builder, cIndent(depth) + "memcpy(&" + temporary +
+                ", &" + source + ", sizeof(" + temporary + "));\n")
+        } else {
+            cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+                temporary + " = (" + cTypeName(&valueType) + ")" +
+                argument + ";\n")
+        }
+        return cEmitted($temporary, false)
+    }
+    if cCallKindNumericConversion(call.kind) {
+        if arguments.len() != 1 {
+            panic("numeric conversion does not have one argument")
+        }
+        const argument = cOrderedArgument(&call, &arguments, 0)
+        return cEmitNumericConversion(&builder, &program, &state, &call,
+            &valueType, argument, depth)
+    }
+    if cCallKindLen(call.kind) {
+        if arguments.len() != 1 {
+            panic("len call does not have one argument")
+        }
+        var sequence = cExpressionTypeAt(
+            &function, cU64At(&call.arguments, 0))
+        var member = "."
+        if (sequence.kind.Matches("View") || sequence.kind.Matches("Edit")) &&
+            sequence.arguments.len() == 1 {
+            var target = semanticTypeArgument(&sequence, 0)
+            if !target.kind.Matches("Slice") {
+                member = "->"
+            }
+            sequence = target
+        }
+        var length = ""
+        if sequence.kind.Matches("Array") {
+            length = "((size_t)" + format.U64(sequence.declaration) + ")"
+        } else {
+            if sequence.kind.Matches("Slice") {
+                length = cOrderedArgument(&call, &arguments, 0) + member +
+                    "fdn_length"
+            } else {
+                if sequence.kind.Matches("StringValue") {
+                    length = cOrderedArgument(&call, &arguments, 0) + member +
+                        "length"
+                } else {
+                    panic("len call has an unsupported argument")
+                }
+            }
+        }
+        const temporary = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + "size_t " + temporary + " = " +
+            length + ";\n")
+        return cEmitted($temporary, false)
+    }
+
+    cEmitLocation(&builder, span, depth)
+    const invocation = cCallInvocation(&program, &function, &call, &arguments)
+    var targetDiverges = false
+    if cCallKindFunction(call.kind) && call.function < program.functions.len() {
+        const target = cFunctionAt(&program, call.function)
+        targetDiverges = target.diverges
+    }
+    if cCallKindPanic(call.kind) || targetDiverges {
+        cWrite(&builder, cIndent(depth) + invocation + ";\n")
+        return cEmitted("", true)
+    }
+    if valueType.kind.Matches("Void") {
+        cWrite(&builder, cIndent(depth) + invocation + ";\n")
+        cEmitArgumentCleanups(&builder, &program, &emittedArguments, depth)
+        return cEmitted("", false)
+    }
+    const temporary = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+        temporary + " = " + invocation + ";\n")
+    if cContractCallConsumesReceiver(&program, &call) && arguments.len() != 0 {
+        const receiver = cStringAt(&arguments, 0)
+        cWrite(&builder, cIndent(depth) + "fdn_dealloc(" + receiver + ");\n")
+        cWrite(&builder, cIndent(depth) + receiver + " = NULL;\n")
+    }
+    cEmitArgumentCleanups(&builder, &program, &emittedArguments, depth)
+    cEmitted($temporary, false)
+}

@@ -1,0 +1,1453 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn cTaskFrameName(&program firProgram, function u64) String {
+    cFunctionName(&program, function) + "_task_frame"
+}
+
+fn cTaskPollName(&program firProgram, function u64) String {
+    cFunctionName(&program, function) + "_task_poll"
+}
+
+fn cTaskMoveResultName(&program firProgram, function u64) String {
+    cFunctionName(&program, function) + "_task_move_result"
+}
+
+fn cTaskDropFrameName(&program firProgram, function u64) String {
+    cFunctionName(&program, function) + "_task_drop_frame"
+}
+
+fn cBlockingWorkName(
+    &program firProgram,
+    function u64,
+    expression u64
+) String {
+    cFunctionName(&program, function) + "_blocking_" +
+        format.U64(expression) + "_work"
+}
+
+fn cBlockingJobName(expression u64) String {
+    "fdn_blocking_job_" + format.U64(expression)
+}
+
+fn cCallbackStartName(
+    &program firProgram,
+    function u64,
+    expression u64
+) String {
+    cFunctionName(&program, function) + "_callback_" +
+        format.U64(expression) + "_start"
+}
+
+fn cCallbackCancelName(
+    &program firProgram,
+    function u64,
+    expression u64
+) String {
+    cFunctionName(&program, function) + "_callback_" +
+        format.U64(expression) + "_cancel"
+}
+
+fn cCallbackOperationName(expression u64) String {
+    "fdn_callback_operation_" + format.U64(expression)
+}
+
+fn cExpressionSuspends($expression firExpression) bool {
+    const firExpression { value type span } = expression
+    discard type
+    discard span
+    match value {
+        TaskWait(payload): { discard payload true }
+        BlockingCall(payload): { discard payload true }
+        CallbackCall(payload): { discard payload true }
+        ChannelSend(payload): { discard payload true }
+        ChannelReceive(payload): { discard payload true }
+        _: false
+    }
+}
+
+fn cExpressionIsBlocking($expression firExpression) bool {
+    const firExpression { value type span } = expression
+    discard type
+    discard span
+    match value {
+        BlockingCall(payload): { discard payload true }
+        _: false
+    }
+}
+
+fn cExpressionIsCallback($expression firExpression) bool {
+    const firExpression { value type span } = expression
+    discard type
+    discard span
+    match value {
+        CallbackCall(payload): { discard payload true }
+        _: false
+    }
+}
+
+fn cStatementIsSelect($statement firStatement) bool {
+    const firStatement { value span } = statement
+    discard span
+    match value {
+        SelectValue(payload): { discard payload true }
+        _: false
+    }
+}
+
+fn cTaskSuspensionCount(&function firFunction) u64 {
+    var count u64 = 0
+    var index u64 = 0
+    while index < function.expressions.len() {
+        const expression = cExpressionAt(&function, index)
+        if cExpressionSuspends($expression) {
+            count += 1
+        }
+        index += 1
+    }
+    index = 0
+    while index < function.statements.len() {
+        const statement = cStatementAt(&function, index)
+        if cStatementIsSelect($statement) {
+            count += 1
+        }
+        index += 1
+    }
+    count
+}
+
+fn cTraceFunctionName(&function firFunction) String {
+    var selected = match replace function.testName with .None {
+        None: {
+            return semanticSourceName(function.name)
+        }
+        Some(found): found
+    }
+    "test \"" + selected + "\""
+}
+
+fn cEmitPendingTaskReturn(
+    &builder text.Builder,
+    depth u64
+) void {
+    cWrite(&builder, cIndent(depth) +
+        "fdn_task_cancellation_leave(fdn_previous_cancellation);\n")
+    cWrite(&builder, cIndent(depth) +
+        "fdn_frame_leave(&fdn_frame_current);\n")
+    cWrite(&builder, cIndent(depth) + "return FDN_TASK_PENDING;\n")
+}
+
+fn cSelectOperationAt(
+    &selection firSelectStatement,
+    index u64
+) firSelectOperationArm {
+    const selected = match selection.operations.take(index) {
+        None: panic("select operation slot is empty")
+        Some(found): found
+    }
+    const result = firSelectOperationArm {
+        send = selected.send endpoint = selected.endpoint
+        value = copyFirU64Option(selected.value)
+        valueStorage = copyFirU64Option(selected.valueStorage)
+        resultStorage = selected.resultStorage
+        binding = copyFirU64Option(selected.binding)
+        body = selected.body span = selected.span
+    }
+    selection.operations.restore(index, $selected)
+    result
+}
+
+fn cEnumAt(&program firProgram, id u64) firEnum {
+    const selected = match program.enums.take(id) {
+        None: panic("FIR enum slot is empty")
+        Some(found): found
+    }
+    const firEnumCopy { original value } = copyFirEnum($selected)
+    program.enums.restore(id, $original)
+    value
+}
+
+fn cChannelTypes(
+    &program firProgram,
+    &function firFunction,
+    resultStorage u64
+) semanticType {
+    var resultType = cLocalTypeAt(&function, resultStorage)
+    if !resultType.kind.Matches("EnumValue") ||
+        resultType.declaration >= program.enums.len() {
+        panic("channel operation has an invalid Result type")
+    }
+    var resultDeclaration = cEnumAt(&program, resultType.declaration)
+    if resultDeclaration.variants.len() != 2 {
+        panic("channel operation has an invalid Result type")
+    }
+    var errorType = cEnumPayloadType(&program, resultType.declaration, 1)
+    if !errorType.kind.Matches("EnumValue") ||
+        errorType.declaration >= program.enums.len() {
+        panic("channel operation has an invalid ChannelError type")
+    }
+    var errorDeclaration = cEnumAt(&program, errorType.declaration)
+    if errorDeclaration.variants.len() < 2 {
+        panic("channel operation has an invalid ChannelError type")
+    }
+    errorType
+}
+
+fn cEmitBlockingSuspension(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    expressionID u64,
+    $input firBlockingCallExpression,
+    resultLocal Option<u64>,
+    discarded bool,
+    depth u64
+) void {
+    var blocking = input
+    if blocking.arguments.len() != blocking.argumentStorages.len() {
+        panic("blocking call has invalid argument storage")
+    }
+    var index u64 = 0
+    while index < blocking.arguments.len() {
+        const argumentID = cU64At(&blocking.arguments, index)
+        const argument = cEmitExpression(
+            &builder, &program, &function, &state, argumentID, depth)
+        if argument.diverges return
+        const parameter = if blocking.argumentParameters.len() == 0 {
+            index
+        } else { cU64At(&blocking.argumentParameters, index) }
+        if parameter >= blocking.argumentStorages.len() {
+            panic("blocking call argument mapping is invalid")
+        }
+        const storage = cU64At(&blocking.argumentStorages, parameter)
+        cWrite(&builder, cIndent(depth) +
+            cLocalValue(&function, storage, true) + " = " +
+            argument.value + ";\n")
+        cActivateLocal(&builder, &program, &function, &state, storage, depth)
+        index += 1
+    }
+    state.taskState += 1
+    const taskState = state.taskState
+    cWrite(&builder, cIndent(depth) + "fdn_frame->fdn_state = " +
+        format.U64(taskState) + ";\n")
+    cWrite(&builder, "fdn_task_state_" + format.U64(taskState) + ":\n")
+    const expression = cExpressionAt(&function, expressionID)
+    cEmitLocation(&builder, expression.span, depth)
+    cWrite(&builder, cIndent(depth) + "if (!fdn_blocking_poll(&fdn_frame->" +
+        cBlockingJobName(expressionID) + ", fdn_frame, &" +
+        cBlockingWorkName(&program, state.function, expressionID) + ")) {\n")
+    cEmitPendingTaskReturn(&builder, depth + 1)
+    cWrite(&builder, cIndent(depth) + "}\n")
+    match blocking.resultStorage {
+        None: {}
+        Some(storage): {
+            var storageType = cLocalTypeAt(&function, storage)
+            match resultLocal {
+                None: {
+                    if discarded {
+                        cEmitDropValue(&builder, &program, &storageType,
+                            cLocalValue(&function, storage, true), depth)
+                        if cTypeRequiresDrop(&program, &storageType) {
+                            cWrite(&builder, cIndent(depth) +
+                                cLocalActive(storage) + " = false;\n")
+                        }
+                    } else {
+                        cWrite(&builder, cIndent(depth) + "(void)" +
+                            cLocalValue(&function, storage, true) + ";\n")
+                    }
+                    discard storage
+                }
+                Some(local): {
+                    cEmitMoveAssignment(&builder, &program, &storageType,
+                        cLocalValue(&function, local, true),
+                        cLocalValue(&function, storage, true), depth)
+                    if cTypeRequiresDrop(&program, &storageType) {
+                        cWrite(&builder, cIndent(depth) +
+                            cLocalActive(storage) + " = false;\n")
+                    }
+                    cActivateLocal(
+                        &builder, &program, &function, &state, local, depth)
+                    cWrite(&builder, cIndent(depth) + "(void)" +
+                        cLocalValue(&function, local, true) + ";\n")
+                }
+            }
+        }
+    }
+}
+
+fn cEmitCallbackSuspension(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    expressionID u64,
+    $input firCallbackCallExpression,
+    resultLocal Option<u64>,
+    depth u64
+) void {
+    var callback = input
+    if callback.arguments.len() != callback.argumentStorages.len() {
+        panic("callback call has invalid argument storage")
+    }
+    var index u64 = 0
+    while index < callback.arguments.len() {
+        const argument = cEmitExpression(&builder, &program, &function,
+            &state, cU64At(&callback.arguments, index), depth)
+        if argument.diverges return
+        const parameter = if callback.argumentParameters.len() == 0 {
+            index
+        } else { cU64At(&callback.argumentParameters, index) }
+        if parameter >= callback.argumentStorages.len() {
+            panic("callback call argument mapping is invalid")
+        }
+        const storage = cU64At(&callback.argumentStorages, parameter)
+        cWrite(&builder, cIndent(depth) +
+            cLocalValue(&function, storage, true) + " = " +
+            argument.value + ";\n")
+        cActivateLocal(&builder, &program, &function, &state, storage, depth)
+        index += 1
+    }
+    state.taskState += 1
+    const taskState = state.taskState
+    cWrite(&builder, cIndent(depth) + "fdn_frame->fdn_state = " +
+        format.U64(taskState) + ";\n")
+    cWrite(&builder, "fdn_task_state_" + format.U64(taskState) + ":\n")
+    const expression = cExpressionAt(&function, expressionID)
+    cEmitLocation(&builder, expression.span, depth)
+    cWrite(&builder, cIndent(depth) + "if (!fdn_reactor_poll(&fdn_frame->" +
+        cCallbackOperationName(expressionID) + ", fdn_frame, &" +
+        cCallbackStartName(&program, state.function, expressionID) + ", ")
+    var target = cFunctionAt(&program, callback.function)
+    match replace target.callbackCancelSymbol with .None {
+        None: cWrite(&builder, "NULL")
+        Some(symbol): {
+            discard symbol
+            cWrite(&builder, "&" + cCallbackCancelName(
+                    &program, state.function, expressionID))
+        }
+    }
+    cWrite(&builder, ", &" + cLocalValue(
+            &function, callback.resultStorage, true) + ")) {\n")
+    cEmitPendingTaskReturn(&builder, depth + 1)
+    cWrite(&builder, cIndent(depth) + "}\n")
+    match resultLocal {
+        None: cWrite(&builder, cIndent(depth) + "(void)" +
+            cLocalValue(&function, callback.resultStorage, true) + ";\n")
+        Some(local): {
+            var resultType = cLocalTypeAt(&function, callback.resultStorage)
+            cEmitMoveAssignment(&builder, &program, &resultType,
+                cLocalValue(&function, local, true),
+                cLocalValue(&function, callback.resultStorage, true), depth)
+            cActivateLocal(
+                &builder, &program, &function, &state, local, depth)
+            cWrite(&builder, cIndent(depth) + "(void)" +
+                cLocalValue(&function, local, true) + ";\n")
+        }
+    }
+}
+
+fn cEmitWaitSuspension(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    expressionID u64,
+    wait firTaskWaitExpression,
+    resultLocal Option<u64>,
+    depth u64
+) void {
+    const taskExpression = cExpressionAt(&function, wait.taskValue)
+    const firExpression { value type span } = taskExpression
+    discard type
+    discard span
+    const taskLocal = match value {
+        Move(payload): payload.local
+        _: panic("suspending task wait does not consume a local handle")
+    }
+    var resultType = cExpressionTypeAt(&function, expressionID)
+    match resultLocal {
+        None: {
+            if !resultType.kind.Matches("Void") {
+                panic("standalone suspending task wait has a result")
+            }
+        }
+        Some(local): { discard local }
+    }
+    state.taskState += 1
+    const taskState = state.taskState
+    cWrite(&builder, cIndent(depth) + "fdn_frame->fdn_state = " +
+        format.U64(taskState) + ";\n")
+    cWrite(&builder, "fdn_task_state_" + format.U64(taskState) + ":\n")
+    const expression = cExpressionAt(&function, expressionID)
+    cEmitLocation(&builder, expression.span, depth)
+    cWrite(&builder, cIndent(depth) + "if (!fdn_task_poll_wait(&" +
+        cLocalValue(&function, taskLocal, true) + ", ")
+    match resultLocal {
+        None: cWrite(&builder, "NULL")
+        Some(local): cWrite(&builder, "&" +
+            cLocalValue(&function, local, true))
+    }
+    cWrite(&builder, ")) {\n")
+    cEmitPendingTaskReturn(&builder, depth + 1)
+    cWrite(&builder, cIndent(depth) + "}\n")
+    var taskType = cLocalTypeAt(&function, taskLocal)
+    if cTypeRequiresDrop(&program, &taskType) {
+        cWrite(&builder, cIndent(depth) +
+            cLocalActive(taskLocal) + " = false;\n")
+    }
+    match resultLocal {
+        None: {}
+        Some(local): {
+            cActivateLocal(
+                &builder, &program, &function, &state, local, depth)
+            cWrite(&builder, cIndent(depth) + "(void)" +
+                cLocalValue(&function, local, true) + ";\n")
+        }
+    }
+}
+
+fn cEmitChannelSuspension(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    expressionID u64,
+    send Option<firChannelSendExpression>,
+    receive Option<firChannelReceiveExpression>,
+    resultLocal Option<u64>,
+    discarded bool,
+    depth u64
+) void {
+    var isSend = false
+    var resultStorage u64 = 0
+    match send {
+        None: {
+            match receive {
+                None: panic("channel suspension has no operation")
+                Some(value): {
+                    resultStorage = value.resultStorage
+                }
+            }
+        }
+        Some(value): {
+            isSend = true
+            resultStorage = value.resultStorage
+            match value.value {
+                None: {}
+                Some(expression): {
+                    const storage = match value.valueStorage {
+                        None: panic("channel send has no value storage")
+                        Some(found): found
+                    }
+                    const emitted = cEmitExpression(&builder, &program,
+                        &function, &state, expression, depth)
+                    if emitted.diverges return
+                    var storageType = cLocalTypeAt(&function, storage)
+                    cEmitMoveAssignment(&builder, &program, &storageType,
+                        cLocalValue(&function, storage, true),
+                        emitted.value, depth)
+                    cActivateLocal(&builder, &program,
+                        &function, &state, storage, depth)
+                }
+            }
+        }
+    }
+    var resultType = cLocalTypeAt(&function, resultStorage)
+    var errorType = cChannelTypes(&program, &function, resultStorage)
+    state.taskState += 1
+    const taskState = state.taskState
+    cWrite(&builder, cIndent(depth) + "fdn_frame->fdn_state = " +
+        format.U64(taskState) + ";\n")
+    cWrite(&builder, "fdn_task_state_" + format.U64(taskState) + ":\n")
+    const expression = cExpressionAt(&function, expressionID)
+    cEmitLocation(&builder, expression.span, depth)
+    const status = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) +
+        "fdn_channel_status " + status + " = ")
+    match send {
+        None: {
+            const value = match receive {
+                None: panic("channel suspension has no receive operation")
+                Some(found): found
+            }
+            cWrite(&builder, "fdn_channel_poll_receive(" +
+                cLocalValue(&function, value.receiver, true) + ", ")
+            var payload = cEnumPayloadType(
+                &program, resultType.declaration, 0)
+            if payload.kind.Matches("Invalid") {
+                cWrite(&builder, "NULL")
+            } else {
+                cWrite(&builder, "&" + cLocalValue(
+                        &function, resultStorage, true) + ".fdn_data." +
+                    cPayloadName(0))
+            }
+        }
+        Some(value): {
+            cWrite(&builder, "fdn_channel_poll_send(" +
+                cLocalValue(&function, value.sender, true) + ", ")
+            match value.valueStorage {
+                None: cWrite(&builder, "NULL")
+                Some(storage): cWrite(&builder, "&" +
+                    cLocalValue(&function, storage, true))
+            }
+        }
+    }
+    cWrite(&builder, ");\n")
+    cWrite(&builder, cIndent(depth) + "if (" + status +
+        " == FDN_CHANNEL_PENDING) {\n")
+    cEmitPendingTaskReturn(&builder, depth + 1)
+    cWrite(&builder, cIndent(depth) + "}\n")
+    if isSend {
+        match send {
+            None: {}
+            Some(value): {
+                match value.valueStorage {
+                    None: {}
+                    Some(storage): {
+                        var storageType = cLocalTypeAt(&function, storage)
+                        if cTypeRequiresDrop(&program, &storageType) {
+                            cWrite(&builder, cIndent(depth) + "if (" + status +
+                                " == FDN_CHANNEL_READY) {\n")
+                            cWrite(&builder, cIndent(depth + 1) +
+                                cLocalActive(storage) + " = false;\n")
+                            cWrite(&builder, cIndent(depth) + "} else {\n")
+                            cEmitLocalDrop(&builder, &program, &function,
+                                &state, storage, depth + 1)
+                            cWrite(&builder, cIndent(depth) + "}\n")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    cWrite(&builder, cIndent(depth) + "if (" + status +
+        " == FDN_CHANNEL_READY) {\n")
+    cWrite(&builder, cIndent(depth + 1) +
+        cLocalValue(&function, resultStorage, true) + ".fdn_tag = " +
+        cEnumTag(resultType.declaration, 0) + ";\n")
+    cWrite(&builder, cIndent(depth) + "} else {\n")
+    cWrite(&builder, cIndent(depth + 1) +
+        cLocalValue(&function, resultStorage, true) + ".fdn_data." +
+        cPayloadName(1) + ".fdn_tag = (" + status +
+        " == FDN_CHANNEL_CLOSED ? " + cEnumTag(errorType.declaration, 0) +
+        " : " + cEnumTag(errorType.declaration, 1) + ");\n")
+    cWrite(&builder, cIndent(depth + 1) +
+        cLocalValue(&function, resultStorage, true) + ".fdn_tag = " +
+        cEnumTag(resultType.declaration, 1) + ";\n")
+    cWrite(&builder, cIndent(depth) + "}\n")
+    cActivateLocal(
+        &builder, &program, &function, &state, resultStorage, depth)
+    match resultLocal {
+        Some(local): {
+            cEmitMoveAssignment(&builder, &program, &resultType,
+                cLocalValue(&function, local, true),
+                cLocalValue(&function, resultStorage, true), depth)
+            if cTypeRequiresDrop(&program, &resultType) {
+                cWrite(&builder, cIndent(depth) +
+                    cLocalActive(resultStorage) + " = false;\n")
+            }
+            cActivateLocal(
+                &builder, &program, &function, &state, local, depth)
+            cWrite(&builder, cIndent(depth) + "(void)" +
+                cLocalValue(&function, local, true) + ";\n")
+        }
+        None: {
+            if discarded {
+                if cTypeRequiresDrop(&program, &resultType) {
+                    cEmitLocalDrop(&builder, &program, &function,
+                        &state, resultStorage, depth)
+                } else {
+                    cWrite(&builder, cIndent(depth) + "(void)" +
+                        cLocalValue(&function, resultStorage, true) + ";\n")
+                }
+            } else {
+                panic("channel Result is neither bound nor discarded")
+            }
+        }
+    }
+}
+
+fn cEmitSuspendingStatement(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    statementID u64,
+    depth u64
+) bool {
+    const statement = cStatementAt(&function, statementID)
+    const firStatement { value span } = statement
+    match value {
+        SelectValue(selection): {
+            cEmitSelect(&builder, &program, &function,
+                &state, $selection, span, depth)
+            true
+        }
+        Variable(variable): cEmitSuspendingExpression(&builder, &program,
+            &function, &state, variable.initializer,
+            .Some(variable.local), false, depth)
+        Expression(expression): cEmitSuspendingExpression(&builder, &program,
+            &function, &state, expression.expression, .None, false, depth)
+        Discard(discarded): cEmitSuspendingExpression(&builder, &program,
+            &function, &state, discarded.expression, .None, true, depth)
+        _: false
+    }
+}
+
+fn cEmitSuspendingExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    expressionID u64,
+    resultLocal Option<u64>,
+    discarded bool,
+    depth u64
+) bool {
+    const expression = cExpressionAt(&function, expressionID)
+    const firExpression { value type span } = expression
+    discard type
+    discard span
+    match value {
+        BlockingCall(payload): {
+            cEmitBlockingSuspension(&builder, &program, &function, &state,
+                expressionID, $payload, resultLocal, discarded, depth)
+            true
+        }
+        CallbackCall(payload): {
+            cEmitCallbackSuspension(&builder, &program, &function, &state,
+                expressionID, $payload, resultLocal, depth)
+            true
+        }
+        TaskWait(payload): {
+            cEmitWaitSuspension(&builder, &program, &function, &state,
+                expressionID, payload, resultLocal, depth)
+            true
+        }
+        ChannelSend(payload): {
+            cEmitChannelSuspension(&builder, &program, &function, &state,
+                expressionID, .Some($payload), .None,
+                resultLocal, discarded, depth)
+            true
+        }
+        ChannelReceive(payload): {
+            cEmitChannelSuspension(&builder, &program, &function, &state,
+                expressionID, .None, .Some(payload),
+                resultLocal, discarded, depth)
+            true
+        }
+        _: false
+    }
+}
+
+fn cEmitSelectSendCleanup(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &selection firSelectStatement,
+    selected Option<u64>,
+    depth u64
+) void {
+    var index u64 = 0
+    while index < selection.operations.len() {
+        const arm = cSelectOperationAt(&selection, index)
+        if arm.send {
+            match arm.valueStorage {
+                None: {}
+                Some(storage): {
+                    var storageType = cLocalTypeAt(&function, storage)
+                    if cTypeRequiresDrop(&program, &storageType) {
+                        var consumed = false
+                        match selected {
+                            None: {}
+                            Some(found): {
+                                consumed = found == index
+                            }
+                        }
+                        if consumed {
+                            cWrite(&builder, cIndent(depth) +
+                                cLocalActive(storage) + " = false;\n")
+                        } else {
+                            cEmitLocalDrop(&builder, &program, &function,
+                                &state, storage, depth)
+                        }
+                    }
+                }
+            }
+        }
+        index += 1
+    }
+}
+
+fn cEmitSelect(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    $input firSelectStatement,
+    span sourceSpan,
+    depth u64
+) void {
+    var selection = input
+    var index u64 = 0
+    while index < selection.operations.len() {
+        const arm = cSelectOperationAt(&selection, index)
+        if arm.send {
+            match arm.value {
+                None: {}
+                Some(expression): {
+                    const storage = match arm.valueStorage {
+                        None: panic("select send has no value storage")
+                        Some(found): found
+                    }
+                    const emitted = cEmitExpression(&builder, &program,
+                        &function, &state, expression, depth)
+                    if !emitted.diverges {
+                        var storageType = cLocalTypeAt(&function, storage)
+                        cEmitMoveAssignment(&builder, &program, &storageType,
+                            cLocalValue(&function, storage, true),
+                            emitted.value, depth)
+                        cActivateLocal(&builder, &program,
+                            &function, &state, storage, depth)
+                    }
+                }
+            }
+        }
+        index += 1
+    }
+    var hasTimeout = false
+    var timeoutDuration = ""
+    var timeoutNanoseconds u64 = 0
+    var timeoutBody u64 = 0
+    match selection.timeoutArm {
+        None: {}
+        Some(selectedTimeout): {
+            hasTimeout = true
+            timeoutNanoseconds = selectedTimeout.nanoseconds
+            timeoutBody = selectedTimeout.body
+            match selectedTimeout.duration {
+                None: {}
+                Some(expression): {
+                    const emitted = cEmitExpression(&builder, &program,
+                        &function, &state, expression, depth)
+                    timeoutDuration = "" + emitted.value
+                }
+            }
+        }
+    }
+    const now = cNextTemporary(&state)
+    if hasTimeout {
+        cWrite(&builder, cIndent(depth) +
+            "uint64_t " + now + " = fdn_monotonic_nanoseconds();\n")
+        cWrite(&builder, cIndent(depth) +
+            cLocalValue(&function, selection.deadlineStorage, true) + " = ")
+        if timeoutDuration != "" {
+            cWrite(&builder, timeoutDuration + " > UINT64_MAX - " + now +
+                " ? UINT64_MAX : " + now + " + " + timeoutDuration + ";\n")
+        } else {
+            const duration = "UINT64_C(" + format.U64(timeoutNanoseconds) + ")"
+            cWrite(&builder, duration + " > UINT64_MAX - " + now +
+                " ? UINT64_MAX : " + now + " + " + duration + ";\n")
+        }
+    } else {
+        cWrite(&builder, cIndent(depth) +
+            cLocalValue(&function, selection.deadlineStorage, true) +
+            " = UINT64_MAX;\n")
+    }
+    state.taskState += 1
+    const taskState = state.taskState
+    cWrite(&builder, cIndent(depth) + "fdn_frame->fdn_state = " +
+        format.U64(taskState) + ";\n")
+    cWrite(&builder, "fdn_task_state_" + format.U64(taskState) + ":\n")
+    cEmitLocation(&builder, span, depth)
+    const cases = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + "fdn_channel_select_case " + cases +
+        "[" + format.U64(selection.operations.len()) + "];\n")
+    index = 0
+    while index < selection.operations.len() {
+        const arm = cSelectOperationAt(&selection, index)
+        const slot = cases + "[" + format.U64(index) + "]"
+        cWrite(&builder, cIndent(depth) + slot + ".channel = " +
+            cLocalValue(&function, arm.endpoint, true) + ";\n")
+        cWrite(&builder, cIndent(depth) + slot + ".kind = " +
+            if arm.send {
+            "FDN_CHANNEL_SELECT_SEND"
+        } else { "FDN_CHANNEL_SELECT_RECEIVE" } + ";\n")
+        cWrite(&builder, cIndent(depth) + slot + ".value = ")
+        if arm.send {
+            match arm.valueStorage {
+                None: cWrite(&builder, "NULL")
+                Some(storage): cWrite(&builder, "&" +
+                    cLocalValue(&function, storage, true))
+            }
+        } else {
+            var resultType = cLocalTypeAt(&function, arm.resultStorage)
+            var payload = cEnumPayloadType(
+                &program, resultType.declaration, 0)
+            if payload.kind.Matches("Invalid") {
+                cWrite(&builder, "NULL")
+            } else {
+                cWrite(&builder, "&" + cLocalValue(
+                        &function, arm.resultStorage, true) + ".fdn_data." +
+                    cPayloadName(0))
+            }
+        }
+        cWrite(&builder, ";\n")
+        index += 1
+    }
+    const selected = cNextTemporary(&state)
+    const status = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) +
+        "size_t " + selected + " = SIZE_MAX;\n")
+    cWrite(&builder, cIndent(depth) + "fdn_channel_status " + status +
+        " = fdn_channel_poll_select(fdn_frame, " + cases + ", " +
+        format.U64(selection.operations.len()) + ", " +
+        cLocalValue(&function, selection.deadlineStorage, true) +
+        ", &" + selected + ");\n")
+    cWrite(&builder, cIndent(depth) + "if (" + status +
+        " == FDN_CHANNEL_PENDING) {\n")
+    cEmitPendingTaskReturn(&builder, depth + 1)
+    cWrite(&builder, cIndent(depth) + "}\n")
+    cWrite(&builder, cIndent(depth) + "if (" + status +
+        " == FDN_CHANNEL_TIMEOUT) {\n")
+    cEmitSelectSendCleanup(&builder, &program, &function,
+        &state, &selection, .None, depth + 1)
+    if hasTimeout {
+        discard cEmitBlock(&builder, &program, &function,
+            &state, timeoutBody, depth + 1)
+    } else {
+        cWrite(&builder, cIndent(depth + 1) +
+            "fdn_panic_cstr(\"select reached an unavailable timeout\");\n")
+    }
+    cWrite(&builder, cIndent(depth) + "} else if (" + status +
+        " != FDN_CHANNEL_READY) {\n")
+    var errorType = cLocalTypeAt(&function, selection.errorLocal)
+    cWrite(&builder, cIndent(depth + 1) +
+        cLocalValue(&function, selection.errorLocal, true) +
+        ".fdn_tag = (" + status + " == FDN_CHANNEL_CLOSED ? " +
+        cEnumTag(errorType.declaration, 0) + " : " +
+        cEnumTag(errorType.declaration, 1) + ");\n")
+    cEmitSelectSendCleanup(&builder, &program, &function,
+        &state, &selection, .None, depth + 1)
+    discard cEmitBlock(&builder, &program, &function,
+        &state, selection.errorBlock, depth + 1)
+    cWrite(&builder, cIndent(depth) + "} else {\n")
+    cWrite(&builder, cIndent(depth + 1) + "switch (" + selected + ") {\n")
+    index = 0
+    while index < selection.operations.len() {
+        const arm = cSelectOperationAt(&selection, index)
+        cWrite(&builder, cIndent(depth + 1) + "case " +
+            format.U64(index) + ": {\n")
+        match arm.binding {
+            None: {}
+            Some(binding): {
+                var bindingType = cLocalTypeAt(&function, binding)
+                const payload = cLocalValue(
+                    &function, arm.resultStorage, true) + ".fdn_data." +
+                    cPayloadName(0)
+                cEmitMoveAssignment(&builder, &program, &bindingType,
+                    cLocalValue(&function, binding, true), payload, depth + 2)
+                cActivateLocal(&builder, &program,
+                    &function, &state, binding, depth + 2)
+            }
+        }
+        cEmitSelectSendCleanup(&builder, &program, &function,
+            &state, &selection, .Some(index), depth + 2)
+        const exits = cEmitBlock(&builder, &program,
+            &function, &state, arm.body, depth + 2)
+        if !exits {
+            cWrite(&builder, cIndent(depth + 2) + "break;\n")
+        }
+        cWrite(&builder, cIndent(depth + 1) + "}\n")
+        index += 1
+    }
+    cWrite(&builder, cIndent(depth + 1) + "default:\n")
+    cWrite(&builder, cIndent(depth + 2) +
+        "fdn_panic_cstr(\"invalid select branch\");\n")
+    cWrite(&builder, cIndent(depth + 1) + "}\n")
+    cWrite(&builder, cIndent(depth) + "}\n")
+}
+
+fn cEmitTaskFrameDefinition(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.taskFunction return
+    const frame = cTaskFrameName(&program, id)
+    const suspensions = cTaskSuspensionCount(&function)
+    cWrite(&builder, "struct " + frame + " {\n")
+    var index u64 = 0
+    while index < function.parameters.len() {
+        const local = cU64At(&function.parameters, index)
+        var localType = cLocalTypeAt(&function, local)
+        cWrite(&builder, "    " + cTypeName(&localType) + " fdn_arg_" +
+            format.U64(index) + ";\n")
+        index += 1
+    }
+    if !function.returnType.kind.Matches("Void") {
+        cWrite(&builder, "    " + cTypeName(&function.returnType) +
+            " fdn_result;\n")
+        cWrite(&builder, "    bool fdn_result_active;\n")
+    }
+    cWrite(&builder, "    bool fdn_arguments_active;\n")
+    if suspensions != 0 {
+        cWrite(&builder, "    uint32_t fdn_state;\n")
+        var local u64 = 0
+        while local < function.locals.len() {
+            var localType = cLocalTypeAt(&function, local)
+            cWrite(&builder, "    " + cTypeName(&localType) + " fdn_local_" +
+                format.U64(local) + ";\n")
+            if cTypeRequiresDrop(&program, &localType) {
+                cWrite(&builder, "    bool fdn_local_" + format.U64(local) +
+                    "_active;\n")
+            }
+            local += 1
+        }
+        var expression u64 = 0
+        while expression < function.expressions.len() {
+            const value = cExpressionAt(&function, expression)
+            if cExpressionIsBlocking($value) {
+                cWrite(&builder, "    fdn_blocking_job *" +
+                    cBlockingJobName(expression) + ";\n")
+            }
+            const callbackValue = cExpressionAt(&function, expression)
+            if cExpressionIsCallback($callbackValue) {
+                cWrite(&builder, "    fdn_reactor_operation *" +
+                    cCallbackOperationName(expression) + ";\n")
+            }
+            expression += 1
+        }
+    }
+    cWrite(&builder, "};\n\n")
+}
+
+fn cEmitTaskSupportPrototypes(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.taskFunction return
+    cWrite(&builder, "static fdn_task_poll " + cTaskPollName(&program, id) +
+        "(void *, bool);\n")
+    cWrite(&builder, "static void " + cTaskMoveResultName(&program, id) +
+        "(void *, void *);\n")
+    cWrite(&builder, "static void " + cTaskDropFrameName(&program, id) +
+        "(void *);\n")
+}
+
+fn cEmitAllTaskDeclarations(
+    &builder text.Builder,
+    &program firProgram
+) void {
+    var index u64 = 0
+    while index < program.functions.len() {
+        cEmitTaskFrameDefinition(&builder, &program, index)
+        index += 1
+    }
+    index = 0
+    var found = false
+    while index < program.functions.len() {
+        var function = cFunctionAt(&program, index)
+        if function.taskFunction {
+            found = true
+        }
+        cEmitTaskSupportPrototypes(&builder, &program, index)
+        index += 1
+    }
+    if found {
+        cWrite(&builder, "\n")
+    }
+}
+
+fn cEmitBlockingWorkDefinitions(
+    &builder text.Builder,
+    &program firProgram,
+    id u64,
+    sourcePath String
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.taskFunction return
+    var expressionID u64 = 0
+    while expressionID < function.expressions.len() {
+        const expression = cExpressionAt(&function, expressionID)
+        const firExpression { value type span } = expression
+        discard type
+        match value {
+            BlockingCall(payload): {
+                var blocking = payload
+                var target = cFunctionAt(&program, blocking.function)
+                if !target.blocking ||
+                    blocking.arguments.len() !=
+                    blocking.argumentStorages.len() ||
+                    blocking.argumentStorages.len() != target.parameters.len() {
+                    panic("blocking call has invalid argument storage")
+                }
+                const frame = cTaskFrameName(&program, id)
+                cWrite(&builder, "static void " +
+                    cBlockingWorkName(&program, id, expressionID) +
+                    "(void *fdn_raw) {\n")
+                cWrite(&builder, "    struct " + frame +
+                    " *fdn_frame = (struct " + frame + " *)fdn_raw;\n")
+                cWrite(&builder, "    struct fdn_frame fdn_frame_current;\n")
+                const traceSource = if function.sourcePath == "" {
+                    text.Copy(sourcePath)
+                } else { text.Copy(function.sourcePath) }
+                const framePackage = if function.packageName == "" {
+                    "main"
+                } else { text.Copy(function.packageName) }
+                cWrite(&builder, "    fdn_frame_enter(&fdn_frame_current, " +
+                    cStringLiteral(framePackage) + ", " +
+                    cStringLiteral(cTraceFunctionName(&function)) + ", " +
+                    cStringLiteral(traceSource) + ", " +
+                    format.U64(span.line) + ", " +
+                    format.U64(span.column) + ");\n    ")
+                match blocking.resultStorage {
+                    None: {}
+                    Some(storage): cWrite(&builder,
+                        "fdn_frame->fdn_local_" + format.U64(storage) + " = ")
+                }
+                cWrite(&builder, cFunctionName(
+                        &program, blocking.function) + "(")
+                var index u64 = 0
+                while index < blocking.argumentStorages.len() {
+                    if index != 0 {
+                        cWrite(&builder, ", ")
+                    }
+                    cWrite(&builder, "fdn_frame->fdn_local_" + format.U64(
+                            cU64At(&blocking.argumentStorages, index)))
+                    index += 1
+                }
+                cWrite(&builder, ");\n")
+                match blocking.resultStorage {
+                    None: {}
+                    Some(storage): {
+                        var storageType = cLocalTypeAt(&function, storage)
+                        if cTypeRequiresDrop(&program, &storageType) {
+                            cWrite(&builder, "    fdn_frame->fdn_local_" +
+                                format.U64(storage) + "_active = true;\n")
+                        }
+                    }
+                }
+                cWrite(&builder,
+                    "    fdn_frame_leave(&fdn_frame_current);\n}\n\n")
+            }
+            _: {}
+        }
+        expressionID += 1
+    }
+}
+
+fn cEmitCallbackStartParameters(
+    &builder text.Builder,
+    &function firFunction,
+    includeNames bool
+) void {
+    var index u64 = 0
+    while index < function.parameters.len() {
+        if index != 0 {
+            cWrite(&builder, ", ")
+        }
+        const local = cU64At(&function.parameters, index)
+        var localType = cLocalTypeAt(&function, local)
+        cWrite(&builder, cTypeName(&localType))
+        if includeNames {
+            cWrite(&builder, " fdn_arg_" + format.U64(index))
+        }
+        index += 1
+    }
+    if function.parameters.len() != 0 {
+        cWrite(&builder, ", ")
+    }
+    cWrite(&builder, "fdn_reactor_operation *")
+    if includeNames {
+        cWrite(&builder, "fdn_operation")
+    }
+}
+
+fn cEmitCallbackStartSignature(
+    &builder text.Builder,
+    &function firFunction,
+    includeNames bool
+) void {
+    const symbol = match replace function.cSymbol with .None {
+        None: panic("callback has no C symbol")
+        Some(found): found
+    }
+    cWrite(&builder, "void " + symbol + "(")
+    cEmitCallbackStartParameters(&builder, &function, includeNames)
+    cWrite(&builder, ")")
+}
+
+fn cEmitCallbackCancelSignature(
+    &builder text.Builder,
+    symbol String,
+    includeNames bool
+) void {
+    cWrite(&builder, "void " + symbol + "(fdn_reactor_operation *")
+    if includeNames {
+        cWrite(&builder, "fdn_operation")
+    }
+    cWrite(&builder, ")")
+}
+
+fn cEmitCallbackWorkDefinitions(
+    &builder text.Builder,
+    &program firProgram,
+    id u64,
+    sourcePath String
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.taskFunction return
+    var expressionID u64 = 0
+    while expressionID < function.expressions.len() {
+        const expression = cExpressionAt(&function, expressionID)
+        const firExpression { value type span } = expression
+        discard type
+        match value {
+            CallbackCall(payload): {
+                var callback = payload
+                var target = cFunctionAt(&program, callback.function)
+                const symbol = match replace target.cSymbol with .None {
+                    None: panic("callback call target has no C symbol")
+                    Some(found): found
+                }
+                if !target.callback || callback.arguments.len() !=
+                    callback.argumentStorages.len() ||
+                    callback.argumentStorages.len() != target.parameters.len() {
+                    panic("callback call has invalid argument storage")
+                }
+                const frame = cTaskFrameName(&program, id)
+                const traceSource = if function.sourcePath == "" {
+                    text.Copy(sourcePath)
+                } else { text.Copy(function.sourcePath) }
+                cWrite(&builder, "static void " +
+                    cCallbackStartName(&program, id, expressionID) +
+                    "(void *fdn_raw, fdn_reactor_operation *fdn_operation) {\n")
+                cWrite(&builder, "    struct " + frame +
+                    " *fdn_frame = (struct " + frame + " *)fdn_raw;\n")
+                cWrite(&builder, "    struct fdn_frame fdn_frame_current;\n")
+                cWrite(&builder, "    fdn_frame_enter_native(" +
+                    "&fdn_frame_current, " + cStringLiteral(symbol) + ", " +
+                    cStringLiteral(traceSource) + ", " +
+                    format.U64(span.line) + ", " +
+                    format.U64(span.column) + ");\n")
+                cWrite(&builder, "    " + symbol + "(")
+                var index u64 = 0
+                while index < callback.argumentStorages.len() {
+                    if index != 0 {
+                        cWrite(&builder, ", ")
+                    }
+                    cWrite(&builder, "fdn_frame->fdn_local_" + format.U64(
+                            cU64At(&callback.argumentStorages, index)))
+                    index += 1
+                }
+                if callback.argumentStorages.len() != 0 {
+                    cWrite(&builder, ", ")
+                }
+                cWrite(&builder, "fdn_operation);\n")
+                cWrite(&builder,
+                    "    fdn_frame_leave(&fdn_frame_current);\n}\n\n")
+                match replace target.callbackCancelSymbol with .None {
+                    None: {}
+                    Some(cancelSymbol): {
+                        cWrite(&builder, "static void " + cCallbackCancelName(
+                                &program, id, expressionID) + "(void *fdn_raw) {\n")
+                        cWrite(&builder, "    struct " + frame +
+                            " *fdn_frame = (struct " + frame +
+                            " *)fdn_raw;\n")
+                        cWrite(&builder, "    if (fdn_frame->" +
+                            cCallbackOperationName(expressionID) +
+                            " == NULL) {\n        fdn_panic_cstr(" +
+                            "\"callback cancellation has no operation\");\n    }\n")
+                        cWrite(&builder,
+                            "    struct fdn_frame fdn_frame_current;\n")
+                        cWrite(&builder, "    fdn_frame_enter_native(" +
+                            "&fdn_frame_current, " +
+                            cStringLiteral(cancelSymbol) + ", " +
+                            cStringLiteral(traceSource) + ", " +
+                            format.U64(span.line) + ", " +
+                            format.U64(span.column) + ");\n")
+                        cWrite(&builder, "    " + cancelSymbol +
+                            "(fdn_frame->" +
+                            cCallbackOperationName(expressionID) + ");\n")
+                        cWrite(&builder,
+                            "    fdn_frame_leave(&fdn_frame_current);\n}\n\n")
+                    }
+                }
+            }
+            _: {}
+        }
+        expressionID += 1
+    }
+}
+
+fn cEmitAllTaskWorkDefinitions(
+    &builder text.Builder,
+    &program firProgram,
+    sourcePath String
+) void {
+    var index u64 = 0
+    while index < program.functions.len() {
+        cEmitBlockingWorkDefinitions(
+            &builder, &program, index, sourcePath)
+        index += 1
+    }
+    index = 0
+    while index < program.functions.len() {
+        cEmitCallbackWorkDefinitions(
+            &builder, &program, index, sourcePath)
+        index += 1
+    }
+}
+
+fn cEmitTaskPoll(
+    &builder text.Builder,
+    &program firProgram,
+    id u64,
+    sourcePath String
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.taskFunction return
+    const frame = cTaskFrameName(&program, id)
+    const suspensions = cTaskSuspensionCount(&function)
+    if function.diverges || suspensions != 0 {
+        cWrite(&builder, "#if defined(_MSC_VER)\n")
+        cWrite(&builder, "#pragma warning(push)\n")
+        cWrite(&builder, "#pragma warning(disable : 4702)\n")
+        cWrite(&builder, "#endif\n")
+    }
+    cWrite(&builder, "static fdn_task_poll " + cTaskPollName(&program, id) +
+        "(void *fdn_raw, bool fdn_cancellation_requested) {\n")
+    cWrite(&builder, "    struct " + frame +
+        " *fdn_frame = (struct " + frame + " *)fdn_raw;\n")
+    if function.diverges && suspensions == 0 {
+        cWrite(&builder, "    (void)fdn_task_cancellation_enter(" +
+            "fdn_cancellation_requested);\n")
+    } else {
+        cWrite(&builder, "    bool fdn_previous_cancellation = " +
+            "fdn_task_cancellation_enter(fdn_cancellation_requested);\n")
+    }
+    if suspensions == 0 {
+        cWrite(&builder, "    fdn_frame->fdn_arguments_active = false;\n")
+        cWrite(&builder, "    ")
+        if !function.diverges && !function.returnType.kind.Matches("Void") {
+            cWrite(&builder, "fdn_frame->fdn_result = ")
+        }
+        cWrite(&builder, cFunctionName(&program, id) + "(")
+        var index u64 = 0
+        while index < function.parameters.len() {
+            if index != 0 {
+                cWrite(&builder, ", ")
+            }
+            cWrite(&builder, "fdn_frame->fdn_arg_" + format.U64(index))
+            index += 1
+        }
+        cWrite(&builder, ");\n")
+        if function.diverges {
+            cWrite(&builder, "    fdn_panic_cstr(\"unreachable task poll\");\n")
+        } else {
+            cWrite(&builder, "    fdn_task_cancellation_leave(" +
+                "fdn_previous_cancellation);\n")
+            if !function.returnType.kind.Matches("Void") {
+                cWrite(&builder, "    fdn_frame->fdn_result_active = true;\n")
+            }
+            cWrite(&builder, "    return FDN_TASK_READY;\n")
+        }
+    } else {
+        cWrite(&builder, "    struct fdn_frame fdn_frame_current;\n")
+        const traceSource = if function.sourcePath == "" {
+            text.Copy(sourcePath)
+        } else { text.Copy(function.sourcePath) }
+        const framePackage = if function.packageName == "" {
+            "main"
+        } else { text.Copy(function.packageName) }
+        cWrite(&builder, "    fdn_frame_enter(&fdn_frame_current, " +
+            cStringLiteral(framePackage) + ", " +
+            cStringLiteral(cTraceFunctionName(&function)) + ", " +
+            cStringLiteral(traceSource) + ", " +
+            format.U64(function.sourceSpan.line) + ", " +
+            format.U64(function.sourceSpan.column) + ");\n")
+        cWrite(&builder, "    switch (fdn_frame->fdn_state) {\n")
+        cWrite(&builder, "    case 0:\n")
+        var index u64 = 0
+        while index < function.parameters.len() {
+            const local = cU64At(&function.parameters, index)
+            var localType = cLocalTypeAt(&function, local)
+            cEmitMoveAssignment(&builder, &program, &localType,
+                "fdn_frame->fdn_local_" + format.U64(local),
+                "fdn_frame->fdn_arg_" + format.U64(index), 2)
+            if cTypeRequiresDrop(&program, &localType) {
+                cWrite(&builder, "        fdn_frame->fdn_local_" +
+                    format.U64(local) + "_active = true;\n")
+            }
+            index += 1
+        }
+        cWrite(&builder, "        fdn_frame->fdn_arguments_active = false;\n")
+        cWrite(&builder, "        break;\n")
+        var taskState u64 = 1
+        while taskState <= suspensions {
+            cWrite(&builder, "    case " + format.U64(taskState) + ":\n")
+            cWrite(&builder, "        goto fdn_task_state_" +
+                format.U64(taskState) + ";\n")
+            taskState += 1
+        }
+        cWrite(&builder, "    default:\n")
+        cWrite(&builder, "        fdn_panic_cstr(\"invalid task state\");\n")
+        cWrite(&builder, "    }\n")
+        var state = newCFunctionEmissionState(id, true)
+        const body = function.body
+        const exits = cEmitBlock(
+            &builder, &program, &function, &state, body, 1)
+        if !exits {
+            if function.returnType.kind.Matches("Void") {
+                cWrite(&builder, "    fdn_task_cancellation_leave(" +
+                    "fdn_previous_cancellation);\n")
+                cWrite(&builder, "    fdn_frame_leave(&fdn_frame_current);\n")
+                cWrite(&builder, "    return FDN_TASK_READY;\n")
+            } else {
+                cWrite(&builder,
+                    "    fdn_panic_cstr(\"task completed without a result\");\n")
+            }
+        }
+    }
+    cWrite(&builder, "}\n")
+    if function.diverges || suspensions != 0 {
+        cWrite(&builder, "#if defined(_MSC_VER)\n")
+        cWrite(&builder, "#pragma warning(pop)\n")
+        cWrite(&builder, "#endif\n")
+    }
+    cWrite(&builder, "\n")
+}
+
+fn cEmitTaskMoveResult(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.taskFunction return
+    const frame = cTaskFrameName(&program, id)
+    cWrite(&builder, "static void " + cTaskMoveResultName(&program, id) +
+        "(void *fdn_raw, void *fdn_raw_result) {\n")
+    cWrite(&builder, "    struct " + frame +
+        " *fdn_frame = (struct " + frame + " *)fdn_raw;\n")
+    if function.returnType.kind.Matches("Void") {
+        cWrite(&builder, "    (void)fdn_frame;\n")
+        cWrite(&builder, "    (void)fdn_raw_result;\n")
+    } else {
+        cWrite(&builder, "    if (!fdn_frame->fdn_result_active || " +
+            "fdn_raw_result == NULL) {\n")
+        cWrite(&builder,
+            "        fdn_panic_cstr(\"task result is unavailable\");\n")
+        cWrite(&builder, "    }\n")
+        var returnType = copySemanticType(&function.returnType)
+        const resultTarget = "*(" + cTypeName(&returnType) +
+            " *)fdn_raw_result"
+        cEmitMoveAssignment(&builder, &program, &returnType,
+            resultTarget,
+            "fdn_frame->fdn_result", 1)
+        cWrite(&builder, "    fdn_frame->fdn_result_active = false;\n")
+    }
+    cWrite(&builder, "}\n\n")
+}
+
+fn cEmitTaskDropFrame(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.taskFunction return
+    const frame = cTaskFrameName(&program, id)
+    const suspensions = cTaskSuspensionCount(&function)
+    cWrite(&builder, "static void " + cTaskDropFrameName(&program, id) +
+        "(void *fdn_raw) {\n")
+    cWrite(&builder, "    struct " + frame +
+        " *fdn_frame = (struct " + frame + " *)fdn_raw;\n")
+    cWrite(&builder, "    if (fdn_frame->fdn_arguments_active) {\n")
+    var index = function.parameters.len()
+    while index != 0 {
+        index -= 1
+        const local = cU64At(&function.parameters, index)
+        var localType = cLocalTypeAt(&function, local)
+        cEmitDropValue(&builder, &program, &localType,
+            "fdn_frame->fdn_arg_" + format.U64(index), 2)
+    }
+    cWrite(&builder, "    }\n")
+    if suspensions != 0 {
+        var expression u64 = 0
+        while expression < function.expressions.len() {
+            const value = cExpressionAt(&function, expression)
+            if cExpressionIsBlocking($value) {
+                cWrite(&builder, "    if (fdn_frame->" +
+                    cBlockingJobName(expression) + " != NULL) {\n")
+                cWrite(&builder, "        fdn_panic_cstr(" +
+                    "\"task frame still has blocking work\");\n")
+                cWrite(&builder, "    }\n")
+            }
+            const callbackValue = cExpressionAt(&function, expression)
+            if cExpressionIsCallback($callbackValue) {
+                cWrite(&builder, "    if (fdn_frame->" +
+                    cCallbackOperationName(expression) + " != NULL) {\n")
+                cWrite(&builder, "        fdn_panic_cstr(" +
+                    "\"task frame still has callback work\");\n")
+                cWrite(&builder, "    }\n")
+            }
+            expression += 1
+        }
+        var local = function.locals.len()
+        while local != 0 {
+            local -= 1
+            var localType = cLocalTypeAt(&function, local)
+            if cTypeRequiresDrop(&program, &localType) {
+                cWrite(&builder, "    if (fdn_frame->fdn_local_" +
+                    format.U64(local) + "_active) {\n")
+                cEmitDropValue(&builder, &program, &localType,
+                    "fdn_frame->fdn_local_" + format.U64(local), 2)
+                cWrite(&builder, "        fdn_frame->fdn_local_" +
+                    format.U64(local) + "_active = false;\n")
+                cWrite(&builder, "    }\n")
+            }
+        }
+    }
+    if !function.returnType.kind.Matches("Void") {
+        cWrite(&builder, "    if (fdn_frame->fdn_result_active) {\n")
+        cEmitDropValue(&builder, &program, &function.returnType,
+            "fdn_frame->fdn_result", 2)
+        cWrite(&builder, "    }\n")
+    }
+    cWrite(&builder, "    fdn_dealloc(fdn_frame);\n")
+    cWrite(&builder, "}\n\n")
+}
+
+fn cEmitTaskSupport(
+    &builder text.Builder,
+    &program firProgram,
+    id u64,
+    sourcePath String
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.taskFunction return
+    cEmitTaskPoll(&builder, &program, id, sourcePath)
+    cEmitTaskMoveResult(&builder, &program, id)
+    cEmitTaskDropFrame(&builder, &program, id)
+}
+
+fn cEmitAllTaskSupport(
+    &builder text.Builder,
+    &program firProgram,
+    sourcePath String
+) void {
+    var index u64 = 0
+    while index < program.functions.len() {
+        cEmitTaskSupport(&builder, &program, index, sourcePath)
+        index += 1
+    }
+}

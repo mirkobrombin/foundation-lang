@@ -440,13 +440,60 @@ fn analyzeSemanticStruct(
     &literal structExpression,
     span sourceSpan
 ) semanticType {
-    var result = resolveSemanticType(&analyzer, &source, &literal.type)
-    if !result.kind.Matches("StructValue") || result.declaration >= source.structs.len() {
+    const selectedType = findSemanticSymbol(
+        &analyzer.state.structs, literal.type.name)
+    const type = match selectedType {
+        None: {
+            var pending = collections.NewList<structFieldInitializer>()
+            while !literal.fields.IsEmpty() {
+                const initializer = match literal.fields.PopFront() {
+                    None: panic("field initializer list invariant failed")
+                    Some(initializer): initializer
+                }
+                discard analyzeSemanticExpressionWithoutExpected(
+                    &analyzer, &source, initializer.value, .Consume)
+                pending.PushFront($initializer)
+            }
+            while !pending.IsEmpty() {
+                const initializer = match pending.PopFront() {
+                    None: panic("field initializer restore invariant failed")
+                    Some(initializer): initializer
+                }
+                literal.fields.PushFront($initializer)
+            }
+            analyzer.diagnostics.reportError(
+                "FDN2024", "unknown struct " + literal.type.name, span)
+            return invalidSemanticType()
+        }
+        Some(value): value
+    }
+    if type >= source.structs.len() {
         analyzer.diagnostics.reportError(
             "FDN2024", "unknown struct " + literal.type.name, span)
         return invalidSemanticType()
     }
-    const type = result.declaration
+    var typeParameters = semanticStructTypeParameters(&source, type)
+    const typeParameterCount = listLength(&typeParameters)
+    var inferred = newArena<Option<semanticType>>()
+    var parameterIndex u64 = 0
+    while parameterIndex < typeParameterCount {
+        var missing Option<semanticType> = .None
+        discard inferred.add($missing)
+        parameterIndex += 1
+    }
+    var result = declaredSemanticType(.StructValue, type)
+    if listLength(&literal.type.arguments) != 0 || typeParameterCount == 0 {
+        result = resolveSemanticType(&analyzer, &source, &literal.type)
+        parameterIndex = 0
+        while parameterIndex < result.arguments.len() &&
+            parameterIndex < inferred.len() {
+            var argument = semanticTypeArgument(&result, parameterIndex)
+            var selected Option<semanticType> = .Some(argument)
+            setArenaValue<Option<semanticType>>(
+                &inferred, parameterIndex, $selected)
+            parameterIndex += 1
+        }
+    }
     const fieldCount = semanticStructFieldCount(&analyzer, type)
     var initialized = newArena<bool>()
     var field u64 = 0
@@ -455,6 +502,7 @@ fn analyzeSemanticStruct(
         field += 1
     }
     var targetFields = newArena<u64>()
+    var valueTypes = newArena<semanticType>()
     var pending = collections.NewList<structFieldInitializer>()
     while !literal.fields.IsEmpty() {
         const initializer = match literal.fields.PopFront() {
@@ -479,24 +527,73 @@ fn analyzeSemanticStruct(
                 }
                 if !duplicate {
                     setSemanticBool(&initialized, field, true)
-                    var expected = semanticStructFieldType(
-                        &analyzer, type, field, &result.arguments)
+                    var knownArguments = newArena<semanticType>()
+                    var complete = true
+                    parameterIndex = 0
+                    while parameterIndex < inferred.len() {
+                        const selected = match inferred.take(parameterIndex) {
+                            None: panic("inferred type slot is empty")
+                            Some(value): value
+                        }
+                        match selected {
+                            None: {
+                                complete = false
+                                discard knownArguments.add(invalidSemanticType())
+                                var missing Option<semanticType> = .None
+                                inferred.restore(parameterIndex, $missing)
+                            }
+                            Some(value): {
+                                var original = value
+                                discard knownArguments.add(
+                                    copySemanticType(&original))
+                                var restored Option<semanticType> = .Some(original)
+                                inferred.restore(parameterIndex, $restored)
+                            }
+                        }
+                        parameterIndex += 1
+                    }
+                    var expected = absentSemanticType()
+                    if complete {
+                        var fieldType = semanticStructFieldType(
+                            &analyzer, type, field, &knownArguments)
+                        expected = expectedSemanticType(&fieldType)
+                    }
                     var actual = analyzeSemanticExpression(
                         &analyzer,
                         &source,
                         initializer.value,
-                        expectedSemanticType(&expected),
+                        $expected,
                         .Consume
                     )
-                    requireSameSemanticType(
+                    var patternArguments = newArena<semanticType>()
+                    var pattern = semanticStructFieldType(
+                        &analyzer, type, field, &patternArguments)
+                    inferSemanticType(
                         &analyzer,
                         &source,
-                        &expected,
+                        &pattern,
                         &actual,
+                        &inferred,
                         initializer.span,
                         "field initializer"
                     )
+                    if semanticBoolAt(
+                        &analyzer.model.expressionBorrowedClosures,
+                        initializer.value
+                    ) {
+                        analyzer.diagnostics.reportError(
+                            "FDN2127",
+                            "borrowed closure cannot be stored in a struct",
+                            initializer.span
+                        )
+                        setSemanticBool(
+                            &analyzer.model.expressionBorrowedClosures,
+                            expression,
+                            true
+                        )
+                    }
                     discard targetFields.add(field)
+                    discard valueTypes.add($actual)
                     const info = semanticFieldInfoAt(&source, type, field)
                     if semanticStructPackage(&source, type) !=
                         currentSemanticPackage(&analyzer, &source) && !info.exported {
@@ -517,6 +614,39 @@ fn analyzeSemanticStruct(
             Some(initializer): initializer
         }
         literal.fields.PushFront($initializer)
+    }
+    var arguments = completeSemanticInference(
+        &analyzer,
+        &inferred,
+        &typeParameters,
+        span,
+        semanticStructName(&source, type)
+    )
+    const previousArguments = replace result.arguments with arguments
+    discard previousArguments
+    var valueIndex u64 = 0
+    while valueIndex < targetFields.len() && valueIndex < valueTypes.len() {
+        const targetField = match targetFields.take(valueIndex) {
+            None: panic("struct target field slot is empty")
+            Some(value): value
+        }
+        var actual = match valueTypes.take(valueIndex) {
+            None: panic("struct initializer type slot is empty")
+            Some(value): value
+        }
+        var expected = semanticStructFieldType(
+            &analyzer, type, targetField, &result.arguments)
+        requireSameSemanticType(
+            &analyzer,
+            &source,
+            &expected,
+            &actual,
+            span,
+            "field initializer"
+        )
+        targetFields.restore(valueIndex, targetField)
+        valueTypes.restore(valueIndex, $actual)
+        valueIndex += 1
     }
     var defaults = newArena<defaultFieldTarget>()
     field = 0
@@ -544,6 +674,20 @@ fn analyzeSemanticStruct(
         defaults = defaults
     }
     )
+    result
+}
+
+fn semanticStructTypeParameters(
+    &source program,
+    type u64
+) own collections.List<String> {
+    if type >= source.structs.len() return collections.NewList<String>()
+    var declaration = match source.structs.take(type) {
+        None: panic("struct slot is empty")
+        Some(declaration): declaration
+    }
+    const result = copyStringList(&declaration.typeParameters)
+    source.structs.restore(type, $declaration)
     result
 }
 
@@ -607,7 +751,13 @@ fn analyzeSemanticMember(
             }
         }
         var owner = text.Copy(probe.name)
-        if !text.Contains(owner, ".") {
+        var ownerFound = semanticOptionIDPresent(findSemanticSymbol(
+                &analyzer.state.structs, owner))
+        if !ownerFound {
+            ownerFound = semanticOptionIDPresent(findSemanticSymbol(
+                    &analyzer.state.enums, owner))
+        }
+        if !ownerFound && !text.Contains(owner, ".") {
             const packageName = currentSemanticPackage(&analyzer, &source)
             if !text.IsEmpty(packageName) {
                 owner = packageName + "." + owner
@@ -617,7 +767,7 @@ fn analyzeSemanticMember(
         match findSemanticSymbol(&analyzer.state.functions, associated) {
             None: {}
             Some(function): {
-                var ownerFound = semanticOptionIDPresent(findSemanticSymbol(
+                ownerFound = semanticOptionIDPresent(findSemanticSymbol(
                         &analyzer.state.structs, owner))
                 if !ownerFound {
                     ownerFound = semanticOptionIDPresent(findSemanticSymbol(
@@ -658,7 +808,9 @@ fn analyzeSemanticMember(
             }
         }
         var enumName = text.Copy(probe.name)
-        if !text.Contains(enumName, ".") {
+        var enumFound = semanticOptionIDPresent(findSemanticSymbol(
+                &analyzer.state.enums, enumName))
+        if !enumFound && !text.Contains(enumName, ".") {
             const packageName = currentSemanticPackage(&analyzer, &source)
             if !text.IsEmpty(packageName) {
                 enumName = packageName + "." + enumName
@@ -1179,6 +1331,11 @@ fn analyzeSemanticMethod(
         }
     }
     source.functions.restore(function, $declaration)
+    const previousTransient = analyzer.state.transientBorrowsAllowed
+    const loanCount = analyzer.state.loanStates.len()
+    var previousLoans = semanticLoanPrefix(
+        &analyzer.state.loanStates, loanCount)
+    analyzer.state.transientBorrowsAllowed = true
     var signature = semanticFunctionSignatureAt(&analyzer, function)
     var arguments = semanticCallArgumentIDs(&member.arguments)
     var argumentNames = semanticCallArgumentNames(&member.argumentNames)
@@ -1212,7 +1369,7 @@ fn analyzeSemanticMethod(
                 None: panic("method parameter slot is empty")
                 Some(pattern): pattern
             }
-            pattern = substituteSemanticType(&pattern, &base.arguments)
+            pattern = substituteCheckedSemanticType(&analyzer, &source, &pattern, &base.arguments)
             const info = semanticFunctionParameterInfoAt(&source, function, parameter)
             mode = info.mode
             pattern = specializeSemanticReadParameter(
@@ -1249,6 +1406,8 @@ fn analyzeSemanticMethod(
         discard parameters.add(mapped)
         index += 1
     }
+    analyzer.state.transientBorrowsAllowed = previousTransient
+    restoreSemanticLoans(&analyzer.state.loanStates, &previousLoans)
     var target = newCallTarget(.Method)
     target.function = function
     target.typeArguments = copySemanticTypeArena(&base.arguments)
@@ -1261,7 +1420,7 @@ fn analyzeSemanticMethod(
             None: panic("method receiver slot is empty")
             Some(receiverType): receiverType
         }
-        target.receiverType = substituteSemanticType(
+        target.receiverType = substituteCheckedSemanticType(&analyzer, &source,
             &receiverType, &base.arguments)
         signature.parameters.restore(0, $receiverType)
     }
@@ -1278,7 +1437,7 @@ fn analyzeSemanticMethod(
         span
     )
     setSemanticCallTarget(&analyzer, expression, $target)
-    substituteSemanticType(&signature.returnType, &base.arguments)
+    substituteCheckedSemanticType(&analyzer, &source, &signature.returnType, &base.arguments)
 }
 
 fn semanticMemberBaseEditable(

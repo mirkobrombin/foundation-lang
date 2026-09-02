@@ -646,6 +646,41 @@ fn semanticFunctionValueType(
             span
         )
     }
+    if expected.present && expected.type.kind.Matches("Function") &&
+        expected.type.arguments.len() == signature.parameters.len() + 1 {
+        var expectedReturn = semanticTypeArgument(&expected.type, 0)
+        inferSemanticFunctionValueType(
+            &analyzer,
+            &source,
+            &signature.returnType,
+            &expectedReturn,
+            &inferred,
+            span,
+            "function value return"
+        )
+        index = 0
+        while index < signature.parameters.len() {
+            var parameterType = match signature.parameters.take(index) {
+                None: panic("signature parameter slot is empty")
+                Some(type): type
+            }
+            const info = semanticFunctionParameterInfoAt(&source, function, index)
+            var pattern = semanticFunctionValueParameterType(
+                &analyzer, &source, copySemanticType(&parameterType), info.mode)
+            var expectedParameter = semanticTypeArgument(&expected.type, index + 1)
+            inferSemanticFunctionValueType(
+                &analyzer,
+                &source,
+                &pattern,
+                &expectedParameter,
+                &inferred,
+                span,
+                "function value parameter"
+            )
+            signature.parameters.restore(index, $parameterType)
+            index += 1
+        }
+    }
     var parameterNames = semanticFunctionTypeParameters(&source, function)
     var typeArguments = completeSemanticInference(
         &analyzer,
@@ -659,14 +694,14 @@ fn semanticFunctionValueType(
     verifySemanticContractTypeArguments(
         &analyzer, &source, function, &typeArguments, span)
     var parts = newArena<semanticType>()
-    discard parts.add(substituteSemanticType(&signature.returnType, &typeArguments))
+    discard parts.add(substituteCheckedSemanticType(&analyzer, &source, &signature.returnType, &typeArguments))
     index = 0
     while index < signature.parameters.len() {
         var parameterType = match signature.parameters.take(index) {
             None: panic("signature parameter slot is empty")
             Some(type): type
         }
-        var resolved = substituteSemanticType(&parameterType, &typeArguments)
+        var resolved = substituteCheckedSemanticType(&analyzer, &source, &parameterType, &typeArguments)
         const info = semanticFunctionParameterInfoAt(&source, function, index)
         resolved = semanticFunctionValueParameterType(&analyzer, &source, $resolved, info.mode)
         discard parts.add($resolved)
@@ -712,12 +747,14 @@ fn semanticFunctionValueParameterType(
     mode parameterMode
 ) semanticType {
     var value = type
-    if mode.Matches("Read") {
-        if isCopySemanticParameterType(&analyzer, &source, &value) return value
-        if value.kind.Matches("View") && value.arguments.len() == 1 return value
-        return unarySemanticType(.View, $value)
+    if !mode.Matches("Read") return value
+    if value.kind.Matches("View") && value.arguments.len() == 1 {
+        value = semanticTypeArgument(&value, 0)
     }
-    value
+    if isCopySemanticParameterType(&analyzer, &source, &value) return value
+    var borrowed = unarySemanticType(.View, $value)
+    borrowed.declaration = 1
+    borrowed
 }
 
 fn semanticPlaceNameLocal(
@@ -751,9 +788,11 @@ fn semanticPlaceRootLocal(
             expressionValue.Name(payload)
         }
         Member(payload): {
-            match payload.base {
-                None: {}
-                Some(base): { next = .Some(base) }
+            if !payload.invoked {
+                match payload.base {
+                    None: {}
+                    Some(base): { next = .Some(base) }
+                }
             }
             expressionValue.Member(payload)
         }
@@ -819,11 +858,13 @@ fn isSemanticPlaceExpression(
             expressionValue.Name(payload)
         }
         Member(payload): {
-            match payload.base {
-                None: {}
-                Some(base): {
-                    result = isSemanticPlaceExpression(
-                        &analyzer, &source, base)
+            if !payload.invoked {
+                match payload.base {
+                    None: {}
+                    Some(base): {
+                        result = isSemanticPlaceExpression(
+                            &analyzer, &source, base)
+                    }
                 }
             }
             expressionValue.Member(payload)
@@ -1070,6 +1111,21 @@ fn analyzeSemanticExpression(
     source.expressions.restore(expression, $expressionNode {
         value = restored span = span
     })
+    if expected.present {
+        match semanticContractConversion(
+            &analyzer, &source, &expected.type, &type) {
+            None: {}
+            Some(conversion): {
+                var value Option<contractConversion> = .Some(conversion)
+                setArenaValue<Option<contractConversion>>(
+                    &analyzer.model.expressionContractConversions,
+                    expression,
+                    $value
+                )
+                type = copySemanticType(&expected.type)
+            }
+        }
+    }
     setSemanticExpressionType(&analyzer, expression, &type)
     type
 }

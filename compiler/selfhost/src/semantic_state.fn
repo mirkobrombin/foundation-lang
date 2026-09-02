@@ -90,10 +90,14 @@ methods loanState {
 
 struct semanticAnalyzerState {
     structs own arena<semanticSymbol>
+    structTypeParameterCounts own arena<u64>
     enums own arena<semanticSymbol>
+    enumTypeParameterCounts own arena<u64>
     contracts own arena<semanticSymbol>
+    contractTypeParameterCounts own arena<u64>
     attributes own arena<semanticSymbol>
     functions own arena<semanticSymbol>
+    dropOwners own arena<String>
     methodList own arena<semanticMethodSymbol>
     typeParameters own arena<semanticSymbol>
     currentTypeParameterNames own arena<String>
@@ -140,10 +144,14 @@ fn newSemanticAnalyzerState() own semanticAnalyzerState {
     var taskWaitRoot Option<u64> = .None
     own semanticAnalyzerState {
         structs = newArena<semanticSymbol>()
+        structTypeParameterCounts = newArena<u64>()
         enums = newArena<semanticSymbol>()
+        enumTypeParameterCounts = newArena<u64>()
         contracts = newArena<semanticSymbol>()
+        contractTypeParameterCounts = newArena<u64>()
         attributes = newArena<semanticSymbol>()
         functions = newArena<semanticSymbol>()
+        dropOwners = newArena<String>()
         methodList = newArena<semanticMethodSymbol>()
         typeParameters = newArena<semanticSymbol>()
         currentTypeParameterNames = newArena<String>()

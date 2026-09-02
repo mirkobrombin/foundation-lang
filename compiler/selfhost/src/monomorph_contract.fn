@@ -1,0 +1,458 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+struct monomorphImplementationMatch {
+    contractType semanticType
+    delegateID Option<u64>
+    ambiguous bool
+}
+
+struct monomorphPendingImplementation {
+    contractType semanticType
+    delegateID Option<u64>
+}
+
+struct monomorphStaticContractTarget {
+    function u64
+    typeArguments own arena<semanticType>
+    contractDefault bool
+    defaultContract semanticType
+    delegatePath own arena<u64>
+}
+
+struct monomorphDefaultReceiver {
+    concrete semanticType
+    contractType semanticType
+}
+
+fn specializeMonomorphReceiverType(
+    &value semanticType,
+    &receiver monomorphDefaultReceiver
+) semanticType {
+    if sameSemanticType(&value, &receiver.contractType) {
+        return copySemanticType(&receiver.concrete)
+    }
+    var result = declaredSemanticType(value.kind, value.declaration)
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = match value.arguments.take(index) {
+            None: panic("receiver type argument slot is empty")
+            Some(found): found
+        }
+        discard result.arguments.add(specializeMonomorphReceiverType(
+                &argument, &receiver))
+        value.arguments.restore(index, $argument)
+        index += 1
+    }
+    result
+}
+
+fn monomorphExpressionRootLocal(
+    &function firFunction,
+    expression u64
+) Option<u64> {
+    if expression >= function.expressions.len() return .None
+    const selected = match function.expressions.take(expression) {
+        None: panic("FIR expression slot is empty")
+        Some(found): found
+    }
+    const firExpressionCopy { original value as copy } = copyFirExpression($selected)
+    function.expressions.restore(expression, $original)
+    const firExpression { value type span } = copy
+    discard type
+    discard span
+    match value {
+        Local(payload): .Some(payload.local)
+        Read(payload): .Some(payload.local)
+        Ownership(payload): monomorphExpressionRootLocal(
+            &function, payload.operand)
+        _: .None
+    }
+}
+
+fn monomorphExpressionContractOperand(
+    &function firFunction,
+    expression u64
+) Option<u64> {
+    if expression >= function.expressions.len() return .None
+    const selected = match function.expressions.take(expression) {
+        None: panic("FIR expression slot is empty")
+        Some(found): found
+    }
+    const firExpressionCopy { original value as copy } = copyFirExpression($selected)
+    function.expressions.restore(expression, $original)
+    const firExpression { value type span } = copy
+    discard type
+    discard span
+    match value {
+        ContractValue(payload): .Some(payload.value)
+        _: .None
+    }
+}
+
+fn monomorphExpressionImplicitRead(
+    &function firFunction,
+    expression u64
+) Option<u64> {
+    if expression >= function.expressions.len() return .None
+    const selected = match function.expressions.take(expression) {
+        None: panic("FIR expression slot is empty")
+        Some(found): found
+    }
+    const firExpressionCopy { original value as copy } = copyFirExpression($selected)
+    function.expressions.restore(expression, $original)
+    const firExpression { value type span } = copy
+    discard type
+    discard span
+    match value {
+        Ownership(payload): if payload.implicitRead {
+            .Some(payload.operand)
+        } else {
+            .None
+        }
+        _: .None
+    }
+}
+
+fn monomorphReplaceReadWithLocal(
+    &function firFunction,
+    expression u64
+) void {
+    if expression >= function.expressions.len() return
+    const inspected = match function.expressions.take(expression) {
+        None: panic("FIR expression slot is empty")
+        Some(found): found
+    }
+    const firExpressionCopy { original value as snapshot } =
+        copyFirExpression($inspected)
+    function.expressions.restore(expression, $original)
+    const firExpression { value as inspectedValue type span } = snapshot
+    discard type
+    discard span
+    const local = match inspectedValue {
+        Read(payload): payload.local
+        _: { return }
+    }
+    var selected = match function.expressions.take(expression) {
+        None: panic("FIR expression slot is empty")
+        Some(found): found
+    }
+    discard replace selected.value with .Integer(firIntegerExpression {
+        magnitude = 0 negative = false
+    })
+    selected.value = .Local(firLocalExpression { local = local })
+    function.expressions.restore(expression, $selected)
+}
+
+fn monomorphOptionalIDEqual(
+    left Option<u64>,
+    right Option<u64>
+) bool {
+    match left {
+        None: match right {
+            None: true
+            Some(value): { discard value false }
+        }
+        Some(leftValue): match right {
+            None: false
+            Some(rightValue): leftValue == rightValue
+        }
+    }
+}
+
+fn monomorphOptionalIDCopy(value Option<u64>) Option<u64> {
+    match value {
+        None: .None
+        Some(found): .Some(found)
+    }
+}
+
+fn implementedMonomorphContract(
+    &source firProgram,
+    &concrete semanticType,
+    contractID u64
+) Option<monomorphImplementationMatch> {
+    if !concrete.kind.Matches("StructValue") ||
+        concrete.declaration >= source.structs.len() {
+        return .None
+    }
+    var pending = newArena<monomorphPendingImplementation>()
+    var declaration = match source.structs.take(concrete.declaration) {
+        None: panic("source struct slot is empty")
+        Some(found): found
+    }
+    var index u64 = 0
+    while index < declaration.implementations.len() {
+        var implementation = match declaration.implementations.take(index) {
+            None: panic("source implementation slot is empty")
+            Some(found): found
+        }
+        var delegateID Option<u64> = .None
+        if index < declaration.implementationDelegates.len() {
+            const selected = match declaration.implementationDelegates.take(index) {
+                None: panic("source implementation delegate slot is empty")
+                Some(found): found
+            }
+            delegateID = monomorphOptionalIDCopy(selected)
+            declaration.implementationDelegates.restore(index, $selected)
+        }
+        if implementation.kind.Matches("ContractValue") {
+            discard pending.add(monomorphPendingImplementation {
+                contractType = substituteSemanticType(
+                    &implementation, &concrete.arguments)
+                delegateID = delegateID
+            })
+        }
+        declaration.implementations.restore(index, $implementation)
+        index += 1
+    }
+    source.structs.restore(concrete.declaration, $declaration)
+    var visited = newArena<String>()
+    var result Option<monomorphImplementationMatch> = .None
+    while pending.len() != 0 {
+        const last = pending.len() - 1
+        var current = match pending.take(last) {
+            None: panic("pending implementation slot is empty")
+            Some(found): found
+        }
+        pending.truncate(last)
+        const key = semanticTypeKey(&current.contractType) + ":" +
+            match current.delegateID {
+            None: "local"
+            Some(value): format.U64(value)
+        }
+        if arenaContainsString(&visited, key) continue
+        discard visited.add(text.Copy(key))
+        if current.contractType.declaration == contractID {
+            match result {
+                None: {
+                    result = .Some(monomorphImplementationMatch {
+                        contractType = copySemanticType(&current.contractType)
+                        delegateID = monomorphOptionalIDCopy(current.delegateID)
+                        ambiguous = false
+                    })
+                }
+                Some(found): {
+                    var matchValue = found
+                    if !sameSemanticType(
+                        &matchValue.contractType, &current.contractType) ||
+                        !monomorphOptionalIDEqual(
+                        matchValue.delegateID, current.delegateID) {
+                        matchValue.ambiguous = true
+                    }
+                    result = .Some(matchValue)
+                }
+            }
+            continue
+        }
+        if current.contractType.declaration >= source.contracts.len() continue
+        var parentContract = match source.contracts.take(
+            current.contractType.declaration) {
+            None: panic("source contract slot is empty")
+            Some(found): found
+        }
+        var parentIndex u64 = 0
+        while parentIndex < parentContract.parents.len() {
+            var parent = match parentContract.parents.take(parentIndex) {
+                None: panic("source contract parent slot is empty")
+                Some(found): found
+            }
+            discard pending.add(monomorphPendingImplementation {
+                contractType = substituteSemanticType(
+                    &parent, &current.contractType.arguments)
+                delegateID = monomorphOptionalIDCopy(current.delegateID)
+            })
+            parentContract.parents.restore(parentIndex, $parent)
+            parentIndex += 1
+        }
+        source.contracts.restore(
+            current.contractType.declaration, $parentContract)
+    }
+    result
+}
+
+fn findMonomorphConcreteMethod(
+    &source firProgram,
+    &concrete semanticType,
+    methodName String
+) Option<u64> {
+    if !concrete.kind.Matches("StructValue") ||
+        concrete.declaration >= source.structs.len() {
+        return .None
+    }
+    var declaration = match source.structs.take(concrete.declaration) {
+        None: panic("source struct slot is empty")
+        Some(found): found
+    }
+    const name = declaration.name + "." + methodName
+    source.structs.restore(concrete.declaration, $declaration)
+    var index u64 = 0
+    while index < source.functions.len() {
+        var function = match source.functions.take(index) {
+            None: panic("source function slot is empty")
+            Some(found): found
+        }
+        const found = function.method && function.name == name &&
+            function.typeParameterCount == concrete.arguments.len()
+        source.functions.restore(index, $function)
+        if found return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn monomorphPrependDelegate(
+    &path arena<u64>,
+    field u64
+) own arena<u64> {
+    var result = newArena<u64>()
+    discard result.add(field)
+    var index u64 = 0
+    while index < path.len() {
+        const value = match path.take(index) {
+            None: panic("delegate path slot is empty")
+            Some(found): found
+        }
+        discard result.add(value)
+        path.restore(index, value)
+        index += 1
+    }
+    result
+}
+
+fn monomorphStaticContractTarget(
+    &source firProgram,
+    &concrete semanticType,
+    &contractTypeValue semanticType,
+    method u64,
+    &active arena<String>
+) Option<monomorphStaticContractTarget> {
+    if !concrete.kind.Matches("StructValue") ||
+        concrete.declaration >= source.structs.len() ||
+        !contractTypeValue.kind.Matches("ContractValue") ||
+        contractTypeValue.declaration >= source.contracts.len() {
+        return .None
+    }
+    var contractDeclaration = match source.contracts.take(
+        contractTypeValue.declaration) {
+        None: panic("source contract slot is empty")
+        Some(found): found
+    }
+    if method >= contractDeclaration.methodList.len() {
+        source.contracts.restore(
+            contractTypeValue.declaration, $contractDeclaration)
+        return .None
+    }
+    var required = match contractDeclaration.methodList.take(method) {
+        None: panic("source contract method slot is empty")
+        Some(found): found
+    }
+    const methodName = text.Copy(required.name)
+    const defaultFunction = monomorphOptionalIDCopy(required.defaultFunction)
+    const originContract = required.originContract
+    var originArguments = copySemanticTypeArena(&required.originArguments)
+    contractDeclaration.methodList.restore(method, $required)
+    source.contracts.restore(
+        contractTypeValue.declaration, $contractDeclaration)
+    match findMonomorphConcreteMethod(&source, &concrete, methodName) {
+        None: {}
+        Some(function): {
+            return .Some(monomorphStaticContractTarget {
+                function = function
+                typeArguments = copySemanticTypeArena(&concrete.arguments)
+                contractDefault = false
+                defaultContract = invalidSemanticType()
+                delegatePath = newArena<u64>()
+            })
+        }
+    }
+    const key = semanticTypeKey(&concrete) + ":" +
+        semanticTypeKey(&contractTypeValue) + ":" + format.U64(method)
+    if arenaContainsString(&active, key) return .None
+    discard active.add(text.Copy(key))
+    match implementedMonomorphContract(
+        &source, &concrete, contractTypeValue.declaration) {
+        None: {}
+        Some(found): {
+            var implementation = found
+            var delegatePresent = false
+            var delegateField u64 = 0
+            match implementation.delegateID {
+                None: {}
+                Some(value): {
+                    delegatePresent = true
+                    delegateField = value
+                }
+            }
+            if !implementation.ambiguous && delegatePresent &&
+                sameSemanticType(
+                &implementation.contractType, &contractTypeValue) {
+                var structDeclaration = match source.structs.take(
+                    concrete.declaration) {
+                    None: panic("source struct slot is empty")
+                    Some(value): value
+                }
+                if delegateField < structDeclaration.fields.len() {
+                    var field = match structDeclaration.fields.take(delegateField) {
+                        None: panic("source delegate field slot is empty")
+                        Some(value): value
+                    }
+                    var delegated = substituteSemanticType(
+                        &field.type, &concrete.arguments)
+                    structDeclaration.fields.restore(delegateField, $field)
+                    source.structs.restore(
+                        concrete.declaration, $structDeclaration)
+                    match monomorphStaticContractTarget(
+                        &source,
+                        &delegated,
+                        &contractTypeValue,
+                        method,
+                        &active
+                    ) {
+                        None: {}
+                        Some(value): {
+                            var target = value
+                            if !target.contractDefault {
+                                target.delegatePath = monomorphPrependDelegate(
+                                    &target.delegatePath, delegateField)
+                            }
+                            active.truncate(active.len() - 1)
+                            return .Some(target)
+                        }
+                    }
+                } else {
+                    source.structs.restore(
+                        concrete.declaration, $structDeclaration)
+                }
+            }
+        }
+    }
+    active.truncate(active.len() - 1)
+    match defaultFunction {
+        None: .None
+        Some(function): {
+            var typeArguments = newArena<semanticType>()
+            var index u64 = 0
+            while index < originArguments.len() {
+                var argument = match originArguments.take(index) {
+                    None: panic("contract origin argument slot is empty")
+                    Some(found): found
+                }
+                discard typeArguments.add(substituteSemanticType(
+                        &argument, &contractTypeValue.arguments))
+                originArguments.restore(index, $argument)
+                index += 1
+            }
+            .Some(monomorphStaticContractTarget {
+                function = function
+                typeArguments = copySemanticTypeArena(&typeArguments)
+                contractDefault = true
+                defaultContract = semanticDirectType(
+                    .ContractValue, originContract, $typeArguments)
+                delegatePath = newArena<u64>()
+            })
+        }
+    }
+}

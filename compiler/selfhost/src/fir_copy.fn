@@ -1,0 +1,1096 @@
+package foundation.compiler
+
+import std.text
+
+fn copyFirU64Option(value Option<u64>) Option<u64> {
+    match value {
+        None: .None
+        Some(found): .Some(found)
+    }
+}
+
+fn copyFirStringOption(value Option<String>) Option<String> {
+    match value {
+        None: .None
+        Some(found): .Some(text.Copy(found))
+    }
+}
+
+fn copyFirU64Arena(&source arena<u64>) own arena<u64> {
+    var result = newArena<u64>()
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("integer slot is empty")
+            Some(value): value
+        }
+        discard result.add(value)
+        source.restore(index, value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirBoolArena(&source arena<bool>) own arena<bool> {
+    var result = newArena<bool>()
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("boolean slot is empty")
+            Some(value): value
+        }
+        discard result.add(value)
+        source.restore(index, value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirStringArena(&source arena<String>) own arena<String> {
+    var result = newArena<String>()
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("string slot is empty")
+            Some(value): value
+        }
+        discard result.add(text.Copy(value))
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirOptionalU64Arena(
+    &source arena<Option<u64>>
+) own arena<Option<u64>> {
+    var result = newArena<Option<u64>>()
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("optional integer slot is empty")
+            Some(value): value
+        }
+        discard result.add(copyFirU64Option(value))
+        source.restore(index, value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirOptionalSemanticTypeArena(
+    &source arena<Option<semanticType>>
+) own arena<Option<semanticType>> {
+    var result = newArena<Option<semanticType>>()
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("optional semantic type slot is empty")
+            Some(value): value
+        }
+        match value {
+            None: {
+                discard result.add(.None)
+                source.restore(index, .None)
+            }
+            Some(found): {
+                var original = found
+                discard result.add(.Some(copySemanticType(&original)))
+                source.restore(index, .Some(original))
+            }
+        }
+        index += 1
+    }
+    result
+}
+
+fn copyFirCaptureArena(
+    &source arena<firClosureCapture>
+) own arena<firClosureCapture> {
+    var result = newArena<firClosureCapture>()
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("closure capture slot is empty")
+            Some(value): value
+        }
+        discard result.add(firClosureCapture {
+            local = value.local mode = value.mode
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirContractMethodTarget(
+    &source firContractMethodTarget
+) firContractMethodTarget {
+    firContractMethodTarget {
+        function = source.function
+        typeArguments = copySemanticTypeArena(&source.typeArguments)
+        contractDefault = source.contractDefault
+        defaultContract = copySemanticType(&source.defaultContract)
+        delegatePath = copyFirU64Arena(&source.delegatePath)
+    }
+}
+
+fn copyFirContractMethodTargetArena(
+    &source arena<firContractMethodTarget>
+) own arena<firContractMethodTarget> {
+    var result = newArena<firContractMethodTarget>()
+    var index u64 = 0
+    while index < source.len() {
+        var value = match source.take(index) {
+            None: panic("contract method target slot is empty")
+            Some(value): value
+        }
+        discard result.add(copyFirContractMethodTarget(&value))
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirStructFieldValueArena(
+    &source arena<firStructFieldValue>
+) own arena<firStructFieldValue> {
+    var result = newArena<firStructFieldValue>()
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("struct field value slot is empty")
+            Some(value): value
+        }
+        discard result.add(firStructFieldValue {
+            field = value.field value = value.value
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirMatchArm(&source firMatchArm) firMatchArm {
+    firMatchArm {
+        wildcard = source.wildcard
+        variant = source.variant
+        binding = copyFirU64Option(source.binding)
+        guardBinding = copyFirU64Option(source.guardBinding)
+        pattern = copyFirU64Option(source.pattern)
+        guard = copyFirU64Option(source.guard)
+        block = source.block
+        expression = copyFirU64Option(source.expression)
+        drops = copyFirU64Arena(&source.drops)
+    }
+}
+
+fn copyFirMatchArmArena(
+    &source arena<firMatchArm>
+) own arena<firMatchArm> {
+    var result = newArena<firMatchArm>()
+    var index u64 = 0
+    while index < source.len() {
+        var value = match source.take(index) {
+            None: panic("match arm slot is empty")
+            Some(value): value
+        }
+        discard result.add(copyFirMatchArm(&value))
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+struct firExpressionValueCopy {
+    original firExpressionValue
+    value firExpressionValue
+}
+
+struct firExpressionCopy {
+    original firExpression
+    value firExpression
+}
+
+fn copyFirExpressionValue(
+    $source firExpressionValue
+) firExpressionValueCopy {
+    match source {
+        Integer(value): firExpressionValueCopy {
+            original = .Integer(value)
+            value = .Integer(firIntegerExpression {
+                magnitude = value.magnitude negative = value.negative
+            })
+        }
+        Floating(value): firExpressionValueCopy {
+            original = .Floating(firFloatingExpression {
+                text = text.Copy(value.text)
+            })
+            value = .Floating(firFloatingExpression {
+                text = text.Copy(value.text)
+            })
+        }
+        Boolean(value): firExpressionValueCopy {
+            original = .Boolean(value)
+            value = .Boolean(firBooleanExpression { value = value.value })
+        }
+        StringValue(value): firExpressionValueCopy {
+            original = .StringValue(firStringExpression {
+                value = text.Copy(value.value)
+            })
+            value = .StringValue(firStringExpression {
+                value = text.Copy(value.value)
+            })
+        }
+        Array(value): {
+            var original = value
+            firExpressionValueCopy {
+                original = .Array(firArrayExpression {
+                    elements = copyFirU64Arena(&original.elements)
+                })
+                value = .Array(original)
+            }
+        }
+        Local(value): firExpressionValueCopy {
+            original = .Local(value)
+            value = .Local(firLocalExpression { local = value.local })
+        }
+        Read(value): firExpressionValueCopy {
+            original = .Read(value)
+            value = .Read(firReadExpression { local = value.local })
+        }
+        Move(value): firExpressionValueCopy {
+            original = .Move(value)
+            value = .Move(firMoveExpression { local = value.local })
+        }
+        FunctionValue(value): {
+            var original = value
+            firExpressionValueCopy {
+                original = .FunctionValue(firFunctionValueExpression {
+                    function = original.function
+                    typeArguments = copySemanticTypeArena(&original.typeArguments)
+                })
+                value = .FunctionValue(original)
+            }
+        }
+        Closure(value): {
+            var original = value
+            firExpressionValueCopy {
+                original = .Closure(firClosureExpression {
+                    function = original.function
+                    captures = copyFirCaptureArena(&original.captures)
+                })
+                value = .Closure(original)
+            }
+        }
+        Unary(value): firExpressionValueCopy {
+            original = .Unary(value)
+            value = .Unary(firUnaryExpression {
+                operation = value.operation operand = value.operand
+            })
+        }
+        Ownership(value): firExpressionValueCopy {
+            original = .Ownership(value)
+            value = .Ownership(firOwnershipExpression {
+                operation = value.operation operand = value.operand
+                implicitRead = value.implicitRead
+            })
+        }
+        Binary(value): firExpressionValueCopy {
+            original = .Binary(value)
+            value = .Binary(firBinaryExpression {
+                left = value.left operation = value.operation right = value.right
+            })
+        }
+        Call(value): {
+            var original = value
+            const copied = firCallExpression {
+                kind = original.kind function = original.function
+                typeArguments = copySemanticTypeArena(&original.typeArguments)
+                arguments = copyFirU64Arena(&original.arguments)
+                argumentDrops = copyFirBoolArena(&original.argumentDrops)
+                contractID = original.contractID method = original.method
+                local = original.local
+                argumentParameters = copyFirU64Arena(&original.argumentParameters)
+                constrainedType = copySemanticType(&original.constrainedType)
+            }
+            firExpressionValueCopy { original = .Call(original) value = .Call(copied) }
+        }
+        ContractValue(value): {
+            var original = value
+            const copied = firContractExpression {
+                value = original.value
+                concreteType = copySemanticType(&original.concreteType)
+                contractType = copySemanticType(&original.contractType)
+                methodTargets = copyFirContractMethodTargetArena(&original.methodTargets)
+            }
+            firExpressionValueCopy {
+                original = .ContractValue(original) value = .ContractValue(copied)
+            }
+        }
+        StructValue(value): {
+            var original = value
+            const copied = firStructExpression {
+                type = copySemanticType(&original.type)
+                fields = copyFirStructFieldValueArena(&original.fields)
+            }
+            firExpressionValueCopy {
+                original = .StructValue(original) value = .StructValue(copied)
+            }
+        }
+        Field(value): firExpressionValueCopy {
+            original = .Field(value)
+            value = .Field(firFieldExpression { base = value.base field = value.field })
+        }
+        Index(value): firExpressionValueCopy {
+            original = .Index(value)
+            value = .Index(firIndexExpression { base = value.base index = value.index })
+        }
+        RawPointer(value): firExpressionValueCopy {
+            original = .RawPointer(value)
+            value = .RawPointer(firRawPointerExpression { base = value.base })
+        }
+        ReplaceValue(value): firExpressionValueCopy {
+            original = .ReplaceValue(value)
+            value = .ReplaceValue(firReplaceExpression {
+                target = value.target value = value.value
+            })
+        }
+        Spawn(value): firExpressionValueCopy {
+            original = .Spawn(value) value = .Spawn(firSpawnExpression { call = value.call })
+        }
+        TaskWait(value): firExpressionValueCopy {
+            original = .TaskWait(value)
+            value = .TaskWait(firTaskWaitExpression { taskValue = value.taskValue })
+        }
+        BlockingCall(value): {
+            var original = value
+            const copied = firBlockingCallExpression {
+                function = original.function
+                arguments = copyFirU64Arena(&original.arguments)
+                argumentStorages = copyFirU64Arena(&original.argumentStorages)
+                resultStorage = copyFirU64Option(original.resultStorage)
+                argumentParameters = copyFirU64Arena(&original.argumentParameters)
+            }
+            firExpressionValueCopy {
+                original = .BlockingCall(original) value = .BlockingCall(copied)
+            }
+        }
+        CallbackCall(value): {
+            var original = value
+            const copied = firCallbackCallExpression {
+                function = original.function
+                arguments = copyFirU64Arena(&original.arguments)
+                argumentStorages = copyFirU64Arena(&original.argumentStorages)
+                resultStorage = original.resultStorage
+                argumentParameters = copyFirU64Arena(&original.argumentParameters)
+            }
+            firExpressionValueCopy {
+                original = .CallbackCall(original) value = .CallbackCall(copied)
+            }
+        }
+        ChannelValue(value): {
+            var original = value
+            const copied = firChannelExpression {
+                payload = copySemanticType(&original.payload) capacity = original.capacity
+            }
+            firExpressionValueCopy {
+                original = .ChannelValue(original) value = .ChannelValue(copied)
+            }
+        }
+        ChannelSenderClone(value): firExpressionValueCopy {
+            original = .ChannelSenderClone(value)
+            value = .ChannelSenderClone(firChannelSenderCloneExpression {
+                sender = value.sender
+            })
+        }
+        ChannelSend(value): firExpressionValueCopy {
+            original = .ChannelSend(value)
+            value = .ChannelSend(firChannelSendExpression {
+                sender = value.sender value = copyFirU64Option(value.value)
+                valueStorage = copyFirU64Option(value.valueStorage)
+                resultStorage = value.resultStorage
+            })
+        }
+        ChannelReceive(value): firExpressionValueCopy {
+            original = .ChannelReceive(value)
+            value = .ChannelReceive(firChannelReceiveExpression {
+                receiver = value.receiver resultStorage = value.resultStorage
+            })
+        }
+        EnumValue(value): {
+            var original = value
+            const copied = firEnumExpression {
+                type = copySemanticType(&original.type) variant = original.variant
+                payload = copyFirU64Option(original.payload)
+            }
+            firExpressionValueCopy {
+                original = .EnumValue(original) value = .EnumValue(copied)
+            }
+        }
+        MatchValue(value): {
+            var original = value
+            const copied = firMatchExpression {
+                value = original.value type = copySemanticType(&original.type)
+                arms = copyFirMatchArmArena(&original.arms)
+                valueStorage = copyFirU64Option(original.valueStorage)
+            }
+            firExpressionValueCopy {
+                original = .MatchValue(original) value = .MatchValue(copied)
+            }
+        }
+        Conditional(value): firExpressionValueCopy {
+            original = .Conditional(value)
+            value = .Conditional(firConditionalExpression {
+                condition = value.condition thenBlock = value.thenBlock
+                thenValue = value.thenValue elseBlock = value.elseBlock
+                elseValue = value.elseValue
+            })
+        }
+    }
+}
+
+fn copyFirExpression($source firExpression) firExpressionCopy {
+    var original = source
+    const selected = replace original.value with .Integer(firIntegerExpression {
+        magnitude = 0 negative = false
+    })
+    const firExpressionValueCopy {
+        original as originalValue
+        value as valueCopy
+    } = copyFirExpressionValue($selected)
+    original.value = originalValue
+    firExpressionCopy {
+        value = firExpression {
+            value = valueCopy
+            type = copySemanticType(&original.type)
+            span = original.span
+        }
+        original = original
+    }
+}
+
+fn copyFirExpressionArena(
+    &source arena<firExpression>
+) own arena<firExpression> {
+    var result = newArena<firExpression>()
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("FIR expression slot is empty")
+            Some(value): value
+        }
+        const firExpressionCopy { original value as copy } = copyFirExpression($value)
+        discard result.add($copy)
+        source.restore(index, $original)
+        index += 1
+    }
+    result
+}
+
+fn copyFirStructBindingArena(
+    &source arena<firStructBinding>
+) own arena<firStructBinding> {
+    var result = newArena<firStructBinding>()
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("struct binding slot is empty")
+            Some(value): value
+        }
+        discard result.add(firStructBinding {
+            field = value.field local = value.local
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirSelectOperationArena(
+    &source arena<firSelectOperationArm>
+) own arena<firSelectOperationArm> {
+    var result = newArena<firSelectOperationArm>()
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("select operation slot is empty")
+            Some(value): value
+        }
+        discard result.add(firSelectOperationArm {
+            send = value.send endpoint = value.endpoint
+            value = copyFirU64Option(value.value)
+            valueStorage = copyFirU64Option(value.valueStorage)
+            resultStorage = value.resultStorage
+            binding = copyFirU64Option(value.binding)
+            body = value.body span = value.span
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirSelectTimeoutOption(
+    value Option<firSelectTimeoutArm>
+) Option<firSelectTimeoutArm> {
+    match value {
+        None: .None
+        Some(found): .Some(firSelectTimeoutArm {
+            nanoseconds = found.nanoseconds
+            duration = copyFirU64Option(found.duration)
+            body = found.body
+        })
+    }
+}
+
+struct firStatementValueCopy {
+    original firStatementValue
+    value firStatementValue
+}
+
+struct firStatementCopy {
+    original firStatement
+    value firStatement
+}
+
+fn copyFirStatementValue(
+    $source firStatementValue
+) firStatementValueCopy {
+    match source {
+        Variable(value): firStatementValueCopy {
+            original = .Variable(value)
+            value = .Variable(firVariableStatement {
+                local = value.local initializer = value.initializer
+            })
+        }
+        LetElse(value): firStatementValueCopy {
+            original = .LetElse(value)
+            value = .LetElse(firLetElseStatement {
+                local = value.local initializer = value.initializer
+                errorLocal = value.errorLocal elseBlock = value.elseBlock
+            })
+        }
+        ResultElse(value): firStatementValueCopy {
+            original = .ResultElse(value)
+            value = .ResultElse(firResultElseStatement {
+                expression = value.expression errorLocal = value.errorLocal
+                elseBlock = value.elseBlock
+            })
+        }
+        StructDestructure(value): {
+            var original = value
+            const copied = firStructDestructureStatement {
+                initializer = original.initializer
+                type = copySemanticType(&original.type)
+                owned = original.owned
+                bindings = copyFirStructBindingArena(&original.bindings)
+            }
+            firStatementValueCopy {
+                original = .StructDestructure(original)
+                value = .StructDestructure(copied)
+            }
+        }
+        Assignment(value): firStatementValueCopy {
+            original = .Assignment(value)
+            value = .Assignment(firAssignmentStatement {
+                target = value.target operation = value.operation value = value.value
+            })
+        }
+        Expression(value): firStatementValueCopy {
+            original = .Expression(value)
+            value = .Expression(firExpressionStatement {
+                expression = value.expression
+            })
+        }
+        Discard(value): firStatementValueCopy {
+            original = .Discard(value)
+            value = .Discard(firDiscardStatement { expression = value.expression })
+        }
+        ReturnValue(value): {
+            var original = value
+            const copied = firReturnStatement {
+                value = copyFirU64Option(original.value)
+                drops = copyFirU64Arena(&original.drops)
+            }
+            firStatementValueCopy {
+                original = .ReturnValue(original) value = .ReturnValue(copied)
+            }
+        }
+        IfValue(value): firStatementValueCopy {
+            original = .IfValue(value)
+            value = .IfValue(firIfStatement {
+                condition = value.condition thenBlock = value.thenBlock
+                elseBlock = copyFirU64Option(value.elseBlock)
+            })
+        }
+        WhileValue(value): firStatementValueCopy {
+            original = .WhileValue(value)
+            value = .WhileValue(firWhileStatement {
+                condition = value.condition body = value.body
+            })
+        }
+        ForValue(value): firStatementValueCopy {
+            original = .ForValue(value)
+            value = .ForValue(firForStatement {
+                sequence = value.sequence sequenceStorage = value.sequenceStorage
+                index = value.index value = value.value body = value.body
+                next = copyFirU64Option(value.next)
+                ownsSequence = value.ownsSequence
+            })
+        }
+        BreakValue(value): {
+            var original = value
+            const copied = firBreakStatement {
+                drops = copyFirU64Arena(&original.drops)
+            }
+            firStatementValueCopy {
+                original = .BreakValue(original) value = .BreakValue(copied)
+            }
+        }
+        ContinueValue(value): {
+            var original = value
+            const copied = firContinueStatement {
+                drops = copyFirU64Arena(&original.drops)
+            }
+            firStatementValueCopy {
+                original = .ContinueValue(original) value = .ContinueValue(copied)
+            }
+        }
+        SelectValue(value): {
+            var original = value
+            const copied = firSelectStatement {
+                operations = copyFirSelectOperationArena(&original.operations)
+                timeoutArm = copyFirSelectTimeoutOption(original.timeoutArm)
+                errorLocal = original.errorLocal errorBlock = original.errorBlock
+                deadlineStorage = original.deadlineStorage
+            }
+            firStatementValueCopy {
+                original = .SelectValue(original) value = .SelectValue(copied)
+            }
+        }
+        UnsafeValue(value): firStatementValueCopy {
+            original = .UnsafeValue(value)
+            value = .UnsafeValue(firUnsafeStatement { body = value.body })
+        }
+    }
+}
+
+fn copyFirStatement($source firStatement) firStatementCopy {
+    var original = source
+    const selected = replace original.value with .Expression(firExpressionStatement {
+        expression = 0
+    })
+    const firStatementValueCopy {
+        original as originalValue
+        value as valueCopy
+    } = copyFirStatementValue($selected)
+    original.value = originalValue
+    const span = original.span
+    firStatementCopy {
+        original = original
+        value = firStatement { value = valueCopy span = span }
+    }
+}
+
+fn copyFirStatementArena(
+    &source arena<firStatement>
+) own arena<firStatement> {
+    var result = newArena<firStatement>()
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("FIR statement slot is empty")
+            Some(value): value
+        }
+        const firStatementCopy { original value as copy } = copyFirStatement($value)
+        discard result.add($copy)
+        source.restore(index, $original)
+        index += 1
+    }
+    result
+}
+
+fn copyFirBlockArena(
+    &source arena<firBlock>
+) own arena<firBlock> {
+    var result = newArena<firBlock>()
+    var index u64 = 0
+    while index < source.len() {
+        var value = match source.take(index) {
+            None: panic("FIR block slot is empty")
+            Some(value): value
+        }
+        discard result.add(firBlock {
+            statements = copyFirU64Arena(&value.statements)
+            drops = copyFirU64Arena(&value.drops)
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirLocalArena(
+    &source arena<firLocal>
+) own arena<firLocal> {
+    var result = newArena<firLocal>()
+    var index u64 = 0
+    while index < source.len() {
+        var value = match source.take(index) {
+            None: panic("FIR local slot is empty")
+            Some(value): value
+        }
+        discard result.add(firLocal {
+            name = text.Copy(value.name)
+            type = copySemanticType(&value.type)
+            mutableBinding = value.mutableBinding
+            captured = value.captured
+            captureMode = value.captureMode
+            borrowedClosure = value.borrowedClosure
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+struct firTransitionOptionCopy {
+    original Option<firStateTransitionFunction>
+    value Option<firStateTransitionFunction>
+}
+
+struct firTimeoutOptionCopy {
+    original Option<firStateTimeoutFunction>
+    value Option<firStateTimeoutFunction>
+}
+
+struct firWorkflowOptionCopy {
+    original Option<firWorkflowFunction>
+    value Option<firWorkflowFunction>
+}
+
+struct firFunctionCopy {
+    original firFunction
+    value firFunction
+}
+
+struct firSemanticTypeOptionCopy {
+    original Option<semanticType>
+    value Option<semanticType>
+}
+
+struct firStructCopy {
+    original firStruct
+    value firStruct
+}
+
+struct firEnumCopy {
+    original firEnum
+    value firEnum
+}
+
+struct firContractCopy {
+    original firContract
+    value firContract
+}
+
+fn copyFirTransitionOption(
+    $source Option<firStateTransitionFunction>
+) firTransitionOptionCopy {
+    match source {
+        None: firTransitionOptionCopy { original = .None value = .None }
+        Some(found): {
+            var original = found
+            const copied = firStateTransitionFunction {
+                sourceVariants = copyFirU64Arena(&original.sourceVariants)
+                destinationVariant = original.destinationVariant
+                destinationParameter = copyFirU64Option(original.destinationParameter)
+                timeoutNanoseconds = copyFirU64Option(original.timeoutNanoseconds)
+            }
+            firTransitionOptionCopy {
+                original = .Some(original) value = .Some(copied)
+            }
+        }
+    }
+}
+
+fn copyFirTimeoutOption(
+    $source Option<firStateTimeoutFunction>
+) firTimeoutOptionCopy {
+    match source {
+        None: firTimeoutOptionCopy { original = .None value = .None }
+        Some(found): {
+            var original = found
+            const copied = firStateTimeoutFunction {
+                sourceVariants = copyFirU64Arena(&original.sourceVariants)
+                nanoseconds = original.nanoseconds
+            }
+            firTimeoutOptionCopy {
+                original = .Some(original) value = .Some(copied)
+            }
+        }
+    }
+}
+
+fn copyFirWorkflowStepArena(
+    &source arena<firWorkflowStep>
+) own arena<firWorkflowStep> {
+    var result = newArena<firWorkflowStep>()
+    var index u64 = 0
+    while index < source.len() {
+        var value = match source.take(index) {
+            None: panic("workflow step slot is empty")
+            Some(value): value
+        }
+        discard result.add(firWorkflowStep {
+            name = text.Copy(value.name)
+            function = value.function
+            typeArguments = copySemanticTypeArena(&value.typeArguments)
+            attempts = value.attempts
+            compensation = copyFirU64Option(value.compensation)
+            compensationTypeArguments = copySemanticTypeArena(
+                &value.compensationTypeArguments)
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirWorkflowOption(
+    $source Option<firWorkflowFunction>
+) firWorkflowOptionCopy {
+    match source {
+        None: firWorkflowOptionCopy { original = .None value = .None }
+        Some(found): {
+            var original = found
+            const copied = firWorkflowFunction {
+                kind = original.kind
+                inputType = copySemanticType(&original.inputType)
+                successType = copySemanticType(&original.successType)
+                errorType = copySemanticType(&original.errorType)
+                failureType = copySemanticType(&original.failureType)
+                failureDetailsType = copySemanticType(&original.failureDetailsType)
+                steps = copyFirWorkflowStepArena(&original.steps)
+            }
+            firWorkflowOptionCopy {
+                original = .Some(original) value = .Some(copied)
+            }
+        }
+    }
+}
+
+fn copyFirReceiverOption(
+    value Option<firReceiverKind>
+) Option<firReceiverKind> {
+    match value {
+        None: .None
+        Some(found): .Some(found)
+    }
+}
+
+fn copyFirFunction($source firFunction) firFunctionCopy {
+    var original = source
+    const transitionSource = replace original.stateTransition with .None
+    const timeoutSource = replace original.stateTimeout with .None
+    const workflowSource = replace original.workflow with .None
+    const firTransitionOptionCopy {
+        original as originalTransition
+        value as transition
+    } = copyFirTransitionOption($transitionSource)
+    const firTimeoutOptionCopy {
+        original as originalTimeout
+        value as timeoutValue
+    } = copyFirTimeoutOption($timeoutSource)
+    const firWorkflowOptionCopy {
+        original as originalWorkflow
+        value as workflowValue
+    } = copyFirWorkflowOption($workflowSource)
+    original.stateTransition = originalTransition
+    original.stateTimeout = originalTimeout
+    original.workflow = originalWorkflow
+    const copy = firFunction {
+        name = text.Copy(original.name)
+        packageName = text.Copy(original.packageName)
+        sourcePath = text.Copy(original.sourcePath)
+        source = original.source
+        sourceSpan = original.sourceSpan
+        generic = original.generic
+        typeParameterCount = original.typeParameterCount
+        returnType = copySemanticType(&original.returnType)
+        parameters = copyFirU64Arena(&original.parameters)
+        readParameters = copyFirBoolArena(&original.readParameters)
+        locals = copyFirLocalArena(&original.locals)
+        expressions = copyFirExpressionArena(&original.expressions)
+        statements = copyFirStatementArena(&original.statements)
+        blocks = copyFirBlockArena(&original.blocks)
+        body = original.body
+        exported = original.exported
+        diverges = original.diverges
+        cSymbol = copyFirStringOption(original.cSymbol)
+        hasBody = original.hasBody
+        closure = original.closure
+        method = original.method
+        receiver = copyFirReceiverOption(original.receiver)
+        attributes = copyFirAttributeUseArena(&original.attributes)
+        parameterAttributes = copyFirAttributeUseArenaArena(
+            &original.parameterAttributes)
+        taskFunction = original.taskFunction
+        blocking = original.blocking
+        callback = original.callback
+        callbackCancelSymbol = copyFirStringOption(original.callbackCancelSymbol)
+        testName = copyFirStringOption(original.testName)
+        actionFunction = original.actionFunction
+        stateTransition = transition
+        workflow = workflowValue
+        stateTimeout = timeoutValue
+        constructor = original.constructor
+        typeParameterConstraints = copyFirOptionalSemanticTypeArena(
+            &original.typeParameterConstraints)
+    }
+    firFunctionCopy { original = original value = copy }
+}
+
+fn copyFirSemanticTypeOptionOwned(
+    $source Option<semanticType>
+) firSemanticTypeOptionCopy {
+    match source {
+        None: firSemanticTypeOptionCopy { original = .None value = .None }
+        Some(found): {
+            var original = found
+            firSemanticTypeOptionCopy {
+                original = .Some(copySemanticType(&original))
+                value = .Some(original)
+            }
+        }
+    }
+}
+
+fn copyFirStructFieldArena(
+    &source arena<firStructField>
+) own arena<firStructField> {
+    var result = newArena<firStructField>()
+    var index u64 = 0
+    while index < source.len() {
+        var value = match source.take(index) {
+            None: panic("struct field slot is empty")
+            Some(value): value
+        }
+        discard result.add(firStructField {
+            name = text.Copy(value.name)
+            type = copySemanticType(&value.type)
+            exported = value.exported
+            attributes = copyFirAttributeUseArena(&value.attributes)
+            hasDefault = value.hasDefault
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirStruct($source firStruct) firStructCopy {
+    var original = source
+    const copy = firStruct {
+        name = text.Copy(original.name)
+        sourcePath = text.Copy(original.sourcePath)
+        sourceSpan = original.sourceSpan
+        typeParameterCount = original.typeParameterCount
+        fields = copyFirStructFieldArena(&original.fields)
+        implementations = copySemanticTypeArena(&original.implementations)
+        exported = original.exported
+        dropFunction = copyFirU64Option(original.dropFunction)
+        attributes = copyFirAttributeUseArena(&original.attributes)
+        serviceType = original.serviceType
+        implementationDelegates = copyFirOptionalU64Arena(
+            &original.implementationDelegates)
+    }
+    firStructCopy { original = original value = copy }
+}
+
+fn copyFirEnumVariantArena(
+    &source arena<firEnumVariant>
+) own arena<firEnumVariant> {
+    var result = newArena<firEnumVariant>()
+    var index u64 = 0
+    while index < source.len() {
+        var value = match source.take(index) {
+            None: panic("enum variant slot is empty")
+            Some(value): value
+        }
+        const selected = replace value.payload with .None
+        const firSemanticTypeOptionCopy {
+            original as originalPayload
+            value as copiedPayload
+        } = copyFirSemanticTypeOptionOwned($selected)
+        value.payload = originalPayload
+        discard result.add(firEnumVariant {
+            name = text.Copy(value.name)
+            payload = copiedPayload
+            exported = value.exported
+            attributes = copyFirAttributeUseArena(&value.attributes)
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirEnum($source firEnum) firEnumCopy {
+    var original = source
+    const copy = firEnum {
+        name = text.Copy(original.name)
+        typeParameterCount = original.typeParameterCount
+        variants = copyFirEnumVariantArena(&original.variants)
+        exported = original.exported
+        builtin = original.builtin
+        attributes = copyFirAttributeUseArena(&original.attributes)
+        stateMachine = original.stateMachine
+    }
+    firEnumCopy { original = original value = copy }
+}
+
+fn copyFirContractMethodArena(
+    &source arena<firContractMethod>
+) own arena<firContractMethod> {
+    var result = newArena<firContractMethod>()
+    var index u64 = 0
+    while index < source.len() {
+        var value = match source.take(index) {
+            None: panic("contract method slot is empty")
+            Some(value): value
+        }
+        discard result.add(firContractMethod {
+            receiver = value.receiver
+            name = text.Copy(value.name)
+            returnType = copySemanticType(&value.returnType)
+            parameters = copySemanticTypeArena(&value.parameters)
+            readParameters = copyFirBoolArena(&value.readParameters)
+            parameterNames = copyFirStringArena(&value.parameterNames)
+            exported = value.exported
+            attributes = copyFirAttributeUseArena(&value.attributes)
+            parameterAttributes = copyFirAttributeUseArenaArena(
+                &value.parameterAttributes)
+            originContract = value.originContract
+            originArguments = copySemanticTypeArena(&value.originArguments)
+            defaultFunction = copyFirU64Option(value.defaultFunction)
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copyFirContract($source firContract) firContractCopy {
+    var original = source
+    const copy = firContract {
+        name = text.Copy(original.name)
+        typeParameterCount = original.typeParameterCount
+        methodList = copyFirContractMethodArena(&original.methodList)
+        exported = original.exported
+        attributes = copyFirAttributeUseArena(&original.attributes)
+        parents = copySemanticTypeArena(&original.parents)
+    }
+    firContractCopy { original = original value = copy }
+}

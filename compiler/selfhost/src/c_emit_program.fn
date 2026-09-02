@@ -1,0 +1,41 @@
+package foundation.compiler
+
+import std.text
+
+fn emitSelfHostedC(
+    &source firProgram,
+    sourcePath String
+) String {
+    var program = monomorphizeProgram(&source)
+    var collected = cCollectTypes(&program)
+    var contractUses = cCollectContractUses(&program)
+    var builder = text.NewBuilder()
+    cEmitPreamble(&builder, true)
+    cEmitTypeForwards(&builder, &program, &collected)
+    cEmitFunctionTypeDefinitions(&builder, &collected)
+    cEmitSliceDefinitions(&builder, &collected)
+    cEmitInlineTypeDefinitions(&builder, &program, &collected)
+    cEmitContractDefinitions(&builder, &program)
+    var functionIndex u64 = 0
+    while functionIndex < program.functions.len() {
+        cEmitClosureEnvironmentDefinition(
+            &builder, &program, functionIndex)
+        functionIndex += 1
+    }
+    cEmitAllFunctionPrototypes(&builder, &program)
+    cEmitAllTaskDeclarations(&builder, &program)
+    cEmitOwnershipPrototypes(&builder, &program, &collected)
+    cEmitOwnershipDefinitions(&builder, &program, &collected)
+    cEmitChannelPayloadDrops(&builder, &program, &collected)
+    functionIndex = 0
+    while functionIndex < program.functions.len() {
+        cEmitClosureDrop(&builder, &program, functionIndex)
+        functionIndex += 1
+    }
+    cEmitAllContractAdapters(&builder, &program, &contractUses)
+    cEmitFunctions(&builder, &program, sourcePath)
+    cEmitAllTaskWorkDefinitions(&builder, &program, sourcePath)
+    cEmitAllTaskSupport(&builder, &program, sourcePath)
+    cEmitMainWrapper(&builder, &program)
+    cFinish(&builder)
+}

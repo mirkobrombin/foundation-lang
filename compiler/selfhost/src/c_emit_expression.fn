@@ -1,0 +1,815 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+struct cEmittedCleanup {
+    type semanticType
+    value String
+}
+
+struct cEmittedExpression {
+    value String
+    diverges bool
+    cleanups own arena<cEmittedCleanup>
+}
+
+struct cFunctionEmissionState {
+    function u64
+    temporary u64
+    taskState u64
+    taskPoll bool
+}
+
+fn cCaptureModeView(value firCaptureMode) bool {
+    match value { View: true _: false }
+}
+
+fn cCaptureModeEdit(value firCaptureMode) bool {
+    match value { Edit: true _: false }
+}
+
+fn cUnaryNegate(value firUnaryOperator) bool {
+    match value { Negate: true _: false }
+}
+
+fn cUnaryNot(value firUnaryOperator) bool {
+    match value { Not: true _: false }
+}
+
+fn cUnaryBitwiseNot(value firUnaryOperator) bool {
+    match value { BitwiseNot: true _: false }
+}
+
+fn cUnaryEmpty(value firUnaryOperator) bool {
+    match value { Empty: true _: false }
+}
+
+fn cUnaryDereference(value firUnaryOperator) bool {
+    match value { Dereference: true _: false }
+}
+
+fn cOwnershipOwn(value firOwnershipOperator) bool {
+    match value { Own: true _: false }
+}
+
+fn cOwnershipView(value firOwnershipOperator) bool {
+    match value { View: true _: false }
+}
+
+fn newCFunctionEmissionState(
+    function u64,
+    taskPoll bool
+) cFunctionEmissionState {
+    cFunctionEmissionState {
+        function = function temporary = 0 taskState = 0 taskPoll = taskPoll
+    }
+}
+
+fn cEmitted($value String, diverges bool) cEmittedExpression {
+    cEmittedExpression {
+        value = value diverges = diverges
+        cleanups = newArena<cEmittedCleanup>()
+    }
+}
+
+fn cNextTemporary(&state cFunctionEmissionState) String {
+    const result = "fdn_tmp_" + format.U64(state.temporary)
+    state.temporary += 1
+    result
+}
+
+fn cExpressionAt(&function firFunction, id u64) firExpression {
+    const selected = match function.expressions.take(id) {
+        None: panic("FIR expression slot is empty")
+        Some(found): found
+    }
+    const firExpressionCopy { original value } = copyFirExpression($selected)
+    function.expressions.restore(id, $original)
+    value
+}
+
+fn cExpressionTypeAt(&function firFunction, id u64) semanticType {
+    const expression = cExpressionAt(&function, id)
+    const firExpression { value type span } = expression
+    discard value
+    discard span
+    type
+}
+
+fn cFunctionAt(&program firProgram, id u64) firFunction {
+    const selected = match program.functions.take(id) {
+        None: panic("FIR function slot is empty")
+        Some(found): found
+    }
+    const firFunctionCopy { original value } = copyFirFunction($selected)
+    program.functions.restore(id, $original)
+    value
+}
+
+fn cLocalAt(&function firFunction, id u64) firLocal {
+    var selected = match function.locals.take(id) {
+        None: panic("FIR local slot is empty")
+        Some(found): found
+    }
+    const result = firLocal {
+        name = "" + selected.name
+        type = copySemanticType(&selected.type)
+        mutableBinding = selected.mutableBinding
+        captured = selected.captured
+        captureMode = selected.captureMode
+        borrowedClosure = selected.borrowedClosure
+    }
+    function.locals.restore(id, $selected)
+    result
+}
+
+fn cLocalValue(
+    &function firFunction,
+    local u64,
+    taskPoll bool
+) String {
+    const declaration = cLocalAt(&function, local)
+    if !declaration.captured {
+        if taskPoll return "fdn_frame->fdn_local_" + format.U64(local)
+        return cLocalName(&function, local)
+    }
+    const field = "fdn_env_data->fdn_capture_" + format.U64(local)
+    if cCaptureModeView(declaration.captureMode) ||
+        cCaptureModeEdit(declaration.captureMode) {
+        return "(*" + field + ")"
+    }
+    field
+}
+
+fn cLocalTypeAt(&function firFunction, local u64) semanticType {
+    const declaration = cLocalAt(&function, local)
+    const firLocal {
+        name type mutableBinding captured captureMode borrowedClosure
+    } = declaration
+    discard name
+    discard mutableBinding
+    discard captured
+    discard captureMode
+    discard borrowedClosure
+    type
+}
+
+fn cLocalActive(local u64) String {
+    "fdn_frame->fdn_local_" + format.U64(local) + "_active"
+}
+
+fn cEmitLocation(
+    &builder text.Builder,
+    span sourceSpan,
+    depth u64
+) void {
+    cWrite(&builder, cIndent(depth) +
+        "fdn_frame_location(&fdn_frame_current, " + format.U64(span.line) +
+        ", " + format.U64(span.column) + ");\n")
+}
+
+fn cIntegerMacro(&value semanticType) String {
+    match value.kind {
+        U8: "UINT8_C"
+        U16: "UINT16_C"
+        U32: "UINT32_C"
+        U64: "UINT64_C"
+        Usize: "UINT64_C"
+        I8: "INT8_C"
+        I16: "INT16_C"
+        I32: "INT32_C"
+        I64: "INT64_C"
+        Isize: "INT64_C"
+        _: "INT64_C"
+    }
+}
+
+fn cIntegerConstant(
+    value firIntegerExpression,
+    &valueType semanticType
+) String {
+    const magnitude = format.U64(value.magnitude)
+    const constant = cIntegerMacro(&valueType) + "(" + magnitude + ")"
+    if valueType.kind.Matches("Usize") {
+        return "((size_t)" + constant + ")"
+    }
+    if valueType.kind.Matches("Isize") {
+        if value.negative return "((intptr_t)-" + constant + ")"
+        return "((intptr_t)" + constant + ")"
+    }
+    if value.negative return "(-" + constant + ")"
+    constant
+}
+
+fn cEmitCleanups(
+    &builder text.Builder,
+    &program firProgram,
+    &expression cEmittedExpression,
+    depth u64
+) void {
+    var index = expression.cleanups.len()
+    while index != 0 {
+        index -= 1
+        var cleanup = match expression.cleanups.take(index) {
+            None: panic("C expression cleanup slot is empty")
+            Some(found): found
+        }
+        var cleanupType = copySemanticType(&cleanup.type)
+        const cleanupValue = "" + cleanup.value
+        cEmitDropValue(&builder, &program, &cleanupType, cleanupValue, depth)
+        expression.cleanups.restore(index, $cleanup)
+    }
+}
+
+fn cEmitDiscardValue(
+    &builder text.Builder,
+    &expression cEmittedExpression,
+    depth u64
+) void {
+    if expression.value != "" {
+        cWrite(&builder, cIndent(depth) + "(void)" + expression.value + ";\n")
+    }
+}
+
+fn cIsPlaceExpression(&function firFunction, id u64) bool {
+    const expression = cExpressionAt(&function, id)
+    const firExpression { value type span } = expression
+    discard type
+    discard span
+    match value {
+        Local(local): {
+            discard local
+            true
+        }
+        Read(read): {
+            discard read
+            true
+        }
+        Field(field): cIsPlaceExpression(&function, field.base)
+        Index(index): cIsPlaceExpression(&function, index.base)
+        _: false
+    }
+}
+
+fn cEmitDropInspectedTemporary(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    id u64,
+    &expression cEmittedExpression,
+    depth u64
+) void {
+    cEmitCleanups(&builder, &program, &expression, depth)
+    var valueType = cExpressionTypeAt(&function, id)
+    if !cIsPlaceExpression(&function, id) &&
+        cTypeRequiresDrop(&program, &valueType) {
+        cEmitDropValue(&builder, &program, &valueType, expression.value, depth)
+    }
+}
+
+fn cEmitMoveValue(
+    &builder text.Builder,
+    &program firProgram,
+    &state cFunctionEmissionState,
+    &valueType semanticType,
+    source String,
+    depth u64
+) cEmittedExpression {
+    const temporary = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " + temporary +
+        ";\n")
+    cEmitMoveAssignment(&builder, &program, &valueType, temporary, source, depth)
+    cEmitted($temporary, false)
+}
+
+fn cEmitMoveExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    local u64,
+    depth u64
+) cEmittedExpression {
+    var valueType = cLocalTypeAt(&function, local)
+    const source = cLocalValue(&function, local, state.taskPoll)
+    const result = cEmitMoveValue(
+        &builder, &program, &state, &valueType, source, depth)
+    if state.taskPoll && cTypeRequiresDrop(&program, &valueType) {
+        cWrite(&builder, cIndent(depth) + cLocalActive(local) + " = false;\n")
+    }
+    result
+}
+
+fn cEmitArrayExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &array firArrayExpression,
+    &valueType semanticType,
+    depth u64
+) cEmittedExpression {
+    var values = newArena<String>()
+    var index u64 = 0
+    while index < array.elements.len() {
+        const element = match array.elements.take(index) {
+            None: panic("FIR array element slot is empty")
+            Some(found): found
+        }
+        const emitted = cEmitExpression(
+            &builder, &program, &function, &state, element, depth)
+        array.elements.restore(index, element)
+        if emitted.diverges return emitted
+        const cEmittedExpression { value diverges cleanups } = emitted
+        discard diverges
+        discard cleanups
+        discard values.add($value)
+        index += 1
+    }
+    const temporary = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " + temporary +
+        " = {0};\n")
+    index = 0
+    while index < values.len() {
+        const selected = match values.take(index) {
+            None: panic("C array value slot is empty")
+            Some(found): found
+        }
+        cWrite(&builder, cIndent(depth) + temporary + ".fdn_data[" +
+            format.U64(index) + "] = " + selected + ";\n")
+        values.restore(index, $selected)
+        index += 1
+    }
+    cEmitted($temporary, false)
+}
+
+fn cEmitUnaryExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    unary firUnaryExpression,
+    &valueType semanticType,
+    span sourceSpan,
+    depth u64
+) cEmittedExpression {
+    const operand = cEmitExpression(
+        &builder, &program, &function, &state, unary.operand, depth)
+    if operand.diverges return operand
+    if cUnaryDereference(unary.operation) {
+        return cEmitted("(*(" + operand.value + "))", false)
+    }
+    const temporary = cNextTemporary(&state)
+    var result = ""
+    if cUnaryNegate(unary.operation) {
+        cEmitLocation(&builder, span, depth)
+        if isSemanticFloating(&valueType) {
+            result = "-" + operand.value
+        } else {
+            result = "fdn_" + cTypeTag(&valueType) + "_negate(" +
+                operand.value + ")"
+        }
+    } else {
+        if cUnaryNot(unary.operation) {
+            result = "!" + operand.value
+        } else {
+            if cUnaryBitwiseNot(unary.operation) {
+                result = "~" + operand.value
+            } else {
+                if cUnaryEmpty(unary.operation) {
+                    var operandType = cExpressionTypeAt(&function, unary.operand)
+                    var member = "."
+                    if (operandType.kind.Matches("View") ||
+                        operandType.kind.Matches("Edit")) &&
+                        operandType.arguments.len() == 1 {
+                        var target = semanticTypeArgument(&operandType, 0)
+                        if !target.kind.Matches("Slice") {
+                            member = "->"
+                        }
+                        operandType = target
+                    }
+                    if operandType.kind.Matches("Array") {
+                        result = format.U64(operandType.declaration) + " == 0"
+                    } else {
+                        if operandType.kind.Matches("Slice") {
+                            result = operand.value + member + "fdn_length == 0"
+                        } else {
+                            if operandType.kind.Matches("StringValue") {
+                                result = operand.value + member + "length == 0"
+                            } else {
+                                panic("empty test has an unsupported argument")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " + temporary +
+        " = " + result + ";\n")
+    cEmitted($temporary, false)
+}
+
+fn cEmitOwnershipExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &ownership firOwnershipExpression,
+    &valueType semanticType,
+    span sourceSpan,
+    depth u64
+) cEmittedExpression {
+    var operand = cEmitExpression(
+        &builder, &program, &function, &state, ownership.operand, depth)
+    if operand.diverges return operand
+    var operandType = cExpressionTypeAt(&function, ownership.operand)
+    if cOwnershipOwn(ownership.operation) {
+        const temporary = cNextTemporary(&state)
+        cEmitLocation(&builder, span, depth)
+        cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " + temporary +
+            " = fdn_alloc(sizeof(*" + temporary + "));\n")
+        cWrite(&builder, cIndent(depth) + "*" + temporary + " = " +
+            operand.value + ";\n")
+        return cEmitted($temporary, false)
+    }
+    if cOwnershipView(ownership.operation) &&
+        !valueType.kind.Matches("View") {
+        if !cIsPlaceExpression(&function, ownership.operand) &&
+            cTypeRequiresDrop(&program, &operandType) {
+            discard operand.cleanups.add(cEmittedCleanup {
+                type = copySemanticType(&operandType) value = "" + operand.value
+            })
+        }
+        return operand
+    }
+    if cOwnershipView(ownership.operation) &&
+        !cIsPlaceExpression(&function, ownership.operand) &&
+        cTypeRequiresDrop(&program, &operandType) {
+        discard operand.cleanups.add(cEmittedCleanup {
+            type = copySemanticType(&operandType) value = "" + operand.value
+        })
+    }
+    if valueType.arguments.len() == 1 {
+        var target = semanticTypeArgument(&valueType, 0)
+        if target.kind.Matches("Slice") {
+            if operandType.kind.Matches("Slice") return operand
+            if (operandType.kind.Matches("View") ||
+                operandType.kind.Matches("Edit")) &&
+                operandType.arguments.len() == 1 {
+                var borrowed = semanticTypeArgument(&operandType, 0)
+                if borrowed.kind.Matches("Slice") return operand
+            }
+            var arrayType = copySemanticType(&operandType)
+            var pointer = false
+            if arrayType.kind.Matches("Own") && arrayType.arguments.len() == 1 {
+                arrayType = semanticTypeArgument(&arrayType, 0)
+                pointer = true
+            }
+            const temporary = cNextTemporary(&state)
+            cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+                temporary + ";\n")
+            cWrite(&builder, cIndent(depth) + temporary + ".fdn_data = " +
+                operand.value + if pointer { "->fdn_data;\n" } else {
+                ".fdn_data;\n"
+            })
+            cWrite(&builder, cIndent(depth) + temporary + ".fdn_length = " +
+                format.U64(arrayType.declaration) + ";\n")
+            operand.value = temporary
+            return operand
+        }
+    }
+    if operandType.kind.Matches("Own") || operandType.kind.Matches("View") ||
+        operandType.kind.Matches("Edit") {
+        if operandType.kind.Matches("Own") && operandType.arguments.len() == 1 {
+            var owned = semanticTypeArgument(&operandType, 0)
+            if owned.kind.Matches("ContractValue") {
+                operand.value = "*" + operand.value
+            }
+        }
+        return operand
+    }
+    operand.value = "&" + operand.value
+    operand
+}
+
+fn cEmitStructExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &literal firStructExpression,
+    depth u64
+) cEmittedExpression {
+    var values = newArena<String>()
+    var fields = newArena<u64>()
+    var index u64 = 0
+    while index < literal.fields.len() {
+        const field = match literal.fields.take(index) {
+            None: panic("FIR struct field value slot is empty")
+            Some(found): found
+        }
+        const emitted = cEmitExpression(
+            &builder, &program, &function, &state, field.value, depth)
+        literal.fields.restore(index, field)
+        if emitted.diverges return emitted
+        discard fields.add(field.field)
+        const cEmittedExpression { value diverges cleanups } = emitted
+        discard diverges
+        discard cleanups
+        discard values.add($value)
+        index += 1
+    }
+    const temporary = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&literal.type) + " " +
+        temporary + " = {0};\n")
+    if literal.type.kind.Matches("StructValue") &&
+        literal.type.declaration < program.structs.len() {
+        var declaration = match program.structs.take(literal.type.declaration) {
+            None: panic("FIR struct slot is empty")
+            Some(found): found
+        }
+        if monomorphU64Present(declaration.dropFunction) {
+            cWrite(&builder, cIndent(depth) + temporary +
+                ".fdn_drop_active = true;\n")
+        }
+        program.structs.restore(literal.type.declaration, $declaration)
+    }
+    index = 0
+    while index < values.len() {
+        const field = match fields.take(index) {
+            None: panic("C struct field slot is empty")
+            Some(found): found
+        }
+        fields.restore(index, field)
+        const selected = match values.take(index) {
+            None: panic("C struct value slot is empty")
+            Some(found): found
+        }
+        cWrite(&builder, cIndent(depth) + temporary + "." + cFieldName(field) +
+            " = " + selected + ";\n")
+        values.restore(index, $selected)
+        index += 1
+    }
+    cEmitted($temporary, false)
+}
+
+fn cEmitEnumExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &constructor firEnumExpression,
+    depth u64
+) cEmittedExpression {
+    var payload = ""
+    match constructor.payload {
+        None: {}
+        Some(expression): {
+            const emitted = cEmitExpression(
+                &builder, &program, &function, &state, expression, depth)
+            if emitted.diverges return emitted
+            payload = "" + emitted.value
+        }
+    }
+    const temporary = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&constructor.type) + " " +
+        temporary + " = {0};\n")
+    if payload != "" {
+        cWrite(&builder, cIndent(depth) + temporary + ".fdn_data." +
+            cPayloadName(constructor.variant) + " = " + payload + ";\n")
+    }
+    cWrite(&builder, cIndent(depth) + temporary + ".fdn_tag = " +
+        cEnumTag(constructor.type.declaration, constructor.variant) + ";\n")
+    cEmitted($temporary, false)
+}
+
+fn cEmitIndexExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    indexValue firIndexExpression,
+    span sourceSpan,
+    depth u64
+) cEmittedExpression {
+    const base = cEmitExpression(
+        &builder, &program, &function, &state, indexValue.base, depth)
+    if base.diverges return base
+    const index = cEmitExpression(
+        &builder, &program, &function, &state, indexValue.index, depth)
+    if index.diverges return index
+    var sequence = cExpressionTypeAt(&function, indexValue.base)
+    var access = "" + base.value
+    if sequence.kind.Matches("Own") && sequence.arguments.len() == 1 {
+        sequence = semanticTypeArgument(&sequence, 0)
+        access = access + "->fdn_data"
+    } else {
+        if (sequence.kind.Matches("View") || sequence.kind.Matches("Edit")) &&
+            sequence.arguments.len() == 1 {
+            sequence = semanticTypeArgument(&sequence, 0)
+        }
+        access = access + ".fdn_data"
+    }
+    const length = if sequence.kind.Matches("Array") {
+        format.U64(sequence.declaration)
+    } else {
+        base.value + ".fdn_length"
+    }
+    cEmitLocation(&builder, span, depth)
+    const checked = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + "size_t " + checked +
+        " = fdn_bounds_check(" + index.value + ", " + length + ");\n")
+    cEmitted(access + "[" + checked + "]", false)
+}
+
+fn cEmitReplaceExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    replaceValue firReplaceExpression,
+    &valueType semanticType,
+    depth u64
+) cEmittedExpression {
+    const value = cEmitExpression(
+        &builder, &program, &function, &state, replaceValue.value, depth)
+    if value.diverges return value
+    const target = cEmitExpression(
+        &builder, &program, &function, &state, replaceValue.target, depth)
+    if target.diverges return target
+    const previous = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " + previous +
+        ";\n")
+    cEmitMoveAssignment(&builder, &program, &valueType,
+        previous, target.value, depth)
+    cEmitMoveAssignment(&builder, &program, &valueType,
+        target.value, value.value, depth)
+    cEmitted($previous, false)
+}
+
+fn cEmitFieldExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    field firFieldExpression,
+    &valueType semanticType,
+    depth u64
+) cEmittedExpression {
+    var base = cEmitExpression(
+        &builder, &program, &function, &state, field.base, depth)
+    if base.diverges return base
+    var baseType = cExpressionTypeAt(&function, field.base)
+    const pointer = baseType.kind.Matches("Own") ||
+        baseType.kind.Matches("View") || baseType.kind.Matches("Edit")
+    const access = base.value + if pointer { "->" } else { "." } +
+        cFieldName(field.field)
+    if cIsPlaceExpression(&function, field.base) ||
+        !cTypeRequiresDrop(&program, &baseType) {
+        base.value = access
+        return base
+    }
+    var result = if cTypeRequiresDrop(&program, &valueType) {
+        cEmitMoveValue(&builder, &program, &state, &valueType, access, depth)
+    } else {
+        const temporary = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+            temporary + " = " + access + ";\n")
+        cEmitted($temporary, false)
+    }
+    cEmitDropValue(&builder, &program, &baseType, base.value, depth)
+    cEmitCleanups(&builder, &program, &base, depth)
+    result
+}
+
+fn cEmitExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    id u64,
+    depth u64
+) cEmittedExpression {
+    const expression = cExpressionAt(&function, id)
+    const firExpression { value type span } = expression
+    var valueType = type
+    match value {
+        Integer(integer): cEmitted(cIntegerConstant(integer, &valueType), false)
+        Floating(floating): cEmitted(floating.text +
+            if valueType.kind.Matches("F32") { "f" } else { "" }, false)
+        Boolean(boolean): cEmitted(if boolean.value { "true" } else { "false" }, false)
+        StringValue(string): {
+            const temporary = cNextTemporary(&state)
+            cWrite(&builder, cIndent(depth) + "fdn_string " + temporary +
+                " = fdn_string_static(" + cStringLiteral(string.value) + ", " +
+                format.U64(text.ByteLen(string.value)) + ");\n")
+            cEmitted($temporary, false)
+        }
+        Array(array): {
+            var arrayValue = array
+            cEmitArrayExpression(&builder, &program, &function,
+                &state, &arrayValue, &valueType, depth)
+        }
+        Local(local): cEmitted(cLocalValue(&function, local.local, state.taskPoll), false)
+        Read(read): {
+            var localType = cLocalTypeAt(&function, read.local)
+            const localValue = cLocalValue(&function, read.local, state.taskPoll)
+            if localType.kind.Matches("View") && localType.arguments.len() == 1 {
+                var target = semanticTypeArgument(&localType, 0)
+                if target.kind.Matches("Slice") ||
+                    target.kind.Matches("ContractValue") {
+                    return cEmitted($localValue, false)
+                }
+            }
+            cEmitted("(*" + localValue + ")", false)
+        }
+        Move(moved): cEmitMoveExpression(&builder, &program, &function,
+            &state, moved.local, depth)
+        FunctionValue(functionValue): {
+            var selected = functionValue
+            cEmitFunctionValueExpression(&builder, &program, &function,
+                &state, &selected, &valueType, depth)
+        }
+        Closure(closure): {
+            var selected = closure
+            cEmitClosureExpression(&builder, &program,
+                &function, &state, &selected, &valueType, depth)
+        }
+        Unary(unary): cEmitUnaryExpression(&builder, &program, &function,
+            &state, unary, &valueType, span, depth)
+        Ownership(ownership): {
+            var selected = ownership
+            cEmitOwnershipExpression(&builder, &program,
+                &function, &state, &selected, &valueType, span, depth)
+        }
+        Binary(binary): cEmitBinaryExpression(&builder, &program, &function,
+            &state, binary, &valueType, span, depth)
+        Call(call): {
+            var selected = call
+            cEmitCallExpression(&builder, &program, &function,
+                &state, &selected, &valueType, span, depth)
+        }
+        ContractValue(contractValue): {
+            var selected = contractValue
+            cEmitContractExpression(&builder,
+                &program, &function, &state, &selected, &valueType, depth)
+        }
+        StructValue(literal): {
+            var selected = literal
+            cEmitStructExpression(&builder, &program,
+                &function, &state, &selected, depth)
+        }
+        Field(field): cEmitFieldExpression(&builder, &program, &function,
+            &state, field, &valueType, depth)
+        Index(index): cEmitIndexExpression(&builder, &program, &function,
+            &state, index, span, depth)
+        RawPointer(pointer): {
+            var base = cEmitExpression(&builder, &program, &function,
+                &state, pointer.base, depth)
+            if !base.diverges {
+                base.value = base.value + ".fdn_data"
+            }
+            base
+        }
+        ReplaceValue(replaceValue): cEmitReplaceExpression(&builder, &program,
+            &function, &state, replaceValue, &valueType, depth)
+        Spawn(spawnValue): cEmitSpawnExpression(&builder, &program, &function,
+            &state, spawnValue, depth)
+        TaskWait(wait): cEmitTaskWaitExpression(&builder, &program, &function,
+            &state, wait, &valueType, depth)
+        BlockingCall(blocking): {
+            discard blocking
+            panic("suspending blocking call reached expression emission")
+        }
+        CallbackCall(callback): {
+            discard callback
+            panic("suspending callback call reached expression emission")
+        }
+        ChannelValue(channel): cEmitChannelExpression(&builder, &program,
+            &function, &state, $channel, depth)
+        ChannelSenderClone(clone): cEmitChannelCloneExpression(&builder,
+            &program, &function, &state, clone, &valueType, depth)
+        ChannelSend(send): {
+            discard send
+            panic("suspending channel send reached expression emission")
+        }
+        ChannelReceive(receive): {
+            discard receive
+            panic("suspending channel receive reached expression emission")
+        }
+        EnumValue(constructor): {
+            var selected = constructor
+            cEmitEnumExpression(&builder, &program,
+                &function, &state, &selected, depth)
+        }
+        MatchValue(matchValue): {
+            var selected = matchValue
+            cEmitMatchExpression(&builder, &program,
+                &function, &state, &selected, &valueType, span, depth)
+        }
+        Conditional(conditional): cEmitConditionalExpression(&builder,
+            &program, &function, &state, conditional, &valueType, depth)
+    }
+}

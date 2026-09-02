@@ -1,0 +1,242 @@
+package foundation.compiler
+
+struct cCollectedTypes {
+    arrays own arena<semanticType>
+    slices own arena<semanticType>
+    functions own arena<semanticType>
+    channelPayloads own arena<semanticType>
+}
+
+fn newCCollectedTypes() cCollectedTypes {
+    cCollectedTypes {
+        arrays = newArena<semanticType>()
+        slices = newArena<semanticType>()
+        functions = newArena<semanticType>()
+        channelPayloads = newArena<semanticType>()
+    }
+}
+
+fn cTypeArenaContains(
+    &values arena<semanticType>,
+    &value semanticType
+) bool {
+    var index u64 = 0
+    while index < values.len() {
+        var current = match values.take(index) {
+            None: panic("C type collection slot is empty")
+            Some(found): found
+        }
+        const same = sameSemanticType(&current, &value)
+        values.restore(index, $current)
+        if same return true
+        index += 1
+    }
+    false
+}
+
+fn cCollectType(
+    &collected cCollectedTypes,
+    &value semanticType
+) void {
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = match value.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(found): found
+        }
+        cCollectType(&collected, &argument)
+        value.arguments.restore(index, $argument)
+        index += 1
+    }
+
+    if value.kind.Matches("Array") {
+        if !cTypeArenaContains(&collected.arrays, &value) {
+            discard collected.arrays.add(copySemanticType(&value))
+        }
+        return
+    }
+    if value.kind.Matches("Function") {
+        if !cTypeArenaContains(&collected.functions, &value) {
+            discard collected.functions.add(copySemanticType(&value))
+        }
+        return
+    }
+    if (value.kind.Matches("View") || value.kind.Matches("Edit")) &&
+        value.arguments.len() == 1 {
+        var target = semanticTypeArgument(&value, 0)
+        if target.kind.Matches("Slice") &&
+            !cTypeArenaContains(&collected.slices, &value) {
+            discard collected.slices.add(copySemanticType(&value))
+        }
+    }
+}
+
+fn cCollectOptionalType(
+    &collected cCollectedTypes,
+    $value Option<semanticType>
+) Option<semanticType> {
+    match value {
+        None: .None
+        Some(found): {
+            var original = found
+            cCollectType(&collected, &original)
+            .Some(original)
+        }
+    }
+}
+
+fn cCollectStructTypes(
+    &program firProgram,
+    &collected cCollectedTypes
+) void {
+    var typeIndex u64 = 0
+    while typeIndex < program.structs.len() {
+        var declaration = match program.structs.take(typeIndex) {
+            None: panic("FIR struct slot is empty")
+            Some(found): found
+        }
+        var fieldIndex u64 = 0
+        while fieldIndex < declaration.fields.len() {
+            var field = match declaration.fields.take(fieldIndex) {
+                None: panic("FIR struct field slot is empty")
+                Some(found): found
+            }
+            cCollectType(&collected, &field.type)
+            declaration.fields.restore(fieldIndex, $field)
+            fieldIndex += 1
+        }
+        program.structs.restore(typeIndex, $declaration)
+        typeIndex += 1
+    }
+}
+
+fn cCollectEnumTypes(
+    &program firProgram,
+    &collected cCollectedTypes
+) void {
+    var typeIndex u64 = 0
+    while typeIndex < program.enums.len() {
+        var declaration = match program.enums.take(typeIndex) {
+            None: panic("FIR enum slot is empty")
+            Some(found): found
+        }
+        var variantIndex u64 = 0
+        while variantIndex < declaration.variants.len() {
+            var variant = match declaration.variants.take(variantIndex) {
+                None: panic("FIR enum variant slot is empty")
+                Some(found): found
+            }
+            const selected = replace variant.payload with .None
+            variant.payload = cCollectOptionalType(&collected, $selected)
+            declaration.variants.restore(variantIndex, $variant)
+            variantIndex += 1
+        }
+        program.enums.restore(typeIndex, $declaration)
+        typeIndex += 1
+    }
+}
+
+fn cCollectContractTypes(
+    &program firProgram,
+    &collected cCollectedTypes
+) void {
+    var typeIndex u64 = 0
+    while typeIndex < program.contracts.len() {
+        var declaration = match program.contracts.take(typeIndex) {
+            None: panic("FIR contract slot is empty")
+            Some(found): found
+        }
+        var methodIndex u64 = 0
+        while methodIndex < declaration.methodList.len() {
+            var method = match declaration.methodList.take(methodIndex) {
+                None: panic("FIR contract method slot is empty")
+                Some(found): found
+            }
+            cCollectType(&collected, &method.returnType)
+            var parameterIndex u64 = 0
+            while parameterIndex < method.parameters.len() {
+                var parameter = match method.parameters.take(parameterIndex) {
+                    None: panic("FIR contract parameter slot is empty")
+                    Some(found): found
+                }
+                cCollectType(&collected, &parameter)
+                method.parameters.restore(parameterIndex, $parameter)
+                parameterIndex += 1
+            }
+            declaration.methodList.restore(methodIndex, $method)
+            methodIndex += 1
+        }
+        program.contracts.restore(typeIndex, $declaration)
+        typeIndex += 1
+    }
+}
+
+fn cCollectFunctionTypes(
+    &program firProgram,
+    &collected cCollectedTypes
+) void {
+    var functionIndex u64 = 0
+    while functionIndex < program.functions.len() {
+        var function = match program.functions.take(functionIndex) {
+            None: panic("FIR function slot is empty")
+            Some(found): found
+        }
+        cCollectType(&collected, &function.returnType)
+        var localIndex u64 = 0
+        while localIndex < function.locals.len() {
+            var local = match function.locals.take(localIndex) {
+                None: panic("FIR local slot is empty")
+                Some(found): found
+            }
+            cCollectType(&collected, &local.type)
+            function.locals.restore(localIndex, $local)
+            localIndex += 1
+        }
+        var expressionIndex u64 = 0
+        while expressionIndex < function.expressions.len() {
+            const expression = match function.expressions.take(expressionIndex) {
+                None: panic("FIR expression slot is empty")
+                Some(found): found
+            }
+            const firExpressionCopy {
+                original
+                value as duplicate
+            } = copyFirExpression($expression)
+            const firExpression {
+                value as duplicateValue
+                type as duplicateType
+                span
+            } = duplicate
+            discard span
+            var expressionType = duplicateType
+            cCollectType(&collected, &expressionType)
+            match duplicateValue {
+                ChannelValue(channelValue): {
+                    var channel = channelValue
+                    cCollectType(&collected, &channel.payload)
+                    if !channel.payload.kind.Matches("Void") &&
+                        cTypeRequiresDrop(&program, &channel.payload) &&
+                        !cTypeArenaContains(
+                        &collected.channelPayloads, &channel.payload) {
+                        discard collected.channelPayloads.add(
+                            copySemanticType(&channel.payload))
+                    }
+                }
+                _: {}
+            }
+            function.expressions.restore(expressionIndex, $original)
+            expressionIndex += 1
+        }
+        program.functions.restore(functionIndex, $function)
+        functionIndex += 1
+    }
+}
+
+fn cCollectTypes(&program firProgram) cCollectedTypes {
+    var collected = newCCollectedTypes()
+    cCollectStructTypes(&program, &collected)
+    cCollectEnumTypes(&program, &collected)
+    cCollectContractTypes(&program, &collected)
+    cCollectFunctionTypes(&program, &collected)
+    collected
+}

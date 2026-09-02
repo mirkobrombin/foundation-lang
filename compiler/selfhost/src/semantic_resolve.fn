@@ -119,8 +119,19 @@ fn numericSemanticConversionIsInfallible(
 
 fn containsSemanticBorrow(&type semanticType) bool {
     if type.kind.Matches("Function") return false
-    type.kind.Matches("View") || type.kind.Matches("Edit") ||
-        containsSemanticTypeKind(&type, .View) || containsSemanticTypeKind(&type, .Edit)
+    if type.kind.Matches("View") || type.kind.Matches("Edit") return true
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = match type.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        const found = containsSemanticBorrow(&argument)
+        type.arguments.restore(index, $argument)
+        if found return true
+        index += 1
+    }
+    false
 }
 
 fn containsNestedSemanticBorrow(&type semanticType, allowRoot bool) bool {
@@ -201,19 +212,8 @@ fn containsRawSemanticPointer(&type semanticType) bool {
     false
 }
 
-fn hasSemanticDrop(&source program, owner String) bool {
-    var index u64 = 0
-    while index < source.functions.len() {
-        var function = match source.functions.take(index) {
-            None: panic("function slot is empty")
-            Some(function): function
-        }
-        const found = function.ownerType == owner && text.EndsWith(function.name, ".drop")
-        source.functions.restore(index, $function)
-        if found return true
-        index += 1
-    }
-    false
+fn hasSemanticDrop(&analyzer semanticAnalyzer, owner String) bool {
+    semanticStringContains(&analyzer.state.dropOwners, owner)
 }
 
 fn isCopySemanticParameterType(
@@ -259,31 +259,32 @@ fn isCopySemanticParameterTypeActive(
             None: panic("struct slot is empty")
             Some(declaration): declaration
         }
-        if hasSemanticDrop(&source, declaration.name) {
+        if hasSemanticDrop(&analyzer, declaration.name) {
             copy = false
         }
+        source.structs.restore(type.declaration, $declaration)
         var semantic = match analyzer.model.structs.take(type.declaration) {
             None: panic("semantic struct slot is empty")
             Some(semantic): semantic
         }
+        var fields = copySemanticTypeArena(&semantic.fieldTypes)
+        analyzer.model.structs.restore(type.declaration, $semantic)
         var index u64 = 0
-        while copy && index < semantic.fieldTypes.len() {
-            var field = match semantic.fieldTypes.take(index) {
+        while copy && index < fields.len() {
+            var field = match fields.take(index) {
                 None: panic("semantic field type slot is empty")
                 Some(field): field
             }
-            var substituted = substituteSemanticType(&field, &type.arguments)
+            var substituted = substituteCheckedSemanticType(&analyzer, &source, &field, &type.arguments)
             copy = isCopySemanticParameterTypeActive(
                 &analyzer,
                 &source,
                 &substituted,
                 &active
             )
-            semantic.fieldTypes.restore(index, $field)
+            fields.restore(index, $field)
             index += 1
         }
-        analyzer.model.structs.restore(type.declaration, $semantic)
-        source.structs.restore(type.declaration, $declaration)
     }
     if !structValue && type.declaration >= analyzer.model.enums.len() {
         copy = false
@@ -293,20 +294,22 @@ fn isCopySemanticParameterTypeActive(
             None: panic("semantic enum slot is empty")
             Some(semantic): semantic
         }
+        var payloads = copySemanticOptionalTypeArena(&semantic.payloadTypes)
+        analyzer.model.enums.restore(type.declaration, $semantic)
         var index u64 = 0
-        while copy && index < semantic.payloadTypes.len() {
-            const payload = match semantic.payloadTypes.take(index) {
+        while copy && index < payloads.len() {
+            const payload = match payloads.take(index) {
                 None: panic("semantic payload slot is empty")
                 Some(payload): payload
             }
             match payload {
                 None: {
                     var missing Option<semanticType> = .None
-                    semantic.payloadTypes.restore(index, $missing)
+                    payloads.restore(index, $missing)
                 }
                 Some(value): {
                     var original = value
-                    var substituted = substituteSemanticType(&original, &type.arguments)
+                    var substituted = substituteCheckedSemanticType(&analyzer, &source, &original, &type.arguments)
                     copy = isCopySemanticParameterTypeActive(
                         &analyzer,
                         &source,
@@ -314,12 +317,11 @@ fn isCopySemanticParameterTypeActive(
                         &active
                     )
                     var restored Option<semanticType> = .Some(original)
-                    semantic.payloadTypes.restore(index, $restored)
+                    payloads.restore(index, $restored)
                 }
             }
             index += 1
         }
-        analyzer.model.enums.restore(type.declaration, $semantic)
     }
     active.truncate(active.len() - 1)
     copy
@@ -338,35 +340,41 @@ fn semanticDirectType(
 }
 
 fn semanticTypeArgumentCount(
-    &source program,
+    &analyzer semanticAnalyzer,
     &base semanticType,
     supplied u64
 ) u64 {
     if base.kind.Matches("StructValue") {
-        var declaration = match source.structs.take(base.declaration) {
-            None: panic("struct slot is empty")
-            Some(declaration): declaration
+        const count = match analyzer.state.structTypeParameterCounts.take(
+            base.declaration) {
+            None: {
+                return 0
+            }
+            Some(value): value
         }
-        const count = listLength(&declaration.typeParameters)
-        source.structs.restore(base.declaration, $declaration)
+        analyzer.state.structTypeParameterCounts.restore(base.declaration, count)
         return count
     }
     if base.kind.Matches("EnumValue") {
-        var declaration = match source.enums.take(base.declaration) {
-            None: panic("enum slot is empty")
-            Some(declaration): declaration
+        const count = match analyzer.state.enumTypeParameterCounts.take(
+            base.declaration) {
+            None: {
+                return 0
+            }
+            Some(value): value
         }
-        const count = listLength(&declaration.typeParameters)
-        source.enums.restore(base.declaration, $declaration)
+        analyzer.state.enumTypeParameterCounts.restore(base.declaration, count)
         return count
     }
     if base.kind.Matches("ContractValue") {
-        var declaration = match source.contracts.take(base.declaration) {
-            None: panic("contract slot is empty")
-            Some(declaration): declaration
+        const count = match analyzer.state.contractTypeParameterCounts.take(
+            base.declaration) {
+            None: {
+                return 0
+            }
+            Some(value): value
         }
-        const count = listLength(&declaration.typeParameters)
-        source.contracts.restore(base.declaration, $declaration)
+        analyzer.state.contractTypeParameterCounts.restore(base.declaration, count)
         return count
     }
     if base.kind.Matches("Function") return supplied
@@ -561,7 +569,7 @@ fn resolveSemanticType(
     }
 
     const supplied = arguments.len()
-    const expected = semanticTypeArgumentCount(&source, &base, supplied)
+    const expected = semanticTypeArgumentCount(&analyzer, &base, supplied)
     if base.kind.Matches("Function") {
         if supplied == 0 {
             analyzer.diagnostics.reportError(
@@ -719,9 +727,7 @@ fn resolveSemanticParameterType(
         Edit: unarySemanticType(.Edit, $base)
         Read: {
             if isCopySemanticParameterType(&analyzer, &source, &base) return base
-            var result = unarySemanticType(.View, $base)
-            result.declaration = 1
-            result
+            unarySemanticType(.View, $base)
         }
     }
 }
@@ -744,6 +750,8 @@ fn declareSemanticTypes(
                 declaration.span
             )
         }
+        discard analyzer.state.structTypeParameterCounts.add(
+            listLength(&declaration.typeParameters))
         source.structs.restore(index, $declaration)
         index += 1
     }
@@ -772,6 +780,8 @@ fn declareSemanticTypes(
                 declaration.span
             )
         }
+        discard analyzer.state.enumTypeParameterCounts.add(
+            listLength(&declaration.typeParameters))
         if listLength(&declaration.variants) == 0 {
             analyzer.diagnostics.reportError(
                 "FDN2031",
@@ -808,6 +818,8 @@ fn declareSemanticTypes(
                 declaration.span
             )
         }
+        discard analyzer.state.contractTypeParameterCounts.add(
+            listLength(&declaration.typeParameters))
         if listLength(&declaration.methodList) == 0 &&
             listLength(&declaration.parents) == 0 {
             analyzer.diagnostics.reportError(
@@ -872,6 +884,37 @@ fn copySemanticTypeArena(&values arena<semanticType>) own arena<semanticType> {
         }
         discard result.add(copySemanticType(&value))
         values.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn copySemanticOptionalTypeArena(
+    &values arena<Option<semanticType>>
+) own arena<Option<semanticType>> {
+    var result = newArena<Option<semanticType>>()
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("optional semantic type slot is empty")
+            Some(value): value
+        }
+        match value {
+            None: {
+                var sourceMissing Option<semanticType> = .None
+                values.restore(index, $sourceMissing)
+                var targetMissing Option<semanticType> = .None
+                discard result.add($targetMissing)
+            }
+            Some(value): {
+                var original = value
+                const copy = copySemanticType(&original)
+                var sourceValue Option<semanticType> = .Some(original)
+                var targetValue Option<semanticType> = .Some(copy)
+                values.restore(index, $sourceValue)
+                discard result.add($targetValue)
+            }
+        }
         index += 1
     }
     result
@@ -1795,7 +1838,7 @@ fn semanticLayoutChildren(
                 None: panic("semantic field type slot is empty")
                 Some(fieldType): fieldType
             }
-            var child = substituteSemanticType(&fieldType, &type.arguments)
+            var child = substituteCheckedSemanticType(&analyzer, &source, &fieldType, &type.arguments)
             while child.kind.Matches("Array") && child.arguments.len() == 1 {
                 child = semanticTypeArgument(&child, 0)
             }
@@ -1841,7 +1884,7 @@ fn semanticLayoutChildren(
                 }
                 Some(value): {
                     var original = value
-                    var child = substituteSemanticType(&original, &type.arguments)
+                    var child = substituteCheckedSemanticType(&analyzer, &source, &original, &type.arguments)
                     const skip = child.kind.Matches("Void") && declaration.builtin.Matches("Result")
                     while child.kind.Matches("Array") && child.arguments.len() == 1 {
                         child = semanticTypeArgument(&child, 0)
@@ -2335,7 +2378,7 @@ fn isSemanticCRecordTypeActive(
     var valid = declaration.exported && declaration.kind.Matches("Struct") &&
         listLength(&declaration.typeParameters) == 0 &&
         listLength(&declaration.fields) == semantic.fieldTypes.len() &&
-        !hasSemanticDrop(&source, declaration.name)
+        !hasSemanticDrop(&analyzer, declaration.name)
     var fields = collections.NewList<structField>()
     var index u64 = 0
     while valid && !declaration.fields.IsEmpty() {
@@ -2522,6 +2565,26 @@ fn copySemanticSignature(
     functionSignature {
         returnType = copySemanticType(&returnType)
         parameters = copySemanticTypeArena(&parameters)
+    }
+}
+
+fn declareSemanticDropOwners(
+    &analyzer semanticAnalyzer,
+    &source program
+) void {
+    var index u64 = 0
+    while index < source.functions.len() {
+        var function = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(function): function
+        }
+        if !text.IsEmpty(function.ownerType) &&
+            text.EndsWith(function.name, ".drop") &&
+            !semanticStringContains(&analyzer.state.dropOwners, function.ownerType) {
+            discard analyzer.state.dropOwners.add(text.Copy(function.ownerType))
+        }
+        source.functions.restore(index, $function)
+        index += 1
     }
 }
 

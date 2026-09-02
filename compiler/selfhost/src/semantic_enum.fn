@@ -44,13 +44,24 @@ fn semanticEnumExplicitType(
                     var current = payload
                     if listLength(&current.typeArguments) != 0 ||
                         semanticEnumTypeParameterCount(&analyzer, typeID) == 0 {
-                        var syntax = typeSyntax {
-                            name = text.Copy(current.name)
-                            arguments = copyTypeSyntaxList(&current.typeArguments)
-                            span = span
-                            arrayLength = 0
+                        type = declaredSemanticType(.EnumValue, typeID)
+                        var pending = collections.NewList<typeSyntax>()
+                        while !current.typeArguments.IsEmpty() {
+                            var syntax = match current.typeArguments.PopFront() {
+                                None: panic("enum type argument list invariant failed")
+                                Some(syntax): syntax
+                            }
+                            discard type.arguments.add(resolveSemanticType(
+                                    &analyzer, &source, &syntax))
+                            pending.PushFront($syntax)
                         }
-                        type = resolveSemanticType(&analyzer, &source, &syntax)
+                        while !pending.IsEmpty() {
+                            const syntax = match pending.PopFront() {
+                                None: panic("enum type argument restore invariant failed")
+                                Some(syntax): syntax
+                            }
+                            current.typeArguments.PushFront($syntax)
+                        }
                     }
                     present = true
                     expressionValue.Name(current)
@@ -266,7 +277,7 @@ fn semanticVariantInfoAt(
                     }
                     Some(type): {
                         var original = type
-                        payload = .Some(substituteSemanticType(&original, &arguments))
+                        payload = .Some(substituteCheckedSemanticType(&analyzer, &source, &original, &arguments))
                         var restored Option<semanticType> = .Some(original)
                         semantic.payloadTypes.restore(index, $restored)
                     }
@@ -467,7 +478,7 @@ fn analyzeSemanticNamedEnumConstructor(
     if hasPayload {
         var known = semanticInferenceSnapshot(&inferred)
         if known.complete {
-            var resolvedPayload = substituteSemanticType(
+            var resolvedPayload = substituteCheckedSemanticType(&analyzer, &source,
                 &pattern, &known.arguments)
             if resolvedPayload.kind.Matches("Void") &&
                 semanticEnumIsResult(&source, type) {
@@ -499,7 +510,7 @@ fn analyzeSemanticNamedEnumConstructor(
                 var known = semanticInferenceSnapshot(&inferred)
                 var expectedPayload = absentSemanticType()
                 if known.complete {
-                    var resolved = substituteSemanticType(
+                    var resolved = substituteCheckedSemanticType(&analyzer, &source,
                         &pattern, &known.arguments)
                     expectedPayload = expectedSemanticType(&resolved)
                 }
@@ -566,7 +577,7 @@ fn analyzeSemanticNamedEnumConstructor(
         None: {}
         Some(actual): {
             if hasPayload {
-                var expectedPayload = substituteSemanticType(
+                var expectedPayload = substituteCheckedSemanticType(&analyzer, &source,
                     &pattern, &typeArguments)
                 var currentActual = actual
                 requireSameSemanticType(

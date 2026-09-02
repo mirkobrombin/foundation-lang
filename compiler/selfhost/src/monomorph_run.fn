@@ -1,0 +1,74 @@
+package foundation.compiler
+
+fn finishMonomorphizer(
+    $state own monomorphizer
+) own firProgram {
+    const monomorphizer {
+        result
+        structs
+        enums
+        contracts
+        functions
+        preserveSourceTypes
+    } = state
+    discard structs
+    discard enums
+    discard contracts
+    discard functions
+    discard preserveSourceTypes
+    result
+}
+
+fn monomorphizeProgram(
+    &source firProgram
+) own firProgram {
+    var state = newMonomorphizer()
+    var arguments = newArena<semanticType>()
+    const mainFunction = source.main
+    state.result.main = instantiateMonomorphFunction(
+        &state, &source, mainFunction, &arguments)
+    var index u64 = 0
+    while index < source.functions.len() {
+        var function = match source.functions.take(index) {
+            None: panic("source function slot is empty")
+            Some(found): found
+        }
+        const root = optionStringPresent(function.cSymbol) && function.hasBody
+        source.functions.restore(index, $function)
+        if root {
+            var rootArguments = newArena<semanticType>()
+            discard instantiateMonomorphFunction(
+                &state, &source, index, &rootArguments)
+        }
+        index += 1
+    }
+    var result = finishMonomorphizer($state)
+    markFirDivergingFunctions(&result)
+    result
+}
+
+fn monomorphizePackageInterface(
+    &source firProgram,
+    packageName String
+) own firProgram {
+    var state = newMonomorphizer()
+    var index u64 = 0
+    while index < source.functions.len() {
+        var function = match source.functions.take(index) {
+            None: panic("source function slot is empty")
+            Some(found): found
+        }
+        const root = optionStringPresent(function.cSymbol) && function.hasBody &&
+            function.packageName == packageName
+        source.functions.restore(index, $function)
+        if root {
+            var arguments = newArena<semanticType>()
+            discard instantiateMonomorphFunction(
+                &state, &source, index, &arguments)
+        }
+        index += 1
+    }
+    var result = finishMonomorphizer($state)
+    markFirDivergingFunctions(&result)
+    result
+}

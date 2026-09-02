@@ -1,0 +1,167 @@
+package foundation.compiler
+
+import std.text
+
+fn cBinaryAnd(value firBinaryOperator) bool {
+    match value { And: true _: false }
+}
+
+fn cBinaryOr(value firBinaryOperator) bool {
+    match value { Or: true _: false }
+}
+
+fn cBinaryArithmetic(value firBinaryOperator) bool {
+    match value {
+        Add: true
+        Subtract: true
+        Multiply: true
+        Divide: true
+        Remainder: true
+        ShiftLeft: true
+        ShiftRight: true
+        BitwiseAnd: true
+        BitwiseXor: true
+        BitwiseOr: true
+        _: false
+    }
+}
+
+fn cArithmeticValue(
+    operation firBinaryOperator,
+    &valueType semanticType,
+    left String,
+    right String
+) String {
+    match operation {
+        Add: {
+            if valueType.kind.Matches("StringValue") {
+                return "fdn_string_concat(" + left + ", " + right + ")"
+            }
+            if valueType.kind.Matches("Raw") ||
+                valueType.kind.Matches("RawConst") ||
+                isSemanticFloating(&valueType) {
+                return left + " + " + right
+            }
+            "fdn_" + cTypeTag(&valueType) + "_add(" + left + ", " + right + ")"
+        }
+        Subtract: {
+            if valueType.kind.Matches("Raw") ||
+                valueType.kind.Matches("RawConst") ||
+                isSemanticFloating(&valueType) {
+                return left + " - " + right
+            }
+            "fdn_" + cTypeTag(&valueType) + "_subtract(" + left +
+                ", " + right + ")"
+        }
+        Multiply: if isSemanticFloating(&valueType) {
+            left + " * " + right
+        } else {
+            "fdn_" + cTypeTag(&valueType) + "_multiply(" + left +
+                ", " + right + ")"
+        }
+        Divide: if isSemanticFloating(&valueType) {
+            left + " / " + right
+        } else {
+            "fdn_" + cTypeTag(&valueType) + "_divide(" + left +
+                ", " + right + ")"
+        }
+        Remainder: "fdn_" + cTypeTag(&valueType) + "_remainder(" +
+            left + ", " + right + ")"
+        ShiftLeft: "fdn_" + cTypeTag(&valueType) + "_shift_left(" +
+            left + ", " + right + ")"
+        ShiftRight: "fdn_" + cTypeTag(&valueType) + "_shift_right(" +
+            left + ", " + right + ")"
+        BitwiseAnd: left + " & " + right
+        BitwiseXor: left + " ^ " + right
+        BitwiseOr: left + " | " + right
+        _: panic("non-arithmetic operation reached arithmetic emission")
+    }
+}
+
+fn cComparisonValue(
+    operation firBinaryOperator,
+    stringOperands bool,
+    left String,
+    right String
+) String {
+    match operation {
+        Equal: if stringOperands {
+            "fdn_string_equal(" + left + ", " + right + ")"
+        } else {
+            left + " == " + right
+        }
+        NotEqual: if stringOperands {
+            "!fdn_string_equal(" + left + ", " + right + ")"
+        } else {
+            left + " != " + right
+        }
+        Less: left + " < " + right
+        LessEqual: left + " <= " + right
+        Greater: left + " > " + right
+        GreaterEqual: left + " >= " + right
+        _: panic("non-comparison operation reached comparison emission")
+    }
+}
+
+fn cEmitBinaryExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    binary firBinaryExpression,
+    &valueType semanticType,
+    span sourceSpan,
+    depth u64
+) cEmittedExpression {
+    var left = cEmitExpression(
+        &builder, &program, &function, &state, binary.left, depth)
+    if left.diverges return left
+    if cBinaryAnd(binary.operation) || cBinaryOr(binary.operation) {
+        const temporary = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + "bool " + temporary + " = " +
+            left.value + ";\n")
+        const condition = if cBinaryAnd(binary.operation) {
+            "" + temporary
+        } else {
+            "!" + temporary
+        }
+        cWrite(&builder, cIndent(depth) + "if (" + condition + ") {\n")
+        var right = cEmitExpression(
+            &builder, &program, &function, &state, binary.right, depth + 1)
+        if !right.diverges {
+            cWrite(&builder, cIndent(depth + 1) + temporary + " = " +
+                right.value + ";\n")
+        }
+        cWrite(&builder, cIndent(depth) + "}\n")
+        return cEmitted($temporary, false)
+    }
+
+    if firExpressionDiverges(
+        &program, &function, state.function, binary.right) {
+        cEmitDiscardValue(&builder, &left, depth)
+        return cEmitExpression(
+            &builder, &program, &function, &state, binary.right, depth)
+    }
+    var right = cEmitExpression(
+        &builder, &program, &function, &state, binary.right, depth)
+    if right.diverges return right
+    const temporary = cNextTemporary(&state)
+    if cBinaryArithmetic(binary.operation) {
+        cEmitLocation(&builder, span, depth)
+        const arithmetic = cArithmeticValue(binary.operation, &valueType,
+            left.value, right.value)
+        cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+            temporary + " = " + arithmetic + ";\n")
+    } else {
+        var leftType = cExpressionTypeAt(&function, binary.left)
+        const comparison = cComparisonValue(binary.operation,
+            leftType.kind.Matches("StringValue"), left.value, right.value)
+        cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+            temporary + " = " + comparison + ";\n")
+    }
+    cEmitDropInspectedTemporary(
+        &builder, &program, &function, binary.left, &left, depth)
+    cEmitDropInspectedTemporary(
+        &builder, &program, &function, binary.right, &right, depth)
+    cEmitted($temporary, false)
+}

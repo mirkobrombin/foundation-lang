@@ -51,7 +51,7 @@ fn requiresSemanticDropActive(
             None: panic("struct slot is empty")
             Some(declaration): declaration
         }
-        if hasSemanticDrop(&source, declaration.name) {
+        if hasSemanticDrop(&analyzer, declaration.name) {
             required = true
         }
         source.structs.restore(type.declaration, $declaration)
@@ -60,23 +60,24 @@ fn requiresSemanticDropActive(
                 None: panic("semantic struct slot is empty")
                 Some(semantic): semantic
             }
+            var fields = copySemanticTypeArena(&semantic.fieldTypes)
+            analyzer.model.structs.restore(type.declaration, $semantic)
             var index u64 = 0
-            while !required && index < semantic.fieldTypes.len() {
-                var field = match semantic.fieldTypes.take(index) {
+            while !required && index < fields.len() {
+                var field = match fields.take(index) {
                     None: panic("semantic field type slot is empty")
                     Some(field): field
                 }
-                var resolved = substituteSemanticType(&field, &type.arguments)
+                var resolved = substituteCheckedSemanticType(&analyzer, &source, &field, &type.arguments)
                 required = requiresSemanticDropActive(
                     &analyzer,
                     &source,
                     &resolved,
                     &active
                 )
-                semantic.fieldTypes.restore(index, $field)
+                fields.restore(index, $field)
                 index += 1
             }
-            analyzer.model.structs.restore(type.declaration, $semantic)
         }
     }
     if type.kind.Matches("EnumValue") &&
@@ -85,20 +86,22 @@ fn requiresSemanticDropActive(
             None: panic("semantic enum slot is empty")
             Some(semantic): semantic
         }
+        var payloads = copySemanticOptionalTypeArena(&semantic.payloadTypes)
+        analyzer.model.enums.restore(type.declaration, $semantic)
         var index u64 = 0
-        while !required && index < semantic.payloadTypes.len() {
-            const payload = match semantic.payloadTypes.take(index) {
+        while !required && index < payloads.len() {
+            const payload = match payloads.take(index) {
                 None: panic("semantic payload slot is empty")
                 Some(payload): payload
             }
             match payload {
                 None: {
                     var missing Option<semanticType> = .None
-                    semantic.payloadTypes.restore(index, $missing)
+                    payloads.restore(index, $missing)
                 }
                 Some(value): {
                     var original = value
-                    var resolved = substituteSemanticType(&original, &type.arguments)
+                    var resolved = substituteCheckedSemanticType(&analyzer, &source, &original, &type.arguments)
                     required = requiresSemanticDropActive(
                         &analyzer,
                         &source,
@@ -106,12 +109,11 @@ fn requiresSemanticDropActive(
                         &active
                     )
                     var restored Option<semanticType> = .Some(original)
-                    semantic.payloadTypes.restore(index, $restored)
+                    payloads.restore(index, $restored)
                 }
             }
             index += 1
         }
-        analyzer.model.enums.restore(type.declaration, $semantic)
     }
     active.truncate(active.len() - 1)
     required

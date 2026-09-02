@@ -172,6 +172,94 @@ fn copyTypeSyntaxList(
     reverseList($copies)
 }
 
+fn copyAttributeApplicationList(
+    &values collections.List<attributeApplication>
+) own collections.List<attributeApplication> {
+    var originals = collections.NewList<attributeApplication>()
+    var copies = collections.NewList<attributeApplication>()
+    while !values.IsEmpty() {
+        var value = match values.PopFront() {
+            None: panic("attribute list invariant failed")
+            Some(value): value
+        }
+        var argumentOriginals = collections.NewList<attributeArgument>()
+        var argumentCopies = collections.NewList<attributeArgument>()
+        while !value.arguments.IsEmpty() {
+            var argument = match value.arguments.PopFront() {
+                None: panic("attribute argument list invariant failed")
+                Some(argument): argument
+            }
+            const selectedName = replace argument.name with .None
+            var copiedName Option<String> = .None
+            match selectedName {
+                None: {}
+                Some(name): {
+                    copiedName = .Some(text.Copy(name))
+                    argument.name = .Some(name)
+                }
+            }
+            argumentCopies.PushFront($attributeArgument {
+                name = copiedName
+                value = argument.value
+                span = argument.span
+            })
+            argumentOriginals.PushFront($argument)
+        }
+        while !argumentOriginals.IsEmpty() {
+            const argument = match argumentOriginals.PopFront() {
+                None: panic("attribute argument restore invariant failed")
+                Some(argument): argument
+            }
+            value.arguments.PushFront($argument)
+        }
+        copies.PushFront($attributeApplication {
+            name = text.Copy(value.name)
+            arguments = reverseList($argumentCopies)
+            span = value.span
+            parenthesized = value.parenthesized
+        })
+        originals.PushFront($value)
+    }
+    while !originals.IsEmpty() {
+        const value = match originals.PopFront() {
+            None: panic("attribute restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront($value)
+    }
+    reverseList($copies)
+}
+
+fn copyParameterList(
+    &values collections.List<parameter>
+) own collections.List<parameter> {
+    var originals = collections.NewList<parameter>()
+    var copies = collections.NewList<parameter>()
+    while !values.IsEmpty() {
+        var value = match values.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(value): value
+        }
+        copies.PushFront($parameter {
+            name = text.Copy(value.name)
+            type = copyTypeSyntax(&value.type)
+            span = value.span
+            attributes = copyAttributeApplicationList(&value.attributes)
+            mode = value.mode
+            inferredType = value.inferredType
+        })
+        originals.PushFront($value)
+    }
+    while !originals.IsEmpty() {
+        const value = match originals.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront($value)
+    }
+    reverseList($copies)
+}
+
 fn copyBoolList(
     &values collections.List<bool>
 ) own collections.List<bool> {

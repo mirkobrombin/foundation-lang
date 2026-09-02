@@ -1,0 +1,119 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+struct monomorphEntry {
+    key String
+    id u64
+}
+
+struct monomorphizer {
+    result own firProgram
+    structs own arena<monomorphEntry>
+    enums own arena<monomorphEntry>
+    contracts own arena<monomorphEntry>
+    functions own arena<monomorphEntry>
+    preserveSourceTypes bool
+}
+
+fn newMonomorphizer() own monomorphizer {
+    own monomorphizer {
+        result = newFirProgram()
+        structs = newArena<monomorphEntry>()
+        enums = newArena<monomorphEntry>()
+        contracts = newArena<monomorphEntry>()
+        functions = newArena<monomorphEntry>()
+        preserveSourceTypes = false
+    }
+}
+
+fn findMonomorphEntry(
+    &entries arena<monomorphEntry>,
+    key String
+) Option<u64> {
+    var index u64 = 0
+    while index < entries.len() {
+        const entry = match entries.take(index) {
+            None: panic("monomorph entry slot is empty")
+            Some(value): value
+        }
+        const found = entry.key == key
+        const id = entry.id
+        entries.restore(index, $entry)
+        if found return .Some(id)
+        index += 1
+    }
+    .None
+}
+
+fn addMonomorphEntry(
+    &entries arena<monomorphEntry>,
+    key String,
+    id u64
+) void {
+    discard entries.add(monomorphEntry { key = text.Copy(key) id = id })
+}
+
+fn emptyFirStruct() firStruct {
+    firStruct {
+        name = ""
+        sourcePath = ""
+        sourceSpan = sourceSpan {
+            offset = 0 length = 0 line = 0 column = 0 source = 0
+        }
+        typeParameterCount = 0
+        fields = newArena<firStructField>()
+        implementations = newArena<semanticType>()
+        exported = false
+        dropFunction = .None
+        attributes = newArena<firAttributeUse>()
+        serviceType = false
+        implementationDelegates = newArena<Option<u64>>()
+    }
+}
+
+fn emptyFirEnum() firEnum {
+    firEnum {
+        name = ""
+        typeParameterCount = 0
+        variants = newArena<firEnumVariant>()
+        exported = false
+        builtin = false
+        attributes = newArena<firAttributeUse>()
+        stateMachine = false
+    }
+}
+
+fn emptyFirContract() firContract {
+    firContract {
+        name = ""
+        typeParameterCount = 0
+        methodList = newArena<firContractMethod>()
+        exported = false
+        attributes = newArena<firAttributeUse>()
+        parents = newArena<semanticType>()
+    }
+}
+
+fn monomorphFunctionKey(
+    function u64,
+    &arguments arena<semanticType>
+) String {
+    var result = format.U64(function) + "<"
+    var index u64 = 0
+    while index < arguments.len() {
+        var argument = match arguments.take(index) {
+            None: panic("monomorph type argument slot is empty")
+            Some(value): value
+        }
+        result = result + semanticTypeKey(&argument) + ";"
+        arguments.restore(index, $argument)
+        index += 1
+    }
+    result + ">"
+}
+
+fn monomorphUnsigned(value u64) String {
+    format.U64(value)
+}

@@ -1,0 +1,146 @@
+package foundation.compiler
+
+import std.format
+import std.fs
+import std.io
+import std.text
+
+fn compilerUsage() String {
+    "usage:\n" +
+        "  foundationc-selfhost check <source-or-project>\n" +
+        "  foundationc-selfhost emit-c <source-or-project> -o <output.c>\n"
+}
+
+fn diagnosticPath(
+    &sources arena<projectSource>,
+    source u64,
+    fallback String
+) String {
+    if source >= sources.len() return text.Copy(fallback)
+    const selected = match sources.take(source) {
+        None: {
+            return text.Copy(fallback)
+        }
+        Some(value): value
+    }
+    const result = text.Copy(selected.path)
+    sources.restore(source, $selected)
+    result
+}
+
+fn writeCompilerDiagnostics(
+    $found own diagnostics,
+    &sources arena<projectSource>,
+    fallback String
+) void {
+    var values = $found.takeAll()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("diagnostic list invariant failed")
+            Some(value): value
+        }
+        const severity = "error" if isErrorSeverity(value.severity) else "warning"
+        discard io.WriteStderrText(
+            diagnosticPath(&sources, value.span.source, fallback) + ":" +
+            format.U64(value.span.line) + ":" +
+            format.U64(value.span.column) + " " + severity + "[" +
+            value.code + "]: " + value.message + "\n"
+        )
+        discard value
+    }
+}
+
+struct checkedProgram {
+    loaded own loadedProject
+    model own semanticModel
+}
+
+fn loadCheckedProgram(
+    input String
+) Option<own checkedProgram> {
+    var found = newDiagnostics()
+    const selected = loadProject(
+        input, &found, .Production, hostTargetPlatform())
+    const loadFailed = found.hasErrors()
+    var loaded = match selected {
+        None: {
+            var sources = newArena<projectSource>()
+            writeCompilerDiagnostics($found, &sources, input)
+            return .None
+        }
+        Some(value): {
+            value
+        }
+    }
+    if found.len() != 0 {
+        writeCompilerDiagnostics($found, &loaded.sources, input)
+    }
+    if loadFailed return .None
+
+    const analysis = analyzeProgram(
+        &loaded.program,
+        analyzeOptions { requireMain = true retainInvalidModel = false }
+    )
+    const semanticAnalysis { model diagnostics as semanticDiagnostics } = analysis
+    const analysisFailed = semanticDiagnostics.hasErrors()
+    if semanticDiagnostics.len() != 0 {
+        writeCompilerDiagnostics(
+            $semanticDiagnostics, &loaded.sources, input)
+    } else {
+        discard semanticDiagnostics
+    }
+    if analysisFailed return .None
+    match model {
+        None: .None
+        Some(model): .Some(own checkedProgram {
+            loaded = loaded
+            model = model
+        })
+    }
+}
+
+fn runCompilerCheck(input String) i32 {
+    const selected = loadCheckedProgram(input)
+    match selected {
+        None: 1
+        Some(value): {
+            discard value
+            0
+        }
+    }
+}
+
+fn runCompilerEmitC(input String, outputPath String) i32 {
+    const selected = loadCheckedProgram(input)
+    var checked = match selected {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const checkedProgram { loaded model } = checked
+    var project = loaded
+    var semantic = model
+    var lowered = lowerProgram(&project.program, &semantic)
+    const output = emitSelfHostedC(&lowered, input)
+    match fs.WriteTextAtomic(outputPath, output, 1073741824) {
+        Ok: 0
+        Err(error): {
+            discard error
+            discard io.WriteStderrText(
+                "foundationc-selfhost: cannot write " + outputPath + "\n")
+            1
+        }
+    }
+}
+
+fn main(args [String]) i32 {
+    if len(args) == 2 && args[0] == "check" {
+        return runCompilerCheck(text.Copy(args[1]))
+    }
+    if len(args) == 4 && args[0] == "emit-c" && args[2] == "-o" {
+        return runCompilerEmitC(text.Copy(args[1]), args[3])
+    }
+    discard io.WriteStderrText(compilerUsage())
+    2
+}

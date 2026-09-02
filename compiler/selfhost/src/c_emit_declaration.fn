@@ -1,0 +1,517 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn cArrayName(&value semanticType) String {
+    "fdn_" + cTypeTag(&value)
+}
+
+fn cSliceName(&value semanticType) String {
+    "fdn_" + cTypeTag(&value)
+}
+
+fn cChannelDropName(&value semanticType) String {
+    "fdn_channel_drop_" + cTypeTag(&value)
+}
+
+fn cNewBoolArena(length u64) own arena<bool> {
+    var result = newArena<bool>()
+    var index u64 = 0
+    while index < length {
+        discard result.add(false)
+        index += 1
+    }
+    result
+}
+
+fn cSetBool(&values arena<bool>, index u64, value bool) void {
+    const selected = match values.take(index) {
+        None: panic("C emission state slot is empty")
+        Some(found): found
+    }
+    discard selected
+    values.restore(index, value)
+}
+
+fn cEmitPreamble(&builder text.Builder, includeString bool) void {
+    cWrite(&builder, "#include <stdbool.h>\n")
+    cWrite(&builder, "#include <stdint.h>\n")
+    cWrite(&builder, "#include <math.h>\n")
+    if includeString {
+        cWrite(&builder, "#include <string.h>\n")
+    }
+    cWrite(&builder, "#include \"foundation/runtime.h\"\n\n")
+    cWrite(&builder, "#if defined(__GNUC__) || defined(__clang__)\n")
+    cWrite(&builder, "#define FDN_MAYBE_UNUSED __attribute__((unused))\n")
+    cWrite(&builder, "#else\n")
+    cWrite(&builder, "#define FDN_MAYBE_UNUSED\n")
+    cWrite(&builder, "#endif\n\n")
+    cWrite(&builder, "typedef struct fdn_channel_pair {\n")
+    cWrite(&builder, "    fdn_channel *fdn_field_0;\n")
+    cWrite(&builder, "    fdn_channel *fdn_field_1;\n")
+    cWrite(&builder, "} fdn_channel_pair;\n\n")
+}
+
+fn cEmitTypeForwards(
+    &builder text.Builder,
+    &program firProgram,
+    &collected cCollectedTypes
+) void {
+    var index u64 = 0
+    while index < program.structs.len() {
+        cWrite(&builder, "typedef struct fdn_struct_" + format.U64(index) +
+            " fdn_struct_" + format.U64(index) + ";\n")
+        index += 1
+    }
+    index = 0
+    while index < program.enums.len() {
+        cWrite(&builder, "typedef struct fdn_enum_" + format.U64(index) +
+            " fdn_enum_" + format.U64(index) + ";\n")
+        index += 1
+    }
+    index = 0
+    while index < program.contracts.len() {
+        cWrite(&builder, "typedef struct fdn_contract_" + format.U64(index) +
+            " fdn_contract_" + format.U64(index) + ";\n")
+        index += 1
+    }
+    index = 0
+    while index < collected.arrays.len() {
+        var value = match collected.arrays.take(index) {
+            None: panic("C array type slot is empty")
+            Some(found): found
+        }
+        const name = cArrayName(&value)
+        cWrite(&builder, "typedef struct " + name + " " + name + ";\n")
+        collected.arrays.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < collected.functions.len() {
+        var value = match collected.functions.take(index) {
+            None: panic("C function type slot is empty")
+            Some(found): found
+        }
+        if !isCSemanticFunction(&value) {
+            const name = cTypeName(&value)
+            cWrite(&builder, "typedef struct " + name + " " + name + ";\n")
+        }
+        collected.functions.restore(index, $value)
+        index += 1
+    }
+    if program.structs.len() != 0 || program.enums.len() != 0 ||
+        program.contracts.len() != 0 || collected.arrays.len() != 0 ||
+        collected.functions.len() != 0 {
+        cWrite(&builder, "\n")
+    }
+}
+
+fn cEmitFunctionTypeDefinition(
+    &builder text.Builder,
+    &value semanticType
+) void {
+    if value.arguments.len() == 0 {
+        panic("function type has no result")
+    }
+    var result = semanticTypeArgument(&value, 0)
+    if isCSemanticFunction(&value) {
+        cWrite(&builder, "typedef " + cTypeName(&result) + " (*" +
+            cTypeName(&value) + ")(")
+        if value.arguments.len() == 1 {
+            cWrite(&builder, "void")
+        } else {
+            var index u64 = 1
+            while index < value.arguments.len() {
+                if index != 1 {
+                    cWrite(&builder, ", ")
+                }
+                var parameter = semanticTypeArgument(&value, index)
+                cWrite(&builder, cTypeName(&parameter))
+                index += 1
+            }
+        }
+        cWrite(&builder, ");\n\n")
+        return
+    }
+    cWrite(&builder, "struct " + cTypeName(&value) + " {\n")
+    cWrite(&builder, "    void *fdn_env;\n")
+    cWrite(&builder, "    " + cTypeName(&result) + " (*fdn_call)(void *")
+    var index u64 = 1
+    while index < value.arguments.len() {
+        var parameter = semanticTypeArgument(&value, index)
+        cWrite(&builder, ", " + cTypeName(&parameter))
+        index += 1
+    }
+    cWrite(&builder, ");\n")
+    cWrite(&builder, "    void (*fdn_drop)(void *);\n")
+    cWrite(&builder, "};\n\n")
+}
+
+fn cEmitFunctionTypeDefinitions(
+    &builder text.Builder,
+    &collected cCollectedTypes
+) void {
+    var index u64 = 0
+    while index < collected.functions.len() {
+        var value = match collected.functions.take(index) {
+            None: panic("C function type slot is empty")
+            Some(found): found
+        }
+        cEmitFunctionTypeDefinition(&builder, &value)
+        collected.functions.restore(index, $value)
+        index += 1
+    }
+}
+
+fn cEmitSliceDefinitions(
+    &builder text.Builder,
+    &collected cCollectedTypes
+) void {
+    var index u64 = 0
+    while index < collected.slices.len() {
+        var value = match collected.slices.take(index) {
+            None: panic("C slice type slot is empty")
+            Some(found): found
+        }
+        var slice = semanticTypeArgument(&value, 0)
+        var element = semanticTypeArgument(&slice, 0)
+        const name = cSliceName(&value)
+        cWrite(&builder, "typedef struct " + name + " {\n    ")
+        if value.kind.Matches("View") {
+            cWrite(&builder, "const ")
+        }
+        cWrite(&builder, cTypeName(&element) + " *fdn_data;\n")
+        cWrite(&builder, "    size_t fdn_length;\n} " + name + ";\n\n")
+        collected.slices.restore(index, $value)
+        index += 1
+    }
+}
+
+fn cInlineTypeReady(
+    &value semanticType,
+    &structReady arena<bool>,
+    &enumReady arena<bool>,
+    &arrayReady arena<bool>,
+    &arrays arena<semanticType>
+) bool {
+    if value.kind.Matches("StructValue") {
+        return value.declaration < structReady.len() &&
+            firBoolAt(&structReady, value.declaration)
+    }
+    if value.kind.Matches("EnumValue") {
+        return value.declaration < enumReady.len() &&
+            firBoolAt(&enumReady, value.declaration)
+    }
+    if value.kind.Matches("Array") {
+        var index u64 = 0
+        while index < arrays.len() {
+            var candidate = match arrays.take(index) {
+                None: panic("C array type slot is empty")
+                Some(found): found
+            }
+            const same = sameSemanticType(&candidate, &value)
+            arrays.restore(index, $candidate)
+            if same return firBoolAt(&arrayReady, index)
+            index += 1
+        }
+        return false
+    }
+    true
+}
+
+fn cStructReady(
+    &declaration firStruct,
+    &structReady arena<bool>,
+    &enumReady arena<bool>,
+    &arrayReady arena<bool>,
+    &arrays arena<semanticType>
+) bool {
+    var index u64 = 0
+    while index < declaration.fields.len() {
+        var field = match declaration.fields.take(index) {
+            None: panic("FIR struct field slot is empty")
+            Some(found): found
+        }
+        const ready = cInlineTypeReady(
+            &field.type, &structReady, &enumReady, &arrayReady, &arrays)
+        declaration.fields.restore(index, $field)
+        if !ready return false
+        index += 1
+    }
+    true
+}
+
+fn cEnumReady(
+    &declaration firEnum,
+    &structReady arena<bool>,
+    &enumReady arena<bool>,
+    &arrayReady arena<bool>,
+    &arrays arena<semanticType>
+) bool {
+    var index u64 = 0
+    while index < declaration.variants.len() {
+        var variant = match declaration.variants.take(index) {
+            None: panic("FIR enum variant slot is empty")
+            Some(found): found
+        }
+        var ready = true
+        match replace variant.payload with .None {
+            None: {}
+            Some(payloadValue): {
+                var payload = payloadValue
+                ready = cInlineTypeReady(
+                    &payload, &structReady, &enumReady, &arrayReady, &arrays)
+                variant.payload = .Some(payload)
+            }
+        }
+        declaration.variants.restore(index, $variant)
+        if !ready return false
+        index += 1
+    }
+    true
+}
+
+fn cEmitStructDefinition(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var declaration = match program.structs.take(id) {
+        None: panic("FIR struct slot is empty")
+        Some(found): found
+    }
+    cWrite(&builder, "struct fdn_struct_" + format.U64(id) + " {\n")
+    if monomorphU64Present(declaration.dropFunction) {
+        cWrite(&builder, "    bool fdn_drop_active;\n")
+    }
+    if declaration.fields.len() == 0 {
+        cWrite(&builder, "    uint8_t fdn_unit;\n")
+    }
+    var fieldIndex u64 = 0
+    while fieldIndex < declaration.fields.len() {
+        var field = match declaration.fields.take(fieldIndex) {
+            None: panic("FIR struct field slot is empty")
+            Some(found): found
+        }
+        const storage = cFieldName(fieldIndex)
+        if field.exported && cSafeName(field.name) != storage {
+            cWrite(&builder, "    union {\n")
+            cWrite(&builder, "        " + cTypeName(&field.type) + " " +
+                storage + ";\n")
+            cWrite(&builder, "        " + cTypeName(&field.type) + " " +
+                cSafeName(field.name) + ";\n")
+            cWrite(&builder, "    };\n")
+        } else {
+            cWrite(&builder, "    " + cTypeName(&field.type) + " " +
+                storage + ";\n")
+        }
+        declaration.fields.restore(fieldIndex, $field)
+        fieldIndex += 1
+    }
+    cWrite(&builder, "};\n\n")
+    program.structs.restore(id, $declaration)
+}
+
+fn cEmitEnumDefinition(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var declaration = match program.enums.take(id) {
+        None: panic("FIR enum slot is empty")
+        Some(found): found
+    }
+    cWrite(&builder, "enum {\n")
+    var variantIndex u64 = 0
+    while variantIndex < declaration.variants.len() {
+        cWrite(&builder, "    " + cEnumTag(id, variantIndex) + " = " +
+            format.U64(variantIndex))
+        if variantIndex + 1 == declaration.variants.len() {
+            cWrite(&builder, "\n")
+        } else {
+            cWrite(&builder, ",\n")
+        }
+        variantIndex += 1
+    }
+    cWrite(&builder, "};\n")
+    cWrite(&builder, "struct fdn_enum_" + format.U64(id) + " {\n")
+    cWrite(&builder, "    int32_t fdn_tag;\n")
+    var hasPayload = false
+    variantIndex = 0
+    while variantIndex < declaration.variants.len() {
+        var variant = match declaration.variants.take(variantIndex) {
+            None: panic("FIR enum variant slot is empty")
+            Some(found): found
+        }
+        match replace variant.payload with .None {
+            None: {}
+            Some(payloadValue): {
+                hasPayload = true
+                variant.payload = .Some(payloadValue)
+            }
+        }
+        declaration.variants.restore(variantIndex, $variant)
+        variantIndex += 1
+    }
+    if hasPayload {
+        cWrite(&builder, "    union {\n")
+        variantIndex = 0
+        while variantIndex < declaration.variants.len() {
+            var variant = match declaration.variants.take(variantIndex) {
+                None: panic("FIR enum variant slot is empty")
+                Some(found): found
+            }
+            match replace variant.payload with .None {
+                None: {}
+                Some(payloadValue): {
+                    var payload = payloadValue
+                    cWrite(&builder, "        " + cTypeName(&payload) + " " +
+                        cPayloadName(variantIndex) + ";\n")
+                    variant.payload = .Some(payload)
+                }
+            }
+            declaration.variants.restore(variantIndex, $variant)
+            variantIndex += 1
+        }
+        cWrite(&builder, "    } fdn_data;\n")
+    }
+    cWrite(&builder, "};\n\n")
+    program.enums.restore(id, $declaration)
+}
+
+fn cEmitArrayDefinition(
+    &builder text.Builder,
+    &value semanticType
+) void {
+    var element = semanticTypeArgument(&value, 0)
+    const length u64 = if value.declaration == 0 { 1 } else { value.declaration }
+    cWrite(&builder, "struct " + cArrayName(&value) + " {\n")
+    cWrite(&builder, "    " + cTypeName(&element) + " fdn_data[" +
+        format.U64(length) + "];\n")
+    cWrite(&builder, "};\n\n")
+}
+
+fn cEmitInlineTypeDefinitions(
+    &builder text.Builder,
+    &program firProgram,
+    &collected cCollectedTypes
+) void {
+    var structReady = cNewBoolArena(program.structs.len())
+    var enumReady = cNewBoolArena(program.enums.len())
+    var arrayReady = cNewBoolArena(collected.arrays.len())
+    const total = program.structs.len() + program.enums.len() +
+        collected.arrays.len()
+    var emitted u64 = 0
+    while emitted < total {
+        var progress = false
+        var index u64 = 0
+        while index < program.structs.len() {
+            if !firBoolAt(&structReady, index) {
+                var declaration = match program.structs.take(index) {
+                    None: panic("FIR struct slot is empty")
+                    Some(found): found
+                }
+                const ready = cStructReady(&declaration, &structReady,
+                    &enumReady, &arrayReady, &collected.arrays)
+                program.structs.restore(index, $declaration)
+                if ready {
+                    cEmitStructDefinition(&builder, &program, index)
+                    cSetBool(&structReady, index, true)
+                    emitted += 1
+                    progress = true
+                }
+            }
+            index += 1
+        }
+        index = 0
+        while index < program.enums.len() {
+            if !firBoolAt(&enumReady, index) {
+                var declaration = match program.enums.take(index) {
+                    None: panic("FIR enum slot is empty")
+                    Some(found): found
+                }
+                const ready = cEnumReady(&declaration, &structReady,
+                    &enumReady, &arrayReady, &collected.arrays)
+                program.enums.restore(index, $declaration)
+                if ready {
+                    cEmitEnumDefinition(&builder, &program, index)
+                    cSetBool(&enumReady, index, true)
+                    emitted += 1
+                    progress = true
+                }
+            }
+            index += 1
+        }
+        index = 0
+        while index < collected.arrays.len() {
+            if !firBoolAt(&arrayReady, index) {
+                var value = match collected.arrays.take(index) {
+                    None: panic("C array type slot is empty")
+                    Some(found): found
+                }
+                var element = semanticTypeArgument(&value, 0)
+                const ready = cInlineTypeReady(&element, &structReady,
+                    &enumReady, &arrayReady, &collected.arrays)
+                if ready {
+                    cEmitArrayDefinition(&builder, &value)
+                    cSetBool(&arrayReady, index, true)
+                    emitted += 1
+                    progress = true
+                }
+                collected.arrays.restore(index, $value)
+            }
+            index += 1
+        }
+        if !progress {
+            panic("recursive inline type reached C emission")
+        }
+    }
+}
+
+fn cEmitContractDefinitions(
+    &builder text.Builder,
+    &program firProgram
+) void {
+    var contractIndex u64 = 0
+    while contractIndex < program.contracts.len() {
+        var declaration = match program.contracts.take(contractIndex) {
+            None: panic("FIR contract slot is empty")
+            Some(found): found
+        }
+        cWrite(&builder, "struct fdn_contract_" + format.U64(contractIndex) +
+            "_vtable {\n")
+        cWrite(&builder, "    void (*fdn_drop)(void *);\n")
+        var methodIndex u64 = 0
+        while methodIndex < declaration.methodList.len() {
+            var method = match declaration.methodList.take(methodIndex) {
+                None: panic("FIR contract method slot is empty")
+                Some(found): found
+            }
+            cWrite(&builder, "    " + cTypeName(&method.returnType) +
+                " (*fdn_method_" + format.U64(methodIndex) + ")(void *")
+            var parameterIndex u64 = 0
+            while parameterIndex < method.parameters.len() {
+                var parameter = match method.parameters.take(parameterIndex) {
+                    None: panic("FIR contract parameter slot is empty")
+                    Some(found): found
+                }
+                cWrite(&builder, ", " + cTypeName(&parameter))
+                method.parameters.restore(parameterIndex, $parameter)
+                parameterIndex += 1
+            }
+            cWrite(&builder, ");\n")
+            declaration.methodList.restore(methodIndex, $method)
+            methodIndex += 1
+        }
+        cWrite(&builder, "};\n")
+        cWrite(&builder, "struct fdn_contract_" + format.U64(contractIndex) +
+            " {\n")
+        cWrite(&builder, "    void *fdn_data;\n")
+        cWrite(&builder, "    const struct fdn_contract_" +
+            format.U64(contractIndex) + "_vtable *fdn_vtable;\n")
+        cWrite(&builder, "};\n\n")
+        program.contracts.restore(contractIndex, $declaration)
+        contractIndex += 1
+    }
+}

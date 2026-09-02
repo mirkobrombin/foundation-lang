@@ -214,7 +214,7 @@ fn analyzeSemanticFor(
                 nextFunction = function
                 var signature = semanticFunctionSignatureAt(&analyzer, function)
                 nextTypeArguments = copySemanticTypeArena(&base.arguments)
-                nextResultType = substituteSemanticType(
+                nextResultType = substituteCheckedSemanticType(&analyzer, &source,
                     &signature.returnType, &nextTypeArguments)
                 iterator = semanticFunctionReceiver(
                     &source, function).Matches("Edit") &&

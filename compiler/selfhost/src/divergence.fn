@@ -1,0 +1,584 @@
+package foundation.compiler
+
+enum firControlFlow {
+    Continues
+    Returns
+    Diverges
+    LoopJump
+}
+
+fn firFlowContinues(flow firControlFlow) bool {
+    match flow {
+        Continues: true
+        _: false
+    }
+}
+
+fn firFlowDiverges(flow firControlFlow) bool {
+    match flow {
+        Diverges: true
+        _: false
+    }
+}
+
+fn firFlowLoopJump(flow firControlFlow) bool {
+    match flow {
+        LoopJump: true
+        _: false
+    }
+}
+
+fn firBinaryShortCircuits(operation firBinaryOperator) bool {
+    match operation {
+        And: true
+        Or: true
+        _: false
+    }
+}
+
+fn firCallPanics(kind firCallKind) bool {
+    match kind {
+        Panic: true
+        _: false
+    }
+}
+
+fn firOptionalExpressionDiverges(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    value Option<u64>
+) bool {
+    match value {
+        None: false
+        Some(expression): firExpressionDiverges(
+            &program, &function, functionID, expression)
+    }
+}
+
+fn firExpressionListDiverges(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    &values arena<u64>
+) bool {
+    var index u64 = 0
+    while index < values.len() {
+        const expression = match values.take(index) {
+            None: panic("FIR expression list slot is empty")
+            Some(found): found
+        }
+        values.restore(index, expression)
+        if firExpressionDiverges(
+            &program, &function, functionID, expression) {
+            return true
+        }
+        index += 1
+    }
+    false
+}
+
+fn firTargetFunctionDiverges(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    target u64
+) bool {
+    if target == functionID return function.diverges
+    if target >= program.functions.len() return false
+    var declaration = match program.functions.take(target) {
+        None: panic("target function slot is empty")
+        Some(found): found
+    }
+    const result = declaration.diverges
+    program.functions.restore(target, $declaration)
+    result
+}
+
+fn firExpressionDiverges(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    expression u64
+) bool {
+    if expression >= function.expressions.len() return false
+    const selected = match function.expressions.take(expression) {
+        None: panic("FIR expression slot is empty")
+        Some(found): found
+    }
+    const firExpressionCopy { original value as copy } = copyFirExpression($selected)
+    function.expressions.restore(expression, $original)
+    const firExpression { value type span } = copy
+    discard type
+    discard span
+    match value {
+        Integer(payload): { discard payload false }
+        Floating(payload): { discard payload false }
+        Boolean(payload): { discard payload false }
+        StringValue(payload): { discard payload false }
+        Array(payload): {
+            var current = payload
+            firExpressionListDiverges(
+                &program, &function, functionID, &current.elements)
+        }
+        Local(payload): { discard payload false }
+        Read(payload): { discard payload false }
+        Move(payload): { discard payload false }
+        FunctionValue(payload): { discard payload false }
+        Closure(payload): { discard payload false }
+        Unary(payload): firExpressionDiverges(
+            &program, &function, functionID, payload.operand)
+        Ownership(payload): firExpressionDiverges(
+            &program, &function, functionID, payload.operand)
+        Binary(payload): {
+            if firExpressionDiverges(
+                &program, &function, functionID, payload.left) {
+                return true
+            }
+            !firBinaryShortCircuits(payload.operation) && firExpressionDiverges(
+                &program, &function, functionID, payload.right)
+        }
+        Call(payload): {
+            var current = payload
+            if firExpressionListDiverges(
+                &program, &function, functionID, &current.arguments) {
+                return true
+            }
+            firCallPanics(current.kind) ||
+                (monomorphCallKindFunction(current.kind) &&
+                firTargetFunctionDiverges(
+                    &program, &function, functionID, current.function))
+        }
+        ContractValue(payload): firExpressionDiverges(
+            &program, &function, functionID, payload.value)
+        StructValue(payload): {
+            var current = payload
+            var index u64 = 0
+            while index < current.fields.len() {
+                const field = match current.fields.take(index) {
+                    None: panic("FIR struct value field slot is empty")
+                    Some(found): found
+                }
+                const fieldValue = field.value
+                current.fields.restore(index, $field)
+                if firExpressionDiverges(
+                    &program, &function, functionID, fieldValue) {
+                    return true
+                }
+                index += 1
+            }
+            false
+        }
+        Field(payload): firExpressionDiverges(
+            &program, &function, functionID, payload.base)
+        Index(payload): firExpressionDiverges(
+            &program, &function, functionID, payload.base) ||
+            firExpressionDiverges(
+            &program, &function, functionID, payload.index)
+        RawPointer(payload): firExpressionDiverges(
+            &program, &function, functionID, payload.base)
+        ReplaceValue(payload): firExpressionDiverges(
+            &program, &function, functionID, payload.value) ||
+            firExpressionDiverges(
+            &program, &function, functionID, payload.target)
+        Spawn(payload): firSpawnDiverges(
+            &program, &function, functionID, payload.call)
+        TaskWait(payload): firExpressionDiverges(
+            &program, &function, functionID, payload.taskValue)
+        BlockingCall(payload): {
+            var current = payload
+            firExpressionListDiverges(
+                &program, &function, functionID, &current.arguments)
+        }
+        CallbackCall(payload): {
+            var current = payload
+            firExpressionListDiverges(
+                &program, &function, functionID, &current.arguments)
+        }
+        ChannelValue(payload): firExpressionDiverges(
+            &program, &function, functionID, payload.capacity)
+        ChannelSenderClone(payload): firExpressionDiverges(
+            &program, &function, functionID, payload.sender)
+        ChannelSend(payload): firOptionalExpressionDiverges(
+            &program, &function, functionID, payload.value)
+        ChannelReceive(payload): { discard payload false }
+        EnumValue(payload): firOptionalExpressionDiverges(
+            &program, &function, functionID, payload.payload)
+        MatchValue(payload): firMatchDiverges(
+            &program, &function, functionID, $payload)
+        Conditional(payload): firConditionalDiverges(
+            &program, &function, functionID, payload)
+    }
+}
+
+fn firSpawnDiverges(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    expression u64
+) bool {
+    if expression >= function.expressions.len() return false
+    const selected = match function.expressions.take(expression) {
+        None: panic("spawn call expression slot is empty")
+        Some(found): found
+    }
+    const firExpressionCopy { original value as copy } = copyFirExpression($selected)
+    function.expressions.restore(expression, $original)
+    const firExpression { value type span } = copy
+    discard type
+    discard span
+    match value {
+        Call(payload): {
+            var current = payload
+            firExpressionListDiverges(
+                &program, &function, functionID, &current.arguments)
+        }
+        _: false
+    }
+}
+
+fn firMatchDiverges(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    $payload firMatchExpression
+) bool {
+    var current = payload
+    if firExpressionDiverges(
+        &program, &function, functionID, current.value) {
+        return true
+    }
+    var index u64 = 0
+    while index < current.arms.len() {
+        var arm = match current.arms.take(index) {
+            None: panic("FIR match arm slot is empty")
+            Some(found): found
+        }
+        const patternDiverges = firOptionalExpressionDiverges(
+            &program, &function, functionID, arm.pattern)
+        current.arms.restore(index, $arm)
+        if patternDiverges return true
+        index += 1
+    }
+    if current.arms.len() == 0 return false
+    index = 0
+    while index < current.arms.len() {
+        var arm = match current.arms.take(index) {
+            None: panic("FIR match arm slot is empty")
+            Some(found): found
+        }
+        const flow = firBlockFlow(
+            &program, &function, functionID, arm.block)
+        const diverges = firFlowDiverges(flow) ||
+            (firFlowContinues(flow) && firOptionalExpressionDiverges(
+                &program, &function, functionID, arm.expression))
+        current.arms.restore(index, $arm)
+        if !diverges return false
+        index += 1
+    }
+    true
+}
+
+fn firConditionalDiverges(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    payload firConditionalExpression
+) bool {
+    if firExpressionDiverges(
+        &program, &function, functionID, payload.condition) {
+        return true
+    }
+    const thenFlow = firBlockFlow(
+        &program, &function, functionID, payload.thenBlock)
+    const thenDiverges = firFlowDiverges(thenFlow) ||
+        (firFlowContinues(thenFlow) && firExpressionDiverges(
+            &program, &function, functionID, payload.thenValue))
+    const elseFlow = firBlockFlow(
+        &program, &function, functionID, payload.elseBlock)
+    const elseDiverges = firFlowDiverges(elseFlow) ||
+        (firFlowContinues(elseFlow) && firExpressionDiverges(
+            &program, &function, functionID, payload.elseValue))
+    thenDiverges && elseDiverges
+}
+
+fn firStatementFlow(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    statement u64
+) firControlFlow {
+    if statement >= function.statements.len() return .Continues
+    const selected = match function.statements.take(statement) {
+        None: panic("FIR statement slot is empty")
+        Some(found): found
+    }
+    const firStatementCopy { original value as copy } = copyFirStatement($selected)
+    function.statements.restore(statement, $original)
+    const firStatement { value span } = copy
+    discard span
+    match value {
+        Variable(payload): firExpressionFlow(
+            &program, &function, functionID, payload.initializer)
+        LetElse(payload): firExpressionFlow(
+            &program, &function, functionID, payload.initializer)
+        ResultElse(payload): firExpressionFlow(
+            &program, &function, functionID, payload.expression)
+        StructDestructure(payload): firExpressionFlow(
+            &program, &function, functionID, payload.initializer)
+        Assignment(payload): if firExpressionDiverges(
+            &program, &function, functionID, payload.target) ||
+            firExpressionDiverges(
+            &program, &function, functionID, payload.value) {
+            .Diverges
+        } else {
+            .Continues
+        }
+        Expression(payload): firExpressionFlow(
+            &program, &function, functionID, payload.expression)
+        Discard(payload): firExpressionFlow(
+            &program, &function, functionID, payload.expression)
+        ReturnValue(payload): if firOptionalExpressionDiverges(
+            &program, &function, functionID, payload.value) {
+            .Diverges
+        } else {
+            .Returns
+        }
+        IfValue(payload): firIfFlow(
+            &program, &function, functionID, payload)
+        WhileValue(payload): firExpressionFlow(
+            &program, &function, functionID, payload.condition)
+        ForValue(payload): if firExpressionDiverges(
+            &program, &function, functionID, payload.sequence) ||
+            firOptionalExpressionDiverges(
+            &program, &function, functionID, payload.next) {
+            .Diverges
+        } else {
+            .Continues
+        }
+        BreakValue(payload): { discard payload firControlFlow.LoopJump }
+        ContinueValue(payload): { discard payload firControlFlow.LoopJump }
+        SelectValue(payload): firSelectFlow(
+            &program, &function, functionID, $payload)
+        UnsafeValue(payload): firBlockFlow(
+            &program, &function, functionID, payload.body)
+    }
+}
+
+fn firExpressionFlow(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    expression u64
+) firControlFlow {
+    if firExpressionDiverges(&program, &function, functionID, expression) {
+        .Diverges
+    } else {
+        .Continues
+    }
+}
+
+fn firIfFlow(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    payload firIfStatement
+) firControlFlow {
+    if firExpressionDiverges(
+        &program, &function, functionID, payload.condition) {
+        return .Diverges
+    }
+    match payload.elseBlock {
+        None: .Continues
+        Some(elseBlock): {
+            const thenFlow = firBlockFlow(
+                &program, &function, functionID, payload.thenBlock)
+            const elseFlow = firBlockFlow(
+                &program, &function, functionID, elseBlock)
+            if firFlowContinues(thenFlow) || firFlowContinues(elseFlow) {
+                return .Continues
+            }
+            if firFlowDiverges(thenFlow) && firFlowDiverges(elseFlow) {
+                return .Diverges
+            }
+            if firFlowLoopJump(thenFlow) && firFlowLoopJump(elseFlow) {
+                return .LoopJump
+            }
+            .Returns
+        }
+    }
+}
+
+fn firSelectFlow(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    $payload firSelectStatement
+) firControlFlow {
+    var current = payload
+    var index u64 = 0
+    while index < current.operations.len() {
+        var arm = match current.operations.take(index) {
+            None: panic("FIR select arm slot is empty")
+            Some(found): found
+        }
+        const diverges = firOptionalExpressionDiverges(
+            &program, &function, functionID, arm.value)
+        current.operations.restore(index, $arm)
+        if diverges return .Diverges
+        index += 1
+    }
+    var anyContinues = false
+    var allDiverge = true
+    index = 0
+    while index < current.operations.len() {
+        var arm = match current.operations.take(index) {
+            None: panic("FIR select arm slot is empty")
+            Some(found): found
+        }
+        const flow = firBlockFlow(
+            &program, &function, functionID, arm.body)
+        current.operations.restore(index, $arm)
+        if firFlowContinues(flow) { anyContinues = true }
+        if !firFlowDiverges(flow) { allDiverge = false }
+        index += 1
+    }
+    match current.timeoutArm {
+        None: {}
+        Some(timeoutArm): {
+            const flow = firBlockFlow(
+                &program, &function, functionID, timeoutArm.body)
+            if firFlowContinues(flow) { anyContinues = true }
+            if !firFlowDiverges(flow) { allDiverge = false }
+        }
+    }
+    const errorFlow = firBlockFlow(
+        &program, &function, functionID, current.errorBlock)
+    if firFlowContinues(errorFlow) { anyContinues = true }
+    if !firFlowDiverges(errorFlow) { allDiverge = false }
+    if anyContinues return .Continues
+    if allDiverge return .Diverges
+    .Returns
+}
+
+fn firBlockFlow(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    block u64
+) firControlFlow {
+    if block >= function.blocks.len() return .Continues
+    var body = match function.blocks.take(block) {
+        None: panic("FIR block slot is empty")
+        Some(found): found
+    }
+    var index u64 = 0
+    while index < body.statements.len() {
+        const statement = match body.statements.take(index) {
+            None: panic("FIR block statement slot is empty")
+            Some(found): found
+        }
+        body.statements.restore(index, statement)
+        const flow = firStatementFlow(
+            &program, &function, functionID, statement)
+        if !firFlowContinues(flow) {
+            function.blocks.restore(block, $body)
+            return flow
+        }
+        index += 1
+    }
+    function.blocks.restore(block, $body)
+    .Continues
+}
+
+fn firStatementReturns(
+    &program firProgram,
+    &function firFunction,
+    functionID u64,
+    statement u64
+) bool {
+    if statement >= function.statements.len() return false
+    const selected = match function.statements.take(statement) {
+        None: panic("FIR statement slot is empty")
+        Some(found): found
+    }
+    const firStatementCopy { original value as copy } = copyFirStatement($selected)
+    function.statements.restore(statement, $original)
+    const firStatement { value span } = copy
+    discard span
+    match value {
+        ReturnValue(payload): !firOptionalExpressionDiverges(
+            &program, &function, functionID, payload.value)
+        _: false
+    }
+}
+
+fn firFunctionHasReturningPath(
+    &program firProgram,
+    &function firFunction,
+    functionID u64
+) bool {
+    var index u64 = 0
+    while index < function.statements.len() {
+        if firStatementReturns(&program, &function, functionID, index) {
+            return true
+        }
+        index += 1
+    }
+    false
+}
+
+fn firFunctionHasGeneratedBody(&function firFunction) bool {
+    optionStateTransitionPresent(function.stateTransition) ||
+        optionWorkflowPresent(function.workflow) ||
+        optionStateTimeoutPresent(function.stateTimeout)
+}
+
+fn optionStateTransitionPresent(value Option<firStateTransitionFunction>) bool {
+    match value {
+        None: false
+        Some(found): { discard found true }
+    }
+}
+
+fn optionWorkflowPresent(value Option<firWorkflowFunction>) bool {
+    match value {
+        None: false
+        Some(found): { discard found true }
+    }
+}
+
+fn optionStateTimeoutPresent(value Option<firStateTimeoutFunction>) bool {
+    match value {
+        None: false
+        Some(found): { discard found true }
+    }
+}
+
+fn markFirDivergingFunctions(&program firProgram) void {
+    var changed = true
+    while changed {
+        changed = false
+        var index u64 = 0
+        while index < program.functions.len() {
+            var function = match program.functions.take(index) {
+                None: panic("FIR function slot is empty")
+                Some(found): found
+            }
+            const body = function.body
+            const diverges = function.hasBody &&
+                !firFunctionHasGeneratedBody(&function) &&
+                !function.diverges &&
+                !firFunctionHasReturningPath(
+                &program, &function, index) &&
+                firFlowDiverges(firBlockFlow(
+                    &program, &function, index, body))
+            if diverges {
+                function.diverges = true
+                changed = true
+            }
+            program.functions.restore(index, $function)
+            index += 1
+        }
+    }
+}

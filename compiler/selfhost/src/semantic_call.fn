@@ -57,7 +57,7 @@ fn semanticSuspendingArgumentStorages(
             None: panic("suspending parameter slot is empty")
             Some(parameter): parameter
         }
-        var type = substituteSemanticType(&parameter, &typeArguments)
+        var type = substituteCheckedSemanticType(&analyzer, &source, &parameter, &typeArguments)
         const suffix = if callbackCall {
             format.U64(analyzer.state.callbackStorage)
         } else {
@@ -477,10 +477,9 @@ fn semanticAnalyzeCallArgument(
         var element = semanticTypeArgument(&actual, 0)
         actual = unarySemanticType(.Slice, $element)
     }
-    var implicitBorrow Option<semanticType> = .Some(unarySemanticType(
-            .View,
-            copySemanticType(&actual)
-        ))
+    var borrowed = unarySemanticType(.View, copySemanticType(&actual))
+    borrowed.declaration = expected.type.declaration
+    var implicitBorrow Option<semanticType> = .Some(copySemanticType(&borrowed))
     match semanticPlaceRootLocal(&analyzer, &source, expression) {
         None: {}
         Some(local): {
@@ -498,8 +497,8 @@ fn semanticAnalyzeCallArgument(
             }
         }
     }
-    semanticCallArgumentResult(
-        unarySemanticType(.View, $actual), $implicitBorrow)
+    discard actual
+    semanticCallArgumentResult($borrowed, $implicitBorrow)
 }
 
 fn analyzeSemanticCall(
@@ -669,7 +668,7 @@ fn analyzeSemanticCallInner(
             var pattern = copySemanticType(&storedPattern)
             signature.parameters.restore(parameter, $storedPattern)
             if explicitTypes.len() == typeParameterCount {
-                pattern = substituteSemanticType(&pattern, &explicitTypes)
+                pattern = substituteCheckedSemanticType(&analyzer, &source, &pattern, &explicitTypes)
             }
             const info = semanticFunctionParameterInfoAt(
                 &source, function, parameter)
@@ -698,6 +697,14 @@ fn analyzeSemanticCallInner(
             var pattern = match signature.parameters.take(parameter) {
                 None: panic("signature parameter slot is empty")
                 Some(pattern): pattern
+            }
+            const info = semanticFunctionParameterInfoAt(
+                &source, function, parameter)
+            if !semanticFunctionHasCSymbol(&source, function) &&
+                info.mode.Matches("Read") && pattern.kind.Matches("View") &&
+                pattern.arguments.len() == 1 &&
+                isCopySemanticParameterType(&analyzer, &source, &actual) {
+                pattern = semanticTypeArgument(&pattern, 0)
             }
             inferSemanticType(
                 &analyzer,
@@ -736,7 +743,7 @@ fn analyzeSemanticCallInner(
             None: panic("signature parameter slot is empty")
             Some(pattern): pattern
         }
-        var expected = substituteSemanticType(&pattern, &typeArguments)
+        var expected = substituteCheckedSemanticType(&analyzer, &source, &pattern, &typeArguments)
         const info = semanticFunctionParameterInfoAt(
             &source, function, parameter)
         if !semanticFunctionHasCSymbol(&source, function) {
@@ -774,7 +781,7 @@ fn analyzeSemanticCallInner(
     target.argumentConversions = argumentConversions
     target.argumentParameters = parameterMap
     setSemanticCallTarget(&analyzer, expression, $target)
-    var result = substituteSemanticType(&signature.returnType, &typeArguments)
+    var result = substituteCheckedSemanticType(&analyzer, &source, &signature.returnType, &typeArguments)
     const suspension = semanticSuspendingFunction(&source, function)
     if suspension.blockingCall {
         if !semanticFunctionTask(&source, analyzer.state.currentFunction) {

@@ -1,0 +1,395 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn cEmitDropValue(
+    &builder text.Builder,
+    &program firProgram,
+    &valueType semanticType,
+    value String,
+    depth u64
+) void {
+    if !cTypeRequiresDrop(&program, &valueType) return
+    const indent = cIndent(depth)
+    if valueType.kind.Matches("Own") {
+        cWrite(&builder, indent + "if (" + value + " != NULL) {\n")
+        var target = cTypeArgument(&valueType)
+        if target.kind.Matches("StringValue") {
+            cWrite(&builder, cIndent(depth + 1) + "fdn_string_drop(" +
+                value + ");\n")
+        } else {
+            if target.kind.Matches("ContractValue") {
+                cWrite(&builder, cIndent(depth + 1) + value +
+                    "->fdn_vtable->fdn_drop(" + value + "->fdn_data);\n")
+            } else {
+                if target.kind.Matches("Array") ||
+                    target.kind.Matches("StructValue") ||
+                    target.kind.Matches("EnumValue") {
+                    if cTypeRequiresDrop(&program, &target) {
+                        cWrite(&builder, cIndent(depth + 1) +
+                            cDropName(&target) + "(" + value + ");\n")
+                    }
+                }
+            }
+        }
+        cWrite(&builder, cIndent(depth + 1) + "fdn_dealloc(" + value + ");\n")
+        cWrite(&builder, cIndent(depth + 1) + value + " = NULL;\n")
+        cWrite(&builder, indent + "}\n")
+        return
+    }
+    if valueType.kind.Matches("StringValue") {
+        cWrite(&builder, indent + "fdn_string_drop(&" + value + ");\n")
+        return
+    }
+    if valueType.kind.Matches("Task") {
+        cWrite(&builder, indent + "fdn_task_drop(&" + value + ");\n")
+        return
+    }
+    if valueType.kind.Matches("Channel") {
+        cWrite(&builder, indent + "fdn_channel_drop_receiver(&" + value +
+            ".fdn_field_1);\n")
+        cWrite(&builder, indent + "fdn_channel_drop_sender(&" + value +
+            ".fdn_field_0);\n")
+        return
+    }
+    if valueType.kind.Matches("Sender") {
+        cWrite(&builder, indent + "fdn_channel_drop_sender(&" + value + ");\n")
+        return
+    }
+    if valueType.kind.Matches("Receiver") {
+        cWrite(&builder, indent + "fdn_channel_drop_receiver(&" + value +
+            ");\n")
+        return
+    }
+    if valueType.kind.Matches("Function") && !isCSemanticFunction(&valueType) {
+        cWrite(&builder, indent + "if (" + value + ".fdn_drop != NULL) {\n")
+        cWrite(&builder, cIndent(depth + 1) + value + ".fdn_drop(" + value +
+            ".fdn_env);\n")
+        cWrite(&builder, indent + "}\n")
+        cWrite(&builder, indent + value + ".fdn_env = NULL;\n")
+        cWrite(&builder, indent + value + ".fdn_call = NULL;\n")
+        cWrite(&builder, indent + value + ".fdn_drop = NULL;\n")
+        return
+    }
+    if valueType.kind.Matches("Array") ||
+        valueType.kind.Matches("StructValue") ||
+        valueType.kind.Matches("EnumValue") {
+        cWrite(&builder, indent + cDropName(&valueType) + "(&" + value + ");\n")
+    }
+}
+
+fn cEmitMoveAssignment(
+    &builder text.Builder,
+    &program firProgram,
+    &valueType semanticType,
+    target String,
+    source String,
+    depth u64
+) void {
+    const indent = cIndent(depth)
+    if valueType.kind.Matches("Own") || valueType.kind.Matches("Task") ||
+        valueType.kind.Matches("Sender") || valueType.kind.Matches("Receiver") {
+        cWrite(&builder, indent + target + " = " + source + ";\n")
+        cWrite(&builder, indent + source + " = NULL;\n")
+        return
+    }
+    if valueType.kind.Matches("Channel") {
+        cWrite(&builder, indent + target + " = " + source + ";\n")
+        cWrite(&builder, indent + source + ".fdn_field_0 = NULL;\n")
+        cWrite(&builder, indent + source + ".fdn_field_1 = NULL;\n")
+        return
+    }
+    if valueType.kind.Matches("StringValue") {
+        cWrite(&builder, indent + target + " = fdn_string_move(&" + source +
+            ");\n")
+        return
+    }
+    if valueType.kind.Matches("Function") && !isCSemanticFunction(&valueType) {
+        cWrite(&builder, indent + target + " = " + source + ";\n")
+        cWrite(&builder, indent + source + ".fdn_env = NULL;\n")
+        cWrite(&builder, indent + source + ".fdn_call = NULL;\n")
+        cWrite(&builder, indent + source + ".fdn_drop = NULL;\n")
+        return
+    }
+    if (valueType.kind.Matches("Array") ||
+        valueType.kind.Matches("StructValue") ||
+        valueType.kind.Matches("EnumValue")) &&
+        cTypeRequiresDrop(&program, &valueType) {
+        cWrite(&builder, indent + target + " = " + cMoveName(&valueType) +
+            "(&" + source + ");\n")
+        return
+    }
+    cWrite(&builder, indent + target + " = " + source + ";\n")
+}
+
+fn cEmitOwnershipPrototypes(
+    &builder text.Builder,
+    &program firProgram,
+    &collected cCollectedTypes
+) void {
+    var index u64 = 0
+    while index < collected.arrays.len() {
+        var value = match collected.arrays.take(index) {
+            None: panic("C array type slot is empty")
+            Some(found): found
+        }
+        if cTypeRequiresDrop(&program, &value) {
+            cEmitOwnershipPrototype(&builder, &value)
+        }
+        collected.arrays.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < program.structs.len() {
+        var value = declaredSemanticType(.StructValue, index)
+        if cTypeRequiresDrop(&program, &value) {
+            cEmitOwnershipPrototype(&builder, &value)
+        }
+        index += 1
+    }
+    index = 0
+    while index < program.enums.len() {
+        var value = declaredSemanticType(.EnumValue, index)
+        if cTypeRequiresDrop(&program, &value) {
+            cEmitOwnershipPrototype(&builder, &value)
+        }
+        index += 1
+    }
+    cWrite(&builder, "\n")
+}
+
+fn cEmitOwnershipPrototype(
+    &builder text.Builder,
+    &value semanticType
+) void {
+    cWrite(&builder, "static inline FDN_MAYBE_UNUSED void " +
+        cDropName(&value) + "(" + cTypeName(&value) + " *value);\n")
+    cWrite(&builder, "static inline FDN_MAYBE_UNUSED " + cTypeName(&value) +
+        " " + cMoveName(&value) + "(" + cTypeName(&value) + " *value);\n")
+}
+
+fn cEmitArrayOwnership(
+    &builder text.Builder,
+    &program firProgram,
+    &value semanticType
+) void {
+    if !cTypeRequiresDrop(&program, &value) return
+    var element = semanticTypeArgument(&value, 0)
+    cWrite(&builder, "static inline FDN_MAYBE_UNUSED void " +
+        cDropName(&value) + "(" + cTypeName(&value) + " *value) {\n")
+    if value.declaration != 0 {
+        cWrite(&builder, "    for (size_t fdn_index = " +
+            format.U64(value.declaration) + "; fdn_index-- > 0;) {\n")
+        cEmitDropValue(&builder, &program, &element,
+            "value->fdn_data[fdn_index]", 2)
+        cWrite(&builder, "    }\n")
+    } else {
+        cWrite(&builder, "    (void)value;\n")
+    }
+    cWrite(&builder, "}\n\n")
+
+    cWrite(&builder, "static inline FDN_MAYBE_UNUSED " + cTypeName(&value) +
+        " " + cMoveName(&value) + "(" + cTypeName(&value) + " *value) {\n")
+    cWrite(&builder, "    " + cTypeName(&value) + " result = {0};\n")
+    if value.declaration != 0 {
+        cWrite(&builder, "    for (size_t fdn_index = 0; fdn_index < " +
+            format.U64(value.declaration) + "; ++fdn_index) {\n")
+        cEmitMoveAssignment(&builder, &program, &element,
+            "result.fdn_data[fdn_index]", "value->fdn_data[fdn_index]", 2)
+        cWrite(&builder, "    }\n")
+    } else {
+        cWrite(&builder, "    (void)value;\n")
+    }
+    cWrite(&builder, "    return result;\n}\n\n")
+}
+
+fn cEmitStructOwnership(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var value = declaredSemanticType(.StructValue, id)
+    if !cTypeRequiresDrop(&program, &value) return
+    var declaration = match program.structs.take(id) {
+        None: panic("FIR struct slot is empty")
+        Some(found): found
+    }
+    const firStructCopy {
+        original
+        value as copied
+    } = copyFirStruct($declaration)
+    program.structs.restore(id, $original)
+    declaration = copied
+    cWrite(&builder, "static inline FDN_MAYBE_UNUSED void " +
+        cDropName(&value) + "(" + cTypeName(&value) + " *value) {\n")
+    match replace declaration.dropFunction with .None {
+        None: {}
+        Some(dropFunction): {
+            cWrite(&builder, "    if (!value->fdn_drop_active) {\n")
+            cWrite(&builder, "        return;\n    }\n")
+            cWrite(&builder, "    value->fdn_drop_active = false;\n")
+            cWrite(&builder, "    " + cFunctionName(&program, dropFunction) +
+                "(value);\n")
+            cWrite(&builder, "    value->fdn_drop_active = false;\n")
+            declaration.dropFunction = .Some(dropFunction)
+        }
+    }
+    var fieldIndex = declaration.fields.len()
+    while fieldIndex != 0 {
+        fieldIndex -= 1
+        var field = match declaration.fields.take(fieldIndex) {
+            None: panic("FIR struct field slot is empty")
+            Some(found): found
+        }
+        cEmitDropValue(&builder, &program, &field.type,
+            "value->" + cFieldName(fieldIndex), 1)
+        declaration.fields.restore(fieldIndex, $field)
+    }
+    cWrite(&builder, "}\n\n")
+
+    cWrite(&builder, "static inline FDN_MAYBE_UNUSED " + cTypeName(&value) +
+        " " + cMoveName(&value) + "(" + cTypeName(&value) + " *value) {\n")
+    cWrite(&builder, "    " + cTypeName(&value) + " result = {0};\n")
+    if monomorphU64Present(declaration.dropFunction) {
+        cWrite(&builder, "    result.fdn_drop_active = value->fdn_drop_active;\n")
+        cWrite(&builder, "    value->fdn_drop_active = false;\n")
+    }
+    fieldIndex = 0
+    while fieldIndex < declaration.fields.len() {
+        var field = match declaration.fields.take(fieldIndex) {
+            None: panic("FIR struct field slot is empty")
+            Some(found): found
+        }
+        cEmitMoveAssignment(&builder, &program, &field.type,
+            "result." + cFieldName(fieldIndex),
+            "value->" + cFieldName(fieldIndex), 1)
+        declaration.fields.restore(fieldIndex, $field)
+        fieldIndex += 1
+    }
+    cWrite(&builder, "    return result;\n}\n\n")
+}
+
+fn cEmitEnumOwnership(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var value = declaredSemanticType(.EnumValue, id)
+    if !cTypeRequiresDrop(&program, &value) return
+    var declaration = match program.enums.take(id) {
+        None: panic("FIR enum slot is empty")
+        Some(found): found
+    }
+    const firEnumCopy {
+        original
+        value as copied
+    } = copyFirEnum($declaration)
+    program.enums.restore(id, $original)
+    declaration = copied
+    cWrite(&builder, "static inline FDN_MAYBE_UNUSED void " +
+        cDropName(&value) + "(" + cTypeName(&value) + " *value) {\n")
+    cWrite(&builder, "    switch (value->fdn_tag) {\n")
+    var variantIndex u64 = 0
+    while variantIndex < declaration.variants.len() {
+        cWrite(&builder, "    case " + cEnumTag(id, variantIndex) + ":\n")
+        var variant = match declaration.variants.take(variantIndex) {
+            None: panic("FIR enum variant slot is empty")
+            Some(found): found
+        }
+        match replace variant.payload with .None {
+            None: {}
+            Some(payloadValue): {
+                var payload = payloadValue
+                if cTypeRequiresDrop(&program, &payload) {
+                    cEmitDropValue(&builder, &program, &payload,
+                        "value->fdn_data." + cPayloadName(variantIndex), 2)
+                }
+                variant.payload = .Some(payload)
+            }
+        }
+        declaration.variants.restore(variantIndex, $variant)
+        cWrite(&builder, "        break;\n")
+        variantIndex += 1
+    }
+    cWrite(&builder, "    default:\n        fdn_invalid_enum_tag();\n")
+    cWrite(&builder, "    }\n}\n\n")
+
+    cWrite(&builder, "static inline FDN_MAYBE_UNUSED " + cTypeName(&value) +
+        " " + cMoveName(&value) + "(" + cTypeName(&value) + " *value) {\n")
+    cWrite(&builder, "    " + cTypeName(&value) + " result = {0};\n")
+    cWrite(&builder, "    result.fdn_tag = value->fdn_tag;\n")
+    cWrite(&builder, "    switch (value->fdn_tag) {\n")
+    variantIndex = 0
+    while variantIndex < declaration.variants.len() {
+        cWrite(&builder, "    case " + cEnumTag(id, variantIndex) + ":\n")
+        var variant = match declaration.variants.take(variantIndex) {
+            None: panic("FIR enum variant slot is empty")
+            Some(found): found
+        }
+        match replace variant.payload with .None {
+            None: {}
+            Some(payloadValue): {
+                var payload = payloadValue
+                cEmitMoveAssignment(&builder, &program, &payload,
+                    "result.fdn_data." + cPayloadName(variantIndex),
+                    "value->fdn_data." + cPayloadName(variantIndex), 2)
+                variant.payload = .Some(payload)
+            }
+        }
+        declaration.variants.restore(variantIndex, $variant)
+        cWrite(&builder, "        break;\n")
+        variantIndex += 1
+    }
+    cWrite(&builder, "    default:\n        fdn_invalid_enum_tag();\n")
+    cWrite(&builder, "    }\n    return result;\n}\n\n")
+}
+
+fn cEmitOwnershipDefinitions(
+    &builder text.Builder,
+    &program firProgram,
+    &collected cCollectedTypes
+) void {
+    var index u64 = 0
+    while index < collected.arrays.len() {
+        var value = match collected.arrays.take(index) {
+            None: panic("C array type slot is empty")
+            Some(found): found
+        }
+        cEmitArrayOwnership(&builder, &program, &value)
+        collected.arrays.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < program.structs.len() {
+        cEmitStructOwnership(&builder, &program, index)
+        index += 1
+    }
+    index = 0
+    while index < program.enums.len() {
+        cEmitEnumOwnership(&builder, &program, index)
+        index += 1
+    }
+}
+
+fn cEmitChannelPayloadDrops(
+    &builder text.Builder,
+    &program firProgram,
+    &collected cCollectedTypes
+) void {
+    var index u64 = 0
+    while index < collected.channelPayloads.len() {
+        var payload = match collected.channelPayloads.take(index) {
+            None: panic("C channel payload slot is empty")
+            Some(found): found
+        }
+        cWrite(&builder, "static FDN_MAYBE_UNUSED void " +
+            cChannelDropName(&payload) + "(void *fdn_value) {\n")
+        cWrite(&builder, "    " + cTypeName(&payload) +
+            " *fdn_payload = fdn_value;\n")
+        cEmitDropValue(&builder, &program, &payload, "*fdn_payload", 1)
+        cWrite(&builder, "}\n\n")
+        collected.channelPayloads.restore(index, $payload)
+        index += 1
+    }
+}

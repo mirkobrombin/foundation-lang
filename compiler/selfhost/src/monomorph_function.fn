@@ -1,0 +1,993 @@
+package foundation.compiler
+
+fn substituteMonomorphTypes(
+    $values own arena<semanticType>,
+    &arguments arena<semanticType>
+) own arena<semanticType> {
+    var pending = values
+    var result = newArena<semanticType>()
+    var index u64 = 0
+    while index < pending.len() {
+        var value = match pending.take(index) {
+            None: panic("monomorph type argument slot is empty")
+            Some(found): found
+        }
+        discard result.add(substituteSemanticType(&value, &arguments))
+        index += 1
+    }
+    result
+}
+
+fn instantiateMonomorphTypes(
+    &state monomorphizer,
+    &source firProgram,
+    $values own arena<semanticType>,
+    &arguments arena<semanticType>
+) own arena<semanticType> {
+    var substituted = substituteMonomorphTypes($values, &arguments)
+    var result = newArena<semanticType>()
+    var index u64 = 0
+    while index < substituted.len() {
+        var value = match substituted.take(index) {
+            None: panic("substituted type argument slot is empty")
+            Some(found): found
+        }
+        discard result.add(instantiateMonomorphType(&state, &source, &value))
+        index += 1
+    }
+    result
+}
+
+fn monomorphExpressionValue(
+    &state monomorphizer,
+    &source firProgram,
+    &function firFunction,
+    $value firExpressionValue,
+    span sourceSpan,
+    &arguments arena<semanticType>,
+    &unwrappedReads arena<bool>,
+    defaultReceiverPresent bool,
+    &defaultReceiver monomorphDefaultReceiver,
+    defaultReceiverLocal Option<u64>
+) firExpressionValue {
+    match value {
+        Integer(payload): .Integer(payload)
+        Floating(payload): .Floating(payload)
+        Boolean(payload): .Boolean(payload)
+        StringValue(payload): .StringValue(payload)
+        Array(payload): .Array(payload)
+        Local(payload): .Local(payload)
+        Read(payload): {
+            if firBoolAt(&unwrappedReads, payload.local) {
+                return .Local(firLocalExpression { local = payload.local })
+            }
+            .Read(payload)
+        }
+        Move(payload): .Move(payload)
+        FunctionValue(payload): {
+            const firFunctionValueExpression { function typeArguments } = payload
+            var callArguments = substituteMonomorphTypes(
+                $typeArguments, &arguments)
+            .FunctionValue(firFunctionValueExpression {
+                function = instantiateMonomorphFunction(
+                    &state, &source, function, &callArguments)
+                typeArguments = newArena<semanticType>()
+            })
+        }
+        Closure(payload): {
+            const firClosureExpression { function captures } = payload
+            .Closure(firClosureExpression {
+                function = instantiateMonomorphFunction(
+                    &state, &source, function, &arguments)
+                captures = captures
+            })
+        }
+        Unary(payload): .Unary(payload)
+        Ownership(payload): .Ownership(payload)
+        Binary(payload): .Binary(payload)
+        Call(payload): monomorphCallExpression(
+            &state,
+            &source,
+            &function,
+            $payload,
+            span,
+            &arguments,
+            defaultReceiverPresent,
+            &defaultReceiver,
+            defaultReceiverLocal
+        )
+        ContractValue(payload): monomorphContractExpression(
+            &state, &source, $payload, &arguments)
+        StructValue(payload): {
+            const firStructExpression { type fields } = payload
+            var sourceType = type
+            var substituted = substituteSemanticType(&sourceType, &arguments)
+            .StructValue(firStructExpression {
+                type = instantiateMonomorphType(&state, &source, &substituted)
+                fields = fields
+            })
+        }
+        Field(payload): .Field(payload)
+        Index(payload): .Index(payload)
+        RawPointer(payload): .RawPointer(payload)
+        ReplaceValue(payload): .ReplaceValue(payload)
+        Spawn(payload): .Spawn(payload)
+        TaskWait(payload): .TaskWait(payload)
+        BlockingCall(payload): {
+            const firBlockingCallExpression {
+                function
+                arguments as callArguments
+                argumentStorages
+                resultStorage
+                argumentParameters
+            } = payload
+            var noArguments = newArena<semanticType>()
+            .BlockingCall(firBlockingCallExpression {
+                function = instantiateMonomorphFunction(
+                    &state, &source, function, &noArguments)
+                arguments = callArguments
+                argumentStorages = argumentStorages
+                resultStorage = resultStorage
+                argumentParameters = argumentParameters
+            })
+        }
+        CallbackCall(payload): {
+            const firCallbackCallExpression {
+                function
+                arguments as callArguments
+                argumentStorages
+                resultStorage
+                argumentParameters
+            } = payload
+            var noArguments = newArena<semanticType>()
+            .CallbackCall(firCallbackCallExpression {
+                function = instantiateMonomorphFunction(
+                    &state, &source, function, &noArguments)
+                arguments = callArguments
+                argumentStorages = argumentStorages
+                resultStorage = resultStorage
+                argumentParameters = argumentParameters
+            })
+        }
+        ChannelValue(payload): {
+            const firChannelExpression { payload as sourcePayload capacity } = payload
+            var payloadType = sourcePayload
+            var substituted = substituteSemanticType(&payloadType, &arguments)
+            .ChannelValue(firChannelExpression {
+                payload = instantiateMonomorphType(&state, &source, &substituted)
+                capacity = capacity
+            })
+        }
+        ChannelSenderClone(payload): .ChannelSenderClone(payload)
+        ChannelSend(payload): .ChannelSend(payload)
+        ChannelReceive(payload): .ChannelReceive(payload)
+        EnumValue(payload): {
+            const firEnumExpression { type variant payload as enumPayload } = payload
+            var sourceType = type
+            var substituted = substituteSemanticType(&sourceType, &arguments)
+            .EnumValue(firEnumExpression {
+                type = instantiateMonomorphType(&state, &source, &substituted)
+                variant = variant
+                payload = enumPayload
+            })
+        }
+        MatchValue(payload): {
+            const firMatchExpression {
+                value as operand
+                type
+                arms
+                valueStorage
+            } = payload
+            var sourceType = type
+            var substituted = substituteSemanticType(&sourceType, &arguments)
+            .MatchValue(firMatchExpression {
+                value = operand
+                type = instantiateMonomorphType(&state, &source, &substituted)
+                arms = arms
+                valueStorage = valueStorage
+            })
+        }
+        Conditional(payload): .Conditional(payload)
+    }
+}
+
+fn monomorphCallExpression(
+    &state monomorphizer,
+    &source firProgram,
+    &containingFunction firFunction,
+    $payload firCallExpression,
+    span sourceSpan,
+    &arguments arena<semanticType>,
+    defaultReceiverPresent bool,
+    &defaultReceiver monomorphDefaultReceiver,
+    defaultReceiverLocal Option<u64>
+) firExpressionValue {
+    const firCallExpression {
+        kind
+        function
+        typeArguments
+        arguments as callOperands
+        argumentDrops
+        contractID
+        method
+        local
+        argumentParameters
+        constrainedType
+    } = payload
+    var operands = callOperands
+    if monomorphCallKindFunction(kind) {
+        var callArguments = substituteMonomorphTypes(
+            $typeArguments, &arguments)
+        return .Call(firCallExpression {
+            kind = .Function
+            function = instantiateMonomorphFunction(
+                &state, &source, function, &callArguments)
+            typeArguments = newArena<semanticType>()
+            arguments = operands
+            argumentDrops = argumentDrops
+            contractID = contractID
+            method = method
+            local = local
+            argumentParameters = argumentParameters
+            constrainedType = invalidSemanticType()
+        })
+    }
+    if monomorphCallKindConstrained(kind) {
+        var sourceConstraint = constrainedType
+        var concrete = substituteSemanticType(&sourceConstraint, &arguments)
+        var contractArguments = substituteMonomorphTypes(
+            $typeArguments, &arguments)
+        var targetContractArguments = copySemanticTypeArena(&contractArguments)
+        var contractTypeValue = semanticDirectType(
+            .ContractValue, contractID, $targetContractArguments)
+        var active = newArena<String>()
+        const selected = monomorphStaticContractTarget(
+            &source, &concrete, &contractTypeValue, method, &active)
+        const target = match selected {
+            None: panic("constrained call has no static target")
+            Some(found): found
+        }
+        discard contractArguments
+        return .Call(rewriteMonomorphStaticContractCall(
+                &state,
+                &source,
+                &containingFunction,
+                firCallExpression {
+            kind = kind
+            function = function
+            typeArguments = newArena<semanticType>()
+            arguments = operands
+            argumentDrops = argumentDrops
+            contractID = contractID
+            method = method
+            local = local
+            argumentParameters = argumentParameters
+            constrainedType = concrete
+        },
+                $target,
+                span
+            ))
+    }
+    if monomorphCallKindContract(kind) {
+        var contractArguments = substituteMonomorphTypes(
+            $typeArguments, &arguments)
+        var contractTypeValue = semanticDirectType(
+            .ContractValue, contractID, $contractArguments)
+        var staticReceiver = false
+        if defaultReceiverPresent && operands.len() != 0 {
+            const receiverExpression = match operands.take(0) {
+                None: panic("contract receiver slot is empty")
+                Some(found): found
+            }
+            operands.restore(0, receiverExpression)
+            staticReceiver = monomorphOptionalIDEqual(
+                monomorphExpressionRootLocal(
+                    &containingFunction, receiverExpression),
+                defaultReceiverLocal
+            )
+        }
+        if staticReceiver {
+            var active = newArena<String>()
+            const selected = monomorphStaticContractTarget(
+                &source,
+                &defaultReceiver.concrete,
+                &contractTypeValue,
+                method,
+                &active
+            )
+            const target = match selected {
+                None: panic("default method call has no static target")
+                Some(found): found
+            }
+            return .Call(rewriteMonomorphStaticContractCall(
+                    &state,
+                    &source,
+                    &containingFunction,
+                    firCallExpression {
+                kind = kind
+                function = function
+                typeArguments = newArena<semanticType>()
+                arguments = operands
+                argumentDrops = argumentDrops
+                contractID = contractID
+                method = method
+                local = local
+                argumentParameters = argumentParameters
+                constrainedType = copySemanticType(
+                    &defaultReceiver.concrete)
+            },
+                    $target,
+                    span
+                ))
+        }
+        var concreteContract = instantiateMonomorphType(
+            &state, &source, &contractTypeValue)
+        return .Call(firCallExpression {
+            kind = .ContractValue
+            function = function
+            typeArguments = newArena<semanticType>()
+            arguments = operands
+            argumentDrops = argumentDrops
+            contractID = concreteContract.declaration
+            method = method
+            local = local
+            argumentParameters = argumentParameters
+            constrainedType = invalidSemanticType()
+        })
+    }
+    var concreteArguments = instantiateMonomorphTypes(
+        &state, &source, $typeArguments, &arguments)
+    var sourceConstraint = constrainedType
+    var substitutedConstraint = substituteSemanticType(
+        &sourceConstraint, &arguments)
+    .Call(firCallExpression {
+        kind = kind
+        function = function
+        typeArguments = concreteArguments
+        arguments = operands
+        argumentDrops = argumentDrops
+        contractID = contractID
+        method = method
+        local = local
+        argumentParameters = argumentParameters
+        constrainedType = if monomorphCallKindConstrained(kind) {
+            instantiateMonomorphType(&state, &source, &substitutedConstraint)
+        } else {
+            invalidSemanticType()
+        }
+    })
+}
+
+fn monomorphCallKindFunction(kind firCallKind) bool {
+    match kind {
+        Function: true
+        _: false
+    }
+}
+
+fn monomorphCallKindConstrained(kind firCallKind) bool {
+    match kind {
+        Constrained: true
+        _: false
+    }
+}
+
+fn monomorphCallKindContract(kind firCallKind) bool {
+    match kind {
+        ContractValue: true
+        _: false
+    }
+}
+
+fn rewriteMonomorphStaticContractCall(
+    &state monomorphizer,
+    &source firProgram,
+    &function firFunction,
+    $call firCallExpression,
+    $target monomorphStaticContractTarget,
+    span sourceSpan
+) firCallExpression {
+    const firCallExpression {
+        kind
+        function as previousFunction
+        typeArguments
+        arguments
+        argumentDrops
+        contractID
+        method
+        local
+        argumentParameters
+        constrainedType
+    } = call
+    discard kind
+    discard previousFunction
+    discard typeArguments
+    if arguments.len() == 0 {
+        panic("constrained call has no receiver")
+    }
+    var callArguments = arguments
+    var receiver = match callArguments.take(0) {
+        None: panic("constrained receiver slot is empty")
+        Some(found): found
+    }
+    callArguments.restore(0, receiver)
+    const monomorphStaticContractTarget {
+        function as targetFunction
+        typeArguments as targetArguments
+        contractDefault
+        defaultContract
+        delegatePath
+    } = target
+    var targetTypeArguments = targetArguments
+    var concreteConstraint = constrainedType
+    var defaultConcrete = copySemanticType(&concreteConstraint)
+    var delegated = concreteConstraint
+    var path = delegatePath
+    var pathIndex u64 = 0
+    while pathIndex < path.len() {
+        const fieldID = match path.take(pathIndex) {
+            None: panic("delegate path slot is empty")
+            Some(found): found
+        }
+        path.restore(pathIndex, fieldID)
+        if !delegated.kind.Matches("StructValue") ||
+            delegated.declaration >= source.structs.len() {
+            panic("constrained call has an invalid delegate path")
+        }
+        var declaration = match source.structs.take(delegated.declaration) {
+            None: panic("source delegate struct slot is empty")
+            Some(found): found
+        }
+        if fieldID >= declaration.fields.len() {
+            source.structs.restore(delegated.declaration, $declaration)
+            panic("constrained call has an invalid delegate field")
+        }
+        var field = match declaration.fields.take(fieldID) {
+            None: panic("source delegate field slot is empty")
+            Some(found): found
+        }
+        var fieldType = substituteSemanticType(
+            &field.type, &delegated.arguments)
+        declaration.fields.restore(fieldID, $field)
+        source.structs.restore(delegated.declaration, $declaration)
+        var concreteFieldType = instantiateMonomorphType(
+            &state, &source, &fieldType)
+        const base = receiver
+        receiver = function.expressions.add(firExpression {
+            value = .Field(firFieldExpression { base = base field = fieldID })
+            type = concreteFieldType
+            span = span
+        })
+        delegated = fieldType
+        pathIndex += 1
+    }
+    if path.len() != 0 {
+        if targetFunction >= source.functions.len() {
+            panic("delegated constrained target is out of range")
+        }
+        var declaration = match source.functions.take(targetFunction) {
+            None: panic("delegated constrained function slot is empty")
+            Some(found): found
+        }
+        if declaration.parameters.len() == 0 {
+            source.functions.restore(targetFunction, $declaration)
+            panic("delegated constrained method has no receiver")
+        }
+        const receiverLocal = match declaration.parameters.take(0) {
+            None: panic("delegated receiver parameter slot is empty")
+            Some(found): found
+        }
+        declaration.parameters.restore(0, receiverLocal)
+        if receiverLocal >= declaration.locals.len() {
+            source.functions.restore(targetFunction, $declaration)
+            panic("delegated constrained receiver is out of range")
+        }
+        var receiverDeclaration = match declaration.locals.take(receiverLocal) {
+            None: panic("delegated constrained receiver slot is empty")
+            Some(found): found
+        }
+        var receiverType = substituteSemanticType(
+            &receiverDeclaration.type, &targetTypeArguments)
+        declaration.locals.restore(receiverLocal, $receiverDeclaration)
+        source.functions.restore(targetFunction, $declaration)
+        if (receiverType.kind.Matches("View") ||
+            receiverType.kind.Matches("Edit")) &&
+            receiverType.arguments.len() == 1 {
+            const operation = if receiverType.kind.Matches("Edit") {
+                firOwnershipOperator.Edit
+            } else {
+                firOwnershipOperator.View
+            }
+            var concreteReceiverType = instantiateMonomorphType(
+                &state, &source, &receiverType)
+            const base = receiver
+            receiver = function.expressions.add(firExpression {
+                value = .Ownership(firOwnershipExpression {
+                    operation = operation operand = base implicitRead = false
+                })
+                type = concreteReceiverType
+                span = span
+            })
+        }
+    }
+    const previousReceiver = match callArguments.take(0) {
+        None: panic("constrained receiver slot is empty")
+        Some(found): found
+    }
+    discard previousReceiver
+    callArguments.restore(0, receiver)
+    const concreteFunction = if contractDefault {
+        instantiateMonomorphDefaultFunction(
+            &state,
+            &source,
+            targetFunction,
+            &targetTypeArguments,
+            $defaultConcrete,
+            $defaultContract
+        )
+    } else {
+        discard defaultConcrete
+        discard defaultContract
+        instantiateMonomorphFunction(
+            &state, &source, targetFunction, &targetTypeArguments)
+    }
+    firCallExpression {
+        kind = .Function
+        function = concreteFunction
+        typeArguments = newArena<semanticType>()
+        arguments = callArguments
+        argumentDrops = argumentDrops
+        contractID = contractID
+        method = method
+        local = local
+        argumentParameters = argumentParameters
+        constrainedType = invalidSemanticType()
+    }
+}
+
+fn monomorphContractExpression(
+    &state monomorphizer,
+    &source firProgram,
+    $payload firContractExpression,
+    &arguments arena<semanticType>
+) firExpressionValue {
+    const firContractExpression {
+        value
+        concreteType
+        contractType
+        methodTargets
+    } = payload
+    var concrete = concreteType
+    var contractValueType = contractType
+    var sourceConcrete = substituteSemanticType(&concrete, &arguments)
+    var sourceContract = substituteSemanticType(&contractValueType, &arguments)
+    var targets = newArena<firContractMethodTarget>()
+    var pendingTargets = methodTargets
+    var index u64 = 0
+    while index < pendingTargets.len() {
+        const target = match pendingTargets.take(index) {
+            None: panic("contract method target slot is empty")
+            Some(found): found
+        }
+        const firContractMethodTarget {
+            function
+            typeArguments
+            contractDefault
+            defaultContract
+            delegatePath
+        } = target
+        var methodArguments = substituteMonomorphTypes(
+            $typeArguments, &arguments)
+        var sourceDefault = defaultContract
+        var substitutedDefault = substituteSemanticType(
+            &sourceDefault, &arguments)
+        discard targets.add(firContractMethodTarget {
+            function = instantiateMonomorphFunction(
+                &state, &source, function, &methodArguments)
+            typeArguments = newArena<semanticType>()
+            contractDefault = contractDefault
+            defaultContract = if contractDefault {
+                instantiateMonomorphType(
+                    &state, &source, &substitutedDefault)
+            } else {
+                invalidSemanticType()
+            }
+            delegatePath = delegatePath
+        })
+        index += 1
+    }
+    .ContractValue(firContractExpression {
+        value = value
+        concreteType = instantiateMonomorphType(
+            &state, &source, &sourceConcrete)
+        contractType = instantiateMonomorphType(
+            &state, &source, &sourceContract)
+        methodTargets = targets
+    })
+}
+
+fn monomorphFunctionExpressions(
+    &state monomorphizer,
+    &source firProgram,
+    &function firFunction,
+    &arguments arena<semanticType>,
+    &unwrappedReads arena<bool>,
+    defaultReceiverPresent bool,
+    &defaultReceiver monomorphDefaultReceiver,
+    defaultReceiverLocal Option<u64>
+) void {
+    const count = function.expressions.len()
+    var contractOperands = newArena<bool>()
+    var index u64 = 0
+    while index < count {
+        discard contractOperands.add(false)
+        index += 1
+    }
+    index = 0
+    while index < count {
+        match monomorphExpressionContractOperand(&function, index) {
+            None: {}
+            Some(operand): {
+                if operand < count {
+                    setArenaValue(&contractOperands, operand, true)
+                }
+            }
+        }
+        index += 1
+    }
+    index = 0
+    while index < count {
+        const expressionRoot = monomorphExpressionRootLocal(&function, index)
+        const implicitRead = monomorphExpressionImplicitRead(&function, index)
+        const expression = match function.expressions.take(index) {
+            None: panic("FIR expression slot is empty")
+            Some(found): found
+        }
+        const firExpression { value type span } = expression
+        var sourceType = type
+        var substituted = substituteSemanticType(&sourceType, &arguments)
+        if defaultReceiverPresent && monomorphOptionalIDEqual(
+            expressionRoot, defaultReceiverLocal) {
+            substituted = specializeMonomorphReceiverType(
+                &substituted, &defaultReceiver)
+        }
+        var concreteType = invalidSemanticType()
+        var unwrapped = false
+        match implicitRead {
+            None: {}
+            Some(operand): {
+                if !firBoolAt(&contractOperands, index) &&
+                    substituted.kind.Matches("View") &&
+                    substituted.declaration == 1 &&
+                    substituted.arguments.len() == 1 {
+                    var target = match substituted.arguments.take(0) {
+                        None: panic("implicit read target is missing")
+                        Some(found): found
+                    }
+                    var candidate = instantiateMonomorphType(
+                        &state, &source, &target)
+                    if monomorphParameterTypeCopy(&state, &source, &candidate) {
+                        concreteType = candidate
+                        monomorphReplaceReadWithLocal(&function, operand)
+                        unwrapped = true
+                    } else {
+                        substituted.arguments.restore(0, $target)
+                    }
+                }
+            }
+        }
+        if !unwrapped {
+            concreteType = instantiateMonomorphType(
+                &state, &source, &substituted)
+        }
+        function.expressions.restore(index, $firExpression {
+            value = monomorphExpressionValue(
+                &state, &source, &function, $value, span, &arguments,
+                &unwrappedReads, defaultReceiverPresent, &defaultReceiver,
+                defaultReceiverLocal)
+            type = concreteType
+            span = span
+        })
+        index += 1
+    }
+}
+
+fn monomorphFunctionStatements(
+    &state monomorphizer,
+    &source firProgram,
+    &function firFunction,
+    &arguments arena<semanticType>
+) void {
+    var index u64 = 0
+    while index < function.statements.len() {
+        const statement = match function.statements.take(index) {
+            None: panic("FIR statement slot is empty")
+            Some(found): found
+        }
+        const firStatement { value span } = statement
+        const updated = match value {
+            StructDestructure(payload): {
+                const firStructDestructureStatement {
+                    initializer
+                    type
+                    owned
+                    bindings
+                } = payload
+                var sourceType = type
+                var substituted = substituteSemanticType(&sourceType, &arguments)
+                firStatementValue.StructDestructure(firStructDestructureStatement {
+                    initializer = initializer
+                    type = instantiateMonomorphType(
+                        &state, &source, &substituted)
+                    owned = owned
+                    bindings = bindings
+                })
+            }
+            Variable(payload): .Variable(payload)
+            LetElse(payload): .LetElse(payload)
+            ResultElse(payload): .ResultElse(payload)
+            Assignment(payload): .Assignment(payload)
+            Expression(payload): .Expression(payload)
+            Discard(payload): .Discard(payload)
+            ReturnValue(payload): .ReturnValue(payload)
+            IfValue(payload): .IfValue(payload)
+            WhileValue(payload): .WhileValue(payload)
+            ForValue(payload): .ForValue(payload)
+            BreakValue(payload): .BreakValue(payload)
+            ContinueValue(payload): .ContinueValue(payload)
+            UnsafeValue(payload): .UnsafeValue(payload)
+            SelectValue(payload): .SelectValue(payload)
+        }
+        function.statements.restore(index, $firStatement {
+            value = updated span = span
+        })
+        index += 1
+    }
+}
+
+fn monomorphFunctionWorkflow(
+    &state monomorphizer,
+    &source firProgram,
+    &function firFunction,
+    &arguments arena<semanticType>
+) void {
+    const selected = replace function.workflow with .None
+    match selected {
+        None: {}
+        Some(workflow): {
+            const firWorkflowFunction {
+                kind
+                inputType
+                successType
+                errorType
+                failureType
+                failureDetailsType
+                steps
+            } = workflow
+            var sourceInput = inputType
+            var sourceSuccess = successType
+            var sourceError = errorType
+            var sourceFailure = failureType
+            var sourceDetails = failureDetailsType
+            var input = substituteSemanticType(&sourceInput, &arguments)
+            var success = substituteSemanticType(&sourceSuccess, &arguments)
+            var error = substituteSemanticType(&sourceError, &arguments)
+            var failure = substituteSemanticType(&sourceFailure, &arguments)
+            var details = substituteSemanticType(&sourceDetails, &arguments)
+            var concreteSteps = newArena<firWorkflowStep>()
+            var pendingSteps = steps
+            var index u64 = 0
+            while index < pendingSteps.len() {
+                const step = match pendingSteps.take(index) {
+                    None: panic("workflow step slot is empty")
+                    Some(found): found
+                }
+                const firWorkflowStep {
+                    name
+                    function as target
+                    typeArguments
+                    attempts
+                    compensation
+                    compensationTypeArguments
+                } = step
+                var stepArguments = substituteMonomorphTypes(
+                    $typeArguments, &arguments)
+                var compensationArguments = substituteMonomorphTypes(
+                    $compensationTypeArguments, &arguments)
+                var concreteCompensation Option<u64> = .None
+                match compensation {
+                    None: {}
+                    Some(value): {
+                        concreteCompensation = .Some(instantiateMonomorphFunction(
+                                &state, &source, value, &compensationArguments))
+                    }
+                }
+                discard concreteSteps.add(firWorkflowStep {
+                    name = name
+                    function = instantiateMonomorphFunction(
+                        &state, &source, target, &stepArguments)
+                    typeArguments = newArena<semanticType>()
+                    attempts = attempts
+                    compensation = concreteCompensation
+                    compensationTypeArguments = newArena<semanticType>()
+                })
+                index += 1
+            }
+            var concreteDetails = invalidSemanticType()
+            match kind {
+                Pipeline: {}
+                Saga: {
+                    concreteDetails = instantiateMonomorphType(
+                        &state, &source, &details)
+                }
+            }
+            function.workflow = .Some(firWorkflowFunction {
+                kind = kind
+                inputType = instantiateMonomorphType(&state, &source, &input)
+                successType = instantiateMonomorphType(&state, &source, &success)
+                errorType = instantiateMonomorphType(&state, &source, &error)
+                failureType = instantiateMonomorphType(&state, &source, &failure)
+                failureDetailsType = concreteDetails
+                steps = concreteSteps
+            })
+        }
+    }
+}
+
+fn instantiateMonomorphFunction(
+    &state monomorphizer,
+    &source firProgram,
+    function u64,
+    &arguments arena<semanticType>
+) u64 {
+    instantiateMonomorphFunctionSpecialized(
+        &state, &source, function, &arguments, .None)
+}
+
+fn instantiateMonomorphDefaultFunction(
+    &state monomorphizer,
+    &source firProgram,
+    function u64,
+    &arguments arena<semanticType>,
+    $concrete semanticType,
+    $contractTypeValue semanticType
+) u64 {
+    instantiateMonomorphFunctionSpecialized(
+        &state,
+        &source,
+        function,
+        &arguments,
+        .Some(monomorphDefaultReceiver {
+        concrete = concrete contractType = contractTypeValue
+    })
+    )
+}
+
+fn instantiateMonomorphFunctionSpecialized(
+    &state monomorphizer,
+    &source firProgram,
+    function u64,
+    &arguments arena<semanticType>,
+    $defaultReceiver Option<monomorphDefaultReceiver>
+) u64 {
+    var receiver = monomorphDefaultReceiver {
+        concrete = invalidSemanticType()
+        contractType = invalidSemanticType()
+    }
+    var receiverPresent = false
+    match defaultReceiver {
+        None: {}
+        Some(found): {
+            receiver = found
+            receiverPresent = true
+        }
+    }
+    var key = monomorphFunctionKey(function, &arguments)
+    if receiverPresent {
+        key = key + "#default:" + semanticTypeKey(&receiver.concrete) + ":" +
+            semanticTypeKey(&receiver.contractType)
+    }
+    match findMonomorphEntry(&state.functions, key) {
+        Some(id): { return id }
+        None: {}
+    }
+    if function >= source.functions.len() {
+        panic("function declaration is out of range")
+    }
+    if state.functions.len() >= 4096 {
+        panic("monomorphization function limit exceeded")
+    }
+    const id = state.result.functions.len()
+    addMonomorphEntry(&state.functions, key, id)
+    discard state.result.functions.add(newFirFunction())
+    const selected = match source.functions.take(function) {
+        None: panic("source function slot is empty")
+        Some(found): found
+    }
+    const firFunctionCopy { original value as functionCopy } = copyFirFunction($selected)
+    source.functions.restore(function, $original)
+    var instance = functionCopy
+    instance.generic = instance.generic || receiverPresent
+    instance.typeParameterCount = 0
+    instance.typeParameterConstraints = newArena<Option<semanticType>>()
+    var substitutedReturn = substituteSemanticType(
+        &instance.returnType, &arguments)
+    instance.returnType = instantiateMonomorphType(
+        &state, &source, &substitutedReturn)
+    var receiverLocal Option<u64> = .None
+    if receiverPresent && instance.parameters.len() != 0 {
+        const local = match instance.parameters.take(0) {
+            None: panic("default receiver parameter slot is empty")
+            Some(found): found
+        }
+        instance.parameters.restore(0, local)
+        receiverLocal = .Some(local)
+    }
+    var localIndex u64 = 0
+    while localIndex < instance.locals.len() {
+        var local = match instance.locals.take(localIndex) {
+            None: panic("FIR local slot is empty")
+            Some(found): found
+        }
+        var substituted = substituteSemanticType(&local.type, &arguments)
+        if receiverPresent && monomorphOptionalIDEqual(
+            receiverLocal, .Some(localIndex)) {
+            substituted = specializeMonomorphReceiverType(
+                &substituted, &receiver)
+        }
+        local.type = instantiateMonomorphType(&state, &source, &substituted)
+        instance.locals.restore(localIndex, $local)
+        localIndex += 1
+    }
+    var unwrappedReads = newArena<bool>()
+    localIndex = 0
+    while localIndex < instance.locals.len() {
+        discard unwrappedReads.add(false)
+        localIndex += 1
+    }
+    const cSymbol = optionStringPresent(instance.cSymbol)
+    var parameterIndex u64 = 0
+    while parameterIndex < instance.parameters.len() &&
+        parameterIndex < instance.readParameters.len() {
+        const localID = match instance.parameters.take(parameterIndex) {
+            None: panic("function parameter slot is empty")
+            Some(found): found
+        }
+        instance.parameters.restore(parameterIndex, localID)
+        if !cSymbol && firBoolAt(&instance.readParameters, parameterIndex) &&
+            localID < instance.locals.len() {
+            var local = match instance.locals.take(localID) {
+                None: panic("function parameter local slot is empty")
+                Some(found): found
+            }
+            if local.type.kind.Matches("View") && local.type.arguments.len() == 1 {
+                var target = match local.type.arguments.take(0) {
+                    None: panic("read parameter target is missing")
+                    Some(found): found
+                }
+                if monomorphParameterTypeCopy(&state, &source, &target) {
+                    local.type = target
+                    setArenaValue(&unwrappedReads, localID, true)
+                } else {
+                    local.type.arguments.restore(0, $target)
+                }
+            }
+            instance.locals.restore(localID, $local)
+        }
+        parameterIndex += 1
+    }
+    monomorphFunctionExpressions(
+        &state,
+        &source,
+        &instance,
+        &arguments,
+        &unwrappedReads,
+        receiverPresent,
+        &receiver,
+        receiverLocal
+    )
+    monomorphFunctionStatements(&state, &source, &instance, &arguments)
+    monomorphFunctionWorkflow(&state, &source, &instance, &arguments)
+    setArenaValue(&state.result.functions, id, $instance)
+    id
+}

@@ -765,6 +765,7 @@ fn analyzeSemanticMatch(
         }
         const scopeIndex = analyzer.state.scopes.len() - 1
         const terminates = blockTerminates || armType.kind.Matches("Never")
+        if terminates { armType = neverSemanticType() }
         var armDrops = semanticScopeDropsAt(
             &analyzer, &source, scopeIndex)
         discard drops.add($armDrops)

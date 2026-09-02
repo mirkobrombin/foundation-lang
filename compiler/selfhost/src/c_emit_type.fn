@@ -1,0 +1,433 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn cWrite(&builder text.Builder, value String) void {
+    const written = builder.Write(value) else error {
+        discard error
+        panic("C output builder is closed")
+    }
+    discard written
+}
+
+fn cFinish(&builder text.Builder) String {
+    const result = builder.Finish() else error {
+        discard error
+        panic("C output builder is closed")
+    }
+    result
+}
+
+fn cIndent(depth u64) String {
+    var builder = text.NewBuilder()
+    var index u64 = 0
+    while index < depth * 4 {
+        cWrite(&builder, " ")
+        index += 1
+    }
+    cFinish(&builder)
+}
+
+fn cASCIIAlphaNumeric(value u64) bool {
+    (value >= 48 && value <= 57) ||
+        (value >= 65 && value <= 90) ||
+        (value >= 97 && value <= 122)
+}
+
+fn cSafeName(value String) String {
+    var builder = text.NewBuilder()
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        const byte = text.ByteAt(value, index) else error {
+            discard error
+            panic("invalid identifier byte offset")
+        }
+        if cASCIIAlphaNumeric(byte) {
+            const written = builder.WriteCodePoint(byte) else error {
+                discard error
+                panic("invalid identifier byte")
+            }
+            discard written
+        } else {
+            cWrite(&builder, "_")
+        }
+        index += 1
+    }
+    cFinish(&builder)
+}
+
+fn cOctalDigit(value u64) String {
+    if value == 0 return "0"
+    if value == 1 return "1"
+    if value == 2 return "2"
+    if value == 3 return "3"
+    if value == 4 return "4"
+    if value == 5 return "5"
+    if value == 6 return "6"
+    "7"
+}
+
+fn cStringLiteral(value String) String {
+    var builder = text.NewBuilder()
+    cWrite(&builder, "\"")
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        const byte = text.ByteAt(value, index) else error {
+            discard error
+            panic("invalid string byte offset")
+        }
+        if byte == 92 {
+            cWrite(&builder, "\\\\")
+        } else {
+            if byte == 34 {
+                cWrite(&builder, "\\\"")
+            } else {
+                if byte == 10 {
+                    cWrite(&builder, "\\n")
+                } else {
+                    if byte == 13 {
+                        cWrite(&builder, "\\r")
+                    } else {
+                        if byte == 9 {
+                            cWrite(&builder, "\\t")
+                        } else {
+                            if byte >= 32 && byte <= 126 {
+                                const written = builder.WriteCodePoint(byte) else error {
+                                    discard error
+                                    panic("invalid string byte")
+                                }
+                                discard written
+                            } else {
+                                cWrite(&builder, "\\")
+                                cWrite(&builder, cOctalDigit((byte >> 6) & 7))
+                                cWrite(&builder, cOctalDigit((byte >> 3) & 7))
+                                cWrite(&builder, cOctalDigit(byte & 7))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        index += 1
+    }
+    cWrite(&builder, "\"")
+    cFinish(&builder)
+}
+
+fn cTypeArgument(&value semanticType) semanticType {
+    if value.arguments.len() != 1 return invalidSemanticType()
+    semanticTypeArgument(&value, 0)
+}
+
+fn cTypeTag(&value semanticType) String {
+    match value.kind {
+        Void: "void"
+        Never: "never"
+        I8: "i8"
+        I16: "i16"
+        I32: "i32"
+        I64: "i64"
+        U8: "u8"
+        U16: "u16"
+        U32: "u32"
+        U64: "u64"
+        Isize: "isize"
+        Usize: "usize"
+        F32: "f32"
+        F64: "f64"
+        Bool: "bool"
+        StringValue: "string"
+        Raw: cUnaryTypeTag("raw_", &value)
+        RawConst: cUnaryTypeTag("raw_const_", &value)
+        Array: "array_" + format.U64(value.declaration) + "_" +
+            cUnaryTypeTag("", &value)
+        Slice: cUnaryTypeTag("slice_", &value)
+        Own: cUnaryTypeTag("own_", &value)
+        View: {
+            var target = cTypeArgument(&value)
+            if value.declaration == 1 {
+                return "read_" + cTypeTag(&target)
+            }
+            if target.kind.Matches("ContractValue") {
+                return "contract_" + format.U64(target.declaration)
+            }
+            "view_" + cTypeTag(&target)
+        }
+        Edit: {
+            var target = cTypeArgument(&value)
+            if target.kind.Matches("ContractValue") {
+                return "contract_" + format.U64(target.declaration)
+            }
+            "edit_" + cTypeTag(&target)
+        }
+        Parameter: "invalid"
+        StructValue: "struct_" + format.U64(value.declaration)
+        EnumValue: "enum_" + format.U64(value.declaration)
+        ContractValue: "contract_" + format.U64(value.declaration)
+        Function: cFunctionTypeTag(&value)
+        Task: cUnaryTypeTag("task_", &value)
+        Channel: cUnaryTypeTag("channel_", &value)
+        Sender: cUnaryTypeTag("sender_", &value)
+        Receiver: cUnaryTypeTag("receiver_", &value)
+        Invalid: "invalid"
+    }
+}
+
+fn cUnaryTypeTag(prefix String, &value semanticType) String {
+    if value.arguments.len() != 1 return prefix + "invalid"
+    var target = semanticTypeArgument(&value, 0)
+    prefix + cTypeTag(&target)
+}
+
+fn cFunctionTypeTag(&value semanticType) String {
+    var result = if isCSemanticFunction(&value) {
+        "c_function"
+    } else {
+        "function"
+    }
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = semanticTypeArgument(&value, index)
+        result = result + "_" + cTypeTag(&argument)
+        index += 1
+    }
+    result
+}
+
+fn cTypeName(&value semanticType) String {
+    match value.kind {
+        Void: "void"
+        Never: "void"
+        I8: "int8_t"
+        I16: "int16_t"
+        I32: "int32_t"
+        I64: "int64_t"
+        U8: "uint8_t"
+        U16: "uint16_t"
+        U32: "uint32_t"
+        U64: "uint64_t"
+        Isize: "intptr_t"
+        Usize: "size_t"
+        F32: "float"
+        F64: "double"
+        Bool: "bool"
+        StringValue: "fdn_string"
+        Raw: cPointerType(&value, false)
+        RawConst: cPointerType(&value, true)
+        Array: "fdn_" + cTypeTag(&value)
+        Slice: "fdn_" + cTypeTag(&value)
+        Own: cPointerType(&value, false)
+        View: cBorrowType(&value, true)
+        Edit: cBorrowType(&value, false)
+        Parameter: "void"
+        StructValue: "fdn_struct_" + format.U64(value.declaration)
+        EnumValue: "fdn_enum_" + format.U64(value.declaration)
+        ContractValue: "fdn_contract_" + format.U64(value.declaration)
+        Function: "fdn_" + cTypeTag(&value)
+        Task: "fdn_task *"
+        Channel: "fdn_channel_pair"
+        Sender: "fdn_channel *"
+        Receiver: "fdn_channel *"
+        Invalid: "void"
+    }
+}
+
+fn cPointerType(&value semanticType, constant bool) String {
+    if value.arguments.len() != 1 {
+        if constant return "const void *"
+        return "void *"
+    }
+    var target = semanticTypeArgument(&value, 0)
+    if !constant return cTypeName(&target) + " *"
+    if target.kind.Matches("Raw") || target.kind.Matches("RawConst") {
+        return cTypeName(&target) + " const *"
+    }
+    "const " + cTypeName(&target) + " *"
+}
+
+fn cBorrowType(&value semanticType, constant bool) String {
+    if value.arguments.len() != 1 {
+        if constant return "const void *"
+        return "void *"
+    }
+    var target = semanticTypeArgument(&value, 0)
+    if target.kind.Matches("ContractValue") {
+        return "fdn_contract_" + format.U64(target.declaration)
+    }
+    if target.kind.Matches("Slice") return "fdn_" + cTypeTag(&value)
+    if constant return "const " + cTypeName(&target) + " *"
+    cTypeName(&target) + " *"
+}
+
+fn cFunctionName(&program firProgram, function u64) String {
+    if function == program.main return "fdn_program_main"
+    if function >= program.functions.len() return "fdn_invalid_function"
+    var declaration = match program.functions.take(function) {
+        None: panic("FIR function slot is empty")
+        Some(found): found
+    }
+    var result = "fdn_fn_" + cSafeName(declaration.name) + "_" +
+        format.U64(declaration.source)
+    if declaration.generic {
+        result = result + "_g" + format.U64(function)
+    }
+    program.functions.restore(function, $declaration)
+    result
+}
+
+fn cFunctionAdapterName(&program firProgram, function u64) String {
+    cFunctionName(&program, function) + "_value_adapter"
+}
+
+fn cClosureEnvironmentName(&program firProgram, function u64) String {
+    cFunctionName(&program, function) + "_environment"
+}
+
+fn cClosureDropName(&program firProgram, function u64) String {
+    cClosureEnvironmentName(&program, function) + "_drop"
+}
+
+fn cLocalName(&function firFunction, local u64) String {
+    if local >= function.locals.len() return "fdn_local_invalid"
+    var declaration = match function.locals.take(local) {
+        None: panic("FIR local slot is empty")
+        Some(found): found
+    }
+    const result = "fdn_local_" + cSafeName(declaration.name) + "_" +
+        format.U64(local)
+    function.locals.restore(local, $declaration)
+    result
+}
+
+fn cFieldName(field u64) String {
+    "fdn_field_" + format.U64(field)
+}
+
+fn cEnumTag(type u64, variant u64) String {
+    "FDN_ENUM_" + format.U64(type) + "_VARIANT_" + format.U64(variant)
+}
+
+fn cPayloadName(variant u64) String {
+    "fdn_payload_" + format.U64(variant)
+}
+
+fn cVtableName(&contractTypeValue semanticType, &concrete semanticType) String {
+    "fdn_vtable_c" + format.U64(contractTypeValue.declaration) + "_s" +
+        format.U64(concrete.declaration)
+}
+
+fn cDropName(&value semanticType) String {
+    if value.kind.Matches("Function") && !isCSemanticFunction(&value) {
+        return "fdn_drop_" + cTypeTag(&value)
+    }
+    if value.kind.Matches("Array") return "fdn_drop_" + cTypeTag(&value)
+    if value.kind.Matches("StructValue") {
+        return "fdn_drop_struct_" + format.U64(value.declaration)
+    }
+    "fdn_drop_enum_" + format.U64(value.declaration)
+}
+
+fn cMoveName(&value semanticType) String {
+    if value.kind.Matches("Function") && !isCSemanticFunction(&value) {
+        return "fdn_move_" + cTypeTag(&value)
+    }
+    if value.kind.Matches("Array") return "fdn_move_" + cTypeTag(&value)
+    if value.kind.Matches("StructValue") {
+        return "fdn_move_struct_" + format.U64(value.declaration)
+    }
+    "fdn_move_enum_" + format.U64(value.declaration)
+}
+
+fn cTypeRequiresDrop(
+    &program firProgram,
+    &value semanticType
+) bool {
+    var active = newArena<String>()
+    cTypeRequiresDropActive(&program, &value, &active)
+}
+
+fn cTypeRequiresDropActive(
+    &program firProgram,
+    &value semanticType,
+    &active arena<String>
+) bool {
+    if value.kind.Matches("StringValue") || value.kind.Matches("Own") ||
+        value.kind.Matches("Task") || value.kind.Matches("Channel") ||
+        value.kind.Matches("Sender") || value.kind.Matches("Receiver") ||
+        (value.kind.Matches("Function") && !isCSemanticFunction(&value)) ||
+        value.kind.Matches("Parameter") {
+        return true
+    }
+    if value.kind.Matches("Array") && value.arguments.len() == 1 {
+        var target = semanticTypeArgument(&value, 0)
+        return cTypeRequiresDropActive(&program, &target, &active)
+    }
+    if value.kind.Matches("StructValue") &&
+        value.declaration < program.structs.len() {
+        const key = semanticTypeKey(&value)
+        if semanticStringContains(&active, key) return false
+        discard active.add(text.Copy(key))
+        var declaration = match program.structs.take(value.declaration) {
+            None: panic("FIR struct slot is empty")
+            Some(found): found
+        }
+        const firStructCopy {
+            original
+            value as copied
+        } = copyFirStruct($declaration)
+        program.structs.restore(value.declaration, $original)
+        declaration = copied
+        var required = monomorphU64Present(declaration.dropFunction)
+        var index u64 = 0
+        while !required && index < declaration.fields.len() {
+            var field = match declaration.fields.take(index) {
+                None: panic("FIR struct field slot is empty")
+                Some(found): found
+            }
+            required = cTypeRequiresDropActive(
+                &program, &field.type, &active)
+            declaration.fields.restore(index, $field)
+            index += 1
+        }
+        active.truncate(active.len() - 1)
+        return required
+    }
+    if value.kind.Matches("EnumValue") && value.declaration < program.enums.len() {
+        const key = semanticTypeKey(&value)
+        if semanticStringContains(&active, key) return false
+        discard active.add(text.Copy(key))
+        var declaration = match program.enums.take(value.declaration) {
+            None: panic("FIR enum slot is empty")
+            Some(found): found
+        }
+        const firEnumCopy {
+            original
+            value as copied
+        } = copyFirEnum($declaration)
+        program.enums.restore(value.declaration, $original)
+        declaration = copied
+        var index u64 = 0
+        var required = false
+        while !required && index < declaration.variants.len() {
+            var variant = match declaration.variants.take(index) {
+                None: panic("FIR enum variant slot is empty")
+                Some(found): found
+            }
+            match replace variant.payload with .None {
+                None: {}
+                Some(payload): {
+                    var original = payload
+                    required = cTypeRequiresDropActive(
+                        &program, &original, &active)
+                    variant.payload = .Some(original)
+                }
+            }
+            declaration.variants.restore(index, $variant)
+            index += 1
+        }
+        active.truncate(active.len() - 1)
+        return required
+    }
+    false
+}

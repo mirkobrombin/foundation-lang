@@ -1,0 +1,473 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn cWorkflowStepAt(
+    &workflow firWorkflowFunction,
+    index u64
+) firWorkflowStep {
+    var selected = match workflow.steps.take(index) {
+        None: panic("workflow step slot is empty")
+        Some(found): found
+    }
+    var container = newArena<firWorkflowStep>()
+    discard container.add($selected)
+    var copied = copyFirWorkflowStepArena(&container)
+    const original = match container.take(0) {
+        None: panic("workflow step copy invariant failed")
+        Some(found): found
+    }
+    workflow.steps.restore(index, $original)
+    match copied.take(0) {
+        None: panic("workflow step copy invariant failed")
+        Some(found): found
+    }
+}
+
+fn cEmitStateTransitionBody(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    $input firStateTransitionFunction
+) void {
+    var transition = input
+    if function.parameters.len() == 0 ||
+        !function.returnType.kind.Matches("EnumValue") ||
+        function.returnType.declaration >= program.enums.len() {
+        panic("invalid state transition function")
+    }
+    const receiverLocal = cU64At(&function.parameters, 0)
+    var receiverType = cLocalTypeAt(&function, receiverLocal)
+    if !receiverType.kind.Matches("Edit") || receiverType.arguments.len() != 1 {
+        panic("invalid state transition receiver")
+    }
+    var machineType = semanticTypeArgument(&receiverType, 0)
+    if !machineType.kind.Matches("EnumValue") {
+        panic("invalid state transition receiver")
+    }
+    const receiver = cLocalName(&function, receiverLocal)
+    const result = "fdn_transition_result"
+    cWrite(&builder, "    " + cTypeName(&function.returnType) + " " +
+        result + " = {0};\n    if (")
+    var index u64 = 0
+    while index < transition.sourceVariants.len() {
+        if index != 0 {
+            cWrite(&builder, " || ")
+        }
+        cWrite(&builder, receiver + "->fdn_tag == " +
+            cEnumTag(machineType.declaration,
+                cU64At(&transition.sourceVariants, index)))
+        index += 1
+    }
+    if transition.sourceVariants.len() == 0 {
+        cWrite(&builder, "false")
+    }
+    cWrite(&builder, ") {\n")
+    cEmitDropValue(&builder, &program, &machineType, "*" + receiver, 2)
+    cWrite(&builder, "        " + receiver + "->fdn_tag = " +
+        cEnumTag(machineType.declaration,
+            transition.destinationVariant) + ";\n")
+    match transition.destinationParameter {
+        None: {}
+        Some(parameter): {
+            var payloadType = cEnumPayloadType(&program,
+                machineType.declaration, transition.destinationVariant)
+            if payloadType.kind.Matches("Invalid") {
+                panic("state transition payload is missing")
+            }
+            cEmitMoveAssignment(&builder, &program, &payloadType,
+                receiver + "->fdn_data." +
+                cPayloadName(transition.destinationVariant),
+                cLocalName(&function, parameter), 2)
+        }
+    }
+    index = 1
+    while index < function.parameters.len() {
+        const parameter = cU64At(&function.parameters, index)
+        var destination = false
+        match transition.destinationParameter {
+            None: {}
+            Some(found): {
+                destination = found == parameter
+            }
+        }
+        if !destination && !firBoolAt(&function.readParameters, index) {
+            var parameterType = cLocalTypeAt(&function, parameter)
+            if !parameterType.kind.Matches("View") &&
+                !parameterType.kind.Matches("Edit") {
+                cEmitDropValue(&builder, &program, &parameterType,
+                    cLocalName(&function, parameter), 2)
+            }
+        }
+        index += 1
+    }
+    cWrite(&builder, "        " + result + ".fdn_tag = " +
+        cEnumTag(function.returnType.declaration, 0) + ";\n    } else {\n")
+    index = 1
+    while index < function.parameters.len() {
+        const parameter = cU64At(&function.parameters, index)
+        if !firBoolAt(&function.readParameters, index) {
+            var parameterType = cLocalTypeAt(&function, parameter)
+            if !parameterType.kind.Matches("View") &&
+                !parameterType.kind.Matches("Edit") {
+                cEmitDropValue(&builder, &program, &parameterType,
+                    cLocalName(&function, parameter), 2)
+            }
+        }
+        index += 1
+    }
+    var errorType = cEnumPayloadType(
+        &program, function.returnType.declaration, 1)
+    if errorType.kind.Matches("Invalid") {
+        panic("invalid state transition function")
+    }
+    cWrite(&builder, "        " + cTypeName(&errorType) +
+        " fdn_transition_error = {0};\n")
+    cWrite(&builder, "        fdn_transition_error.fdn_tag = " +
+        cEnumTag(errorType.declaration, 0) + ";\n")
+    cWrite(&builder, "        " + result + ".fdn_data." + cPayloadName(1) +
+        " = fdn_transition_error;\n        " + result + ".fdn_tag = " +
+        cEnumTag(function.returnType.declaration, 1) + ";\n    }\n")
+    cWrite(&builder, "    fdn_frame_leave(&fdn_frame_current);\n" +
+        "    return " + result + ";\n")
+}
+
+fn cEmitStateTimeoutBody(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    $input firStateTimeoutFunction
+) void {
+    var timeoutValue = input
+    if function.parameters.len() != 1 ||
+        !function.returnType.kind.Matches("EnumValue") {
+        panic("invalid state timeout function")
+    }
+    const stateLocal = cU64At(&function.parameters, 0)
+    var stateType = cLocalTypeAt(&function, stateLocal)
+    const borrowed = stateType.kind.Matches("View") &&
+        stateType.arguments.len() == 1
+    var machineType = if borrowed {
+        semanticTypeArgument(&stateType, 0)
+    } else { copySemanticType(&stateType) }
+    if !machineType.kind.Matches("EnumValue") {
+        panic("invalid state timeout parameter")
+    }
+    const stateValue = cLocalName(&function, stateLocal)
+    const result = "fdn_timeout_result"
+    cWrite(&builder, "    " + cTypeName(&function.returnType) + " " +
+        result + " = {0};\n    if (")
+    var index u64 = 0
+    while index < timeoutValue.sourceVariants.len() {
+        if index != 0 {
+            cWrite(&builder, " || ")
+        }
+        cWrite(&builder, stateValue + if borrowed {
+            "->fdn_tag == "
+        } else { ".fdn_tag == " } + cEnumTag(machineType.declaration,
+                cU64At(&timeoutValue.sourceVariants, index)))
+        index += 1
+    }
+    if timeoutValue.sourceVariants.len() == 0 {
+        cWrite(&builder, "false")
+    }
+    cWrite(&builder, ") {\n        " + result + ".fdn_tag = " +
+        cEnumTag(function.returnType.declaration, 1) + ";\n        " +
+        result + ".fdn_data." + cPayloadName(1) + " = UINT64_C(" +
+        format.U64(timeoutValue.nanoseconds) + ");\n    } else {\n        " +
+        result + ".fdn_tag = " +
+        cEnumTag(function.returnType.declaration, 0) + ";\n    }\n")
+    cWrite(&builder, "    fdn_frame_leave(&fdn_frame_current);\n" +
+        "    return " + result + ";\n")
+}
+
+fn cWorkflowArgument(
+    &program firProgram,
+    targetID u64,
+    value String,
+    borrowed bool
+) String {
+    var target = cFunctionAt(&program, targetID)
+    if target.parameters.len() != 1 {
+        panic("workflow target has invalid parameters")
+    }
+    const parameter = cU64At(&target.parameters, 0)
+    var parameterType = cLocalTypeAt(&target, parameter)
+    if parameterType.kind.Matches("View") {
+        return if borrowed { text.Copy(value) } else { "&" + value }
+    }
+    text.Copy(value)
+}
+
+fn cEmitWorkflowCall(
+    &builder text.Builder,
+    &program firProgram,
+    &step firWorkflowStep,
+    argument String,
+    borrowed bool,
+    result String,
+    depth u64,
+    compensation bool
+) u64 {
+    const targetID = if compensation {
+        match step.compensation {
+            None: panic("workflow compensation is missing")
+            Some(found): found
+        }
+    } else { step.function }
+    var target = cFunctionAt(&program, targetID)
+    const attempts u64 = if compensation { 1 } else { step.attempts }
+    cWrite(&builder, cIndent(depth) + cTypeName(&target.returnType) + " " +
+        result + " = {0};\n")
+    cWrite(&builder, cIndent(depth) +
+        "for (uint32_t fdn_attempt = 0;; ++fdn_attempt) {\n")
+    cWrite(&builder, cIndent(depth + 1) + result + " = " +
+        cFunctionName(&program, targetID) + "(" +
+        cWorkflowArgument(&program, targetID, argument, borrowed) + ");\n")
+    cWrite(&builder, cIndent(depth + 1) + "if (" + result +
+        ".fdn_tag == " + cEnumTag(target.returnType.declaration, 0) +
+        " || fdn_attempt + 1 >= UINT32_C(" + format.U64(attempts) +
+        ")) {\n" + cIndent(depth + 2) + "break;\n" +
+        cIndent(depth + 1) + "}\n")
+    cEmitDropValue(&builder, &program, &target.returnType, result, depth + 1)
+    cWrite(&builder, cIndent(depth + 1) +
+        "fdn_retry_wait(fdn_attempt);\n" + cIndent(depth) + "}\n")
+    targetID
+}
+
+fn cEmitWorkflowReturnError(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    stepValue String,
+    depth u64
+) void {
+    var targetError = cEnumPayloadType(
+        &program, function.returnType.declaration, 1)
+    const result = "fdn_workflow_return"
+    cWrite(&builder, cIndent(depth) + cTypeName(&function.returnType) + " " +
+        result + " = {0};\n")
+    cEmitMoveAssignment(&builder, &program, &targetError,
+        result + ".fdn_data." + cPayloadName(1),
+        stepValue + ".fdn_data." + cPayloadName(1), depth)
+    cWrite(&builder, cIndent(depth) + result + ".fdn_tag = " +
+        cEnumTag(function.returnType.declaration, 1) + ";\n")
+    cWrite(&builder, cIndent(depth) +
+        "fdn_frame_leave(&fdn_frame_current);\n")
+    cWrite(&builder, cIndent(depth) + "return " + result + ";\n")
+}
+
+fn cEmitPipelineBody(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &workflow firWorkflowFunction
+) void {
+    if function.parameters.len() != 1 || workflow.steps.len() == 0 {
+        panic("invalid pipeline function")
+    }
+    const input = cU64At(&function.parameters, 0)
+    var current = cLocalName(&function, input)
+    var inputType = cLocalTypeAt(&function, input)
+    var borrowed = inputType.kind.Matches("View")
+    var hasCurrentOwnedType = false
+    var currentOwnedType = invalidSemanticType()
+    var index u64 = 0
+    while index < workflow.steps.len() {
+        var step = cWorkflowStepAt(&workflow, index)
+        var target = cFunctionAt(&program, step.function)
+        const result = "fdn_pipeline_result_" + format.U64(index)
+        discard cEmitWorkflowCall(&builder, &program, &step,
+            current, borrowed, result, 1, false)
+        if hasCurrentOwnedType {
+            cEmitDropValue(&builder, &program,
+                &currentOwnedType, current, 1)
+        }
+        cWrite(&builder, "    if (" + result + ".fdn_tag == " +
+            cEnumTag(target.returnType.declaration, 1) + ") {\n")
+        cEmitWorkflowReturnError(
+            &builder, &program, &function, result, 2)
+        cWrite(&builder, "    }\n")
+        var success = cEnumPayloadType(
+            &program, target.returnType.declaration, 0)
+        const last = index + 1 == workflow.steps.len()
+        if last {
+            const output = "fdn_pipeline_return"
+            cWrite(&builder, "    " + cTypeName(&function.returnType) + " " +
+                output + " = {0};\n")
+            if !success.kind.Matches("Invalid") {
+                var targetOutput = cEnumPayloadType(
+                    &program, function.returnType.declaration, 0)
+                cEmitMoveAssignment(&builder, &program, &targetOutput,
+                    output + ".fdn_data." + cPayloadName(0),
+                    result + ".fdn_data." + cPayloadName(0), 1)
+            }
+            cWrite(&builder, "    " + output + ".fdn_tag = " +
+                cEnumTag(function.returnType.declaration, 0) + ";\n")
+            cWrite(&builder,
+                "    fdn_frame_leave(&fdn_frame_current);\n")
+            cWrite(&builder, "    return " + output + ";\n")
+            return
+        }
+        if success.kind.Matches("Invalid") {
+            panic("non-final pipeline step has no output")
+        }
+        current = "fdn_pipeline_value_" + format.U64(index)
+        cWrite(&builder, "    " + cTypeName(&success) + " " +
+            current + " = {0};\n")
+        cEmitMoveAssignment(&builder, &program, &success, current,
+            result + ".fdn_data." + cPayloadName(0), 1)
+        borrowed = false
+        hasCurrentOwnedType = true
+        currentOwnedType = copySemanticType(&success)
+        index += 1
+    }
+}
+
+fn cEmitSagaFailure(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &workflow firWorkflowFunction,
+    failed u64,
+    failedResult String
+) void {
+    var failedStep = cWorkflowStepAt(&workflow, failed)
+    var failedFunction = cFunctionAt(&program, failedStep.function)
+    var originalType = cEnumPayloadType(
+        &program, failedFunction.returnType.declaration, 1)
+    const original = "fdn_saga_original_error"
+    cWrite(&builder, "        " + cTypeName(&originalType) + " " +
+        original + " = {0};\n")
+    cEmitMoveAssignment(&builder, &program, &originalType, original,
+        failedResult + ".fdn_data." + cPayloadName(1), 2)
+    const details = "fdn_saga_compensation_failure"
+    cWrite(&builder, "        " + cTypeName(&workflow.failureDetailsType) +
+        " " + details + " = {0};\n")
+    cWrite(&builder,
+        "        size_t fdn_saga_compensation_count = 0;\n")
+    const input = cU64At(&function.parameters, 0)
+    const argument = cLocalName(&function, input)
+    var inputType = cLocalTypeAt(&function, input)
+    const borrowed = inputType.kind.Matches("View")
+    var current = failed
+    while current != 0 {
+        current -= 1
+        var completed = cWorkflowStepAt(&workflow, current)
+        match completed.compensation {
+            None: { continue }
+            Some(compensation): {
+                const result = "fdn_saga_compensation_" + format.U64(current)
+                discard cEmitWorkflowCall(&builder, &program, &completed,
+                    argument, borrowed, result, 2, true)
+                var target = cFunctionAt(&program, compensation)
+                cWrite(&builder, "        if (" + result + ".fdn_tag == " +
+                    cEnumTag(target.returnType.declaration, 1) + ") {\n")
+                const destination = details + "." + cFieldName(2) +
+                    ".fdn_data[fdn_saga_compensation_count]"
+                const source = result + ".fdn_data." + cPayloadName(1)
+                cEmitMoveAssignment(&builder, &program, &originalType,
+                    destination, source, 3)
+                cWrite(&builder,
+                    "            ++fdn_saga_compensation_count;\n")
+                cWrite(&builder, "        }\n")
+            }
+        }
+    }
+    const failure = "fdn_saga_failure"
+    cWrite(&builder, "        " + cTypeName(&workflow.failureType) + " " +
+        failure + " = {0};\n")
+    cWrite(&builder,
+        "        if (fdn_saga_compensation_count == 0) {\n")
+    cEmitMoveAssignment(&builder, &program, &originalType,
+        failure + ".fdn_data." + cPayloadName(0), original, 3)
+    cWrite(&builder, "            " + failure + ".fdn_tag = " +
+        cEnumTag(workflow.failureType.declaration, 0) + ";\n")
+    cWrite(&builder, "        } else {\n")
+    cEmitMoveAssignment(&builder, &program, &originalType,
+        details + "." + cFieldName(0), original, 3)
+    cWrite(&builder, "            " + details + "." + cFieldName(1) +
+        " = fdn_saga_compensation_count;\n")
+    var failureDetailsType = copySemanticType(&workflow.failureDetailsType)
+    cEmitMoveAssignment(&builder, &program, &failureDetailsType,
+        failure + ".fdn_data." + cPayloadName(1), details, 3)
+    cWrite(&builder, "            " + failure + ".fdn_tag = " +
+        cEnumTag(workflow.failureType.declaration, 1) + ";\n")
+    cWrite(&builder, "        }\n")
+    const result = "fdn_saga_return"
+    cWrite(&builder, "        " + cTypeName(&function.returnType) + " " +
+        result + " = {0};\n")
+    var failureType = copySemanticType(&workflow.failureType)
+    cEmitMoveAssignment(&builder, &program, &failureType,
+        result + ".fdn_data." + cPayloadName(1), failure, 2)
+    cWrite(&builder, "        " + result + ".fdn_tag = " +
+        cEnumTag(function.returnType.declaration, 1) + ";\n")
+    cWrite(&builder,
+        "        fdn_frame_leave(&fdn_frame_current);\n")
+    cWrite(&builder, "        return " + result + ";\n")
+}
+
+fn cEmitSagaBody(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &workflow firWorkflowFunction
+) void {
+    if function.parameters.len() != 1 || workflow.steps.len() == 0 {
+        panic("invalid saga function")
+    }
+    const input = cU64At(&function.parameters, 0)
+    const argument = cLocalName(&function, input)
+    var inputType = cLocalTypeAt(&function, input)
+    const borrowed = inputType.kind.Matches("View")
+    var index u64 = 0
+    while index < workflow.steps.len() {
+        var step = cWorkflowStepAt(&workflow, index)
+        var target = cFunctionAt(&program, step.function)
+        const result = "fdn_saga_step_" + format.U64(index)
+        discard cEmitWorkflowCall(&builder, &program, &step,
+            argument, borrowed, result, 1, false)
+        cWrite(&builder, "    if (" + result + ".fdn_tag == " +
+            cEnumTag(target.returnType.declaration, 1) + ") {\n")
+        cEmitSagaFailure(&builder, &program, &function,
+            &workflow, index, result)
+        cWrite(&builder, "    }\n")
+        if index + 1 == workflow.steps.len() {
+            const output = "fdn_saga_success"
+            cWrite(&builder, "    " + cTypeName(&function.returnType) + " " +
+                output + " = {0};\n")
+            var success = cEnumPayloadType(
+                &program, target.returnType.declaration, 0)
+            if !success.kind.Matches("Invalid") {
+                var targetOutput = cEnumPayloadType(
+                    &program, function.returnType.declaration, 0)
+                cEmitMoveAssignment(&builder, &program, &targetOutput,
+                    output + ".fdn_data." + cPayloadName(0),
+                    result + ".fdn_data." + cPayloadName(0), 1)
+            }
+            cWrite(&builder, "    " + output + ".fdn_tag = " +
+                cEnumTag(function.returnType.declaration, 0) + ";\n")
+            cWrite(&builder,
+                "    fdn_frame_leave(&fdn_frame_current);\n")
+            cWrite(&builder, "    return " + output + ";\n")
+            return
+        }
+        index += 1
+    }
+}
+
+fn cEmitWorkflowBody(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    $input firWorkflowFunction
+) void {
+    var workflow = input
+    match workflow.kind {
+        Pipeline: cEmitPipelineBody(
+            &builder, &program, &function, &workflow)
+        Saga: cEmitSagaBody(
+            &builder, &program, &function, &workflow)
+    }
+}

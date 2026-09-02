@@ -718,9 +718,10 @@ methods parser {
         )
         var returnType = self.parseTypeSyntax(
             "FDN1111", "expected contract method return type")
+        parameters = reverseList($parameters)
         var defaultFunction Option<u64> = .None
         if self.check(.LeftBrace) {
-            var functionParameters = collections.NewList<parameter>()
+            var functionParameters = copyParameterList(&parameters)
             functionParameters.PushFront($receiverParameter(
                     owner, &ownerTypeParameters.names, access, start.span))
             const previousContext = self.activateGenericContext(&ownerTypeParameters)
@@ -765,7 +766,7 @@ methods parser {
         contractMethod {
             name = text.Copy(name.text)
             receiver = access
-            parameters = reverseList($parameters)
+            parameters = parameters
             returnType = returnType
             exported = isExportedName(name.text)
             span = start.span

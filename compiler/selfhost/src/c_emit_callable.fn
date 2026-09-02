@@ -1,0 +1,307 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn cCaptureModeOwn(value firCaptureMode) bool {
+    match value { Own: true _: false }
+}
+
+fn cEmitFunctionValueExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &functionValue firFunctionValueExpression,
+    &valueType semanticType,
+    depth u64
+) cEmittedExpression {
+    discard function
+    if isCSemanticFunction(&valueType) {
+        var target = cFunctionAt(&program, functionValue.function)
+        match replace target.cSymbol with .None {
+            None: panic("C function value has no C symbol")
+            Some(symbol): {
+                return cEmitted($symbol, false)
+            }
+        }
+    }
+    const temporary = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+        temporary + ";\n")
+    cWrite(&builder, cIndent(depth) + temporary + ".fdn_env = NULL;\n")
+    cWrite(&builder, cIndent(depth) + temporary + ".fdn_call = &" +
+        cFunctionAdapterName(&program, functionValue.function) + ";\n")
+    cWrite(&builder, cIndent(depth) + temporary + ".fdn_drop = NULL;\n")
+    cEmitted($temporary, false)
+}
+
+fn cEmitClosureExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &closure firClosureExpression,
+    &valueType semanticType,
+    depth u64
+) cEmittedExpression {
+    const temporary = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+        temporary + ";\n")
+    var target = cFunctionAt(&program, closure.function)
+    if closure.captures.len() == 0 {
+        cWrite(&builder, cIndent(depth) + temporary + ".fdn_env = NULL;\n")
+        cWrite(&builder, cIndent(depth) + temporary + ".fdn_drop = NULL;\n")
+    } else {
+        const environment = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + "struct " +
+            cClosureEnvironmentName(&program, closure.function) + " *" +
+            environment + " = fdn_alloc(sizeof(*" + environment + "));\n")
+        var captureLocal u64 = 0
+        var captureIndex u64 = 0
+        while captureIndex < closure.captures.len() {
+            const capturedValue = match closure.captures.take(captureIndex) {
+                None: panic("FIR closure capture slot is empty")
+                Some(found): found
+            }
+            closure.captures.restore(captureIndex, capturedValue)
+            var found = false
+            while captureLocal < target.locals.len() && !found {
+                const local = cLocalAt(&target, captureLocal)
+                if local.captured {
+                    found = true
+                } else {
+                    captureLocal += 1
+                }
+            }
+            if !found {
+                panic("closure capture has no environment field")
+            }
+            const field = "fdn_capture_" + format.U64(captureLocal)
+            const source = cLocalValue(
+                &function, capturedValue.local, state.taskPoll)
+            if cCaptureModeOwn(capturedValue.mode) {
+                var sourceType = cLocalTypeAt(&function, capturedValue.local)
+                cEmitMoveAssignment(&builder, &program, &sourceType,
+                    environment + "->" + field, source, depth)
+            } else {
+                if cCaptureModeView(capturedValue.mode) ||
+                    cCaptureModeEdit(capturedValue.mode) {
+                    cWrite(&builder, cIndent(depth) + environment + "->" + field +
+                        " = &" + source + ";\n")
+                } else {
+                    cWrite(&builder, cIndent(depth) + environment + "->" + field +
+                        " = " + source + ";\n")
+                }
+            }
+            captureLocal += 1
+            captureIndex += 1
+        }
+        cWrite(&builder, cIndent(depth) + temporary + ".fdn_env = " +
+            environment + ";\n")
+        cWrite(&builder, cIndent(depth) + temporary + ".fdn_drop = &" +
+            cClosureDropName(&program, closure.function) + ";\n")
+    }
+    cWrite(&builder, cIndent(depth) + temporary + ".fdn_call = &" +
+        cFunctionName(&program, closure.function) + ";\n")
+    cEmitted($temporary, false)
+}
+
+fn cEmitContractExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &contractValue firContractExpression,
+    &valueType semanticType,
+    depth u64
+) cEmittedExpression {
+    var value = cEmitExpression(&builder, &program, &function,
+        &state, contractValue.value, depth)
+    if value.diverges return value
+    const temporary = cNextTemporary(&state)
+    var contractType = copySemanticType(&contractValue.contractType)
+    var concreteType = copySemanticType(&contractValue.concreteType)
+    const table = cVtableName(&contractType, &concreteType)
+    if valueType.kind.Matches("Own") {
+        cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+            temporary + " = fdn_alloc(sizeof(*" + temporary + "));\n")
+        cWrite(&builder, cIndent(depth) + temporary +
+            "->fdn_data = (void *)" + value.value + ";\n")
+        cWrite(&builder, cIndent(depth) + temporary + "->fdn_vtable = &" +
+            table + ";\n")
+    } else {
+        cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " +
+            temporary + ";\n")
+        cWrite(&builder, cIndent(depth) + temporary +
+            ".fdn_data = (void *)" + value.value + ";\n")
+        cWrite(&builder, cIndent(depth) + temporary + ".fdn_vtable = &" +
+            table + ";\n")
+    }
+    value.value = temporary
+    value
+}
+
+fn cEmitChannelExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    $channel firChannelExpression,
+    depth u64
+) cEmittedExpression {
+    const firChannelExpression {
+        payload
+        capacity as capacityExpression
+    } = channel
+    var payloadType = payload
+    const emittedCapacity = cEmitExpression(&builder, &program, &function,
+        &state, capacityExpression, depth)
+    if emittedCapacity.diverges return emittedCapacity
+    const result = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + "fdn_channel_pair " + result +
+        " = {NULL, NULL};\n")
+    const payloadSize = if payloadType.kind.Matches("Void") {
+        "0"
+    } else {
+        "sizeof(" + cTypeName(&payloadType) + ")"
+    }
+    var payloadDrop = "NULL"
+    if !payloadType.kind.Matches("Void") &&
+        cTypeRequiresDrop(&program, &payloadType) {
+        payloadDrop = "&" + cChannelDropName(&payloadType)
+    }
+    cWrite(&builder, cIndent(depth) + "fdn_channel_open(" + payloadSize +
+        ", (size_t)" + emittedCapacity.value + ", " + payloadDrop + ", &" + result +
+        ".fdn_field_0, &" + result + ".fdn_field_1);\n")
+    cEmitted($result, false)
+}
+
+fn cEmitChannelCloneExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    clone firChannelSenderCloneExpression,
+    &valueType semanticType,
+    depth u64
+) cEmittedExpression {
+    const sender = cEmitExpression(&builder, &program, &function,
+        &state, clone.sender, depth)
+    if sender.diverges return sender
+    const result = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " + result +
+        " = fdn_channel_clone_sender(" + sender.value + ");\n")
+    cEmitted($result, false)
+}
+
+fn cEmitTaskWaitExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    wait firTaskWaitExpression,
+    &valueType semanticType,
+    depth u64
+) cEmittedExpression {
+    const taskValue = cEmitExpression(&builder, &program, &function,
+        &state, wait.taskValue, depth)
+    if taskValue.diverges return taskValue
+    if valueType.kind.Matches("Void") {
+        cWrite(&builder, cIndent(depth) + "fdn_task_wait(&" + taskValue.value +
+            ", NULL);\n")
+        return cEmitted("", false)
+    }
+    const result = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " + result +
+        ";\n")
+    cWrite(&builder, cIndent(depth) + "fdn_task_wait(&" + taskValue.value +
+        ", &" + result + ");\n")
+    cEmitted($result, false)
+}
+
+fn cEmitSpawnExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    spawnValue firSpawnExpression,
+    depth u64
+) cEmittedExpression {
+    const expression = cExpressionAt(&function, spawnValue.call)
+    const firExpression { value type span } = expression
+    discard type
+    discard span
+    var call = match value {
+        Call(found): found
+        _: panic("spawn did not lower to a task call")
+    }
+    if !cCallKindFunction(call.kind) ||
+        call.function >= program.functions.len() {
+        panic("spawn did not lower to a task call")
+    }
+    var target = cFunctionAt(&program, call.function)
+    if !target.taskFunction {
+        panic("spawn did not lower to a task call")
+    }
+    var arguments = newArena<String>()
+    var index u64 = 0
+    while index < call.arguments.len() {
+        const argument = cU64At(&call.arguments, index)
+        const emitted = cEmitExpression(
+            &builder, &program, &function, &state, argument, depth)
+        if emitted.diverges return emitted
+        discard arguments.add(text.Copy(emitted.value))
+        index += 1
+    }
+    const frame = cNextTemporary(&state)
+    const taskHandle = cNextTemporary(&state)
+    cWrite(&builder, cIndent(depth) + "struct " +
+        cTaskFrameName(&program, call.function) + " *" + frame +
+        " = fdn_alloc(sizeof(*" + frame + "));\n")
+    index = 0
+    while index < arguments.len() {
+        cWrite(&builder, cIndent(depth) + frame + "->fdn_arg_" +
+            format.U64(index) + " = " +
+            cOrderedArgument(&call, &arguments, index) + ";\n")
+        index += 1
+    }
+    cWrite(&builder, cIndent(depth) + frame +
+        "->fdn_arguments_active = true;\n")
+    if cTaskSuspensionCount(&target) != 0 {
+        cWrite(&builder, cIndent(depth) + frame + "->fdn_state = 0;\n")
+        var local u64 = 0
+        while local < target.locals.len() {
+            var localType = cLocalTypeAt(&target, local)
+            if cTypeRequiresDrop(&program, &localType) {
+                cWrite(&builder, cIndent(depth) + frame + "->fdn_local_" +
+                    format.U64(local) + "_active = false;\n")
+            }
+            local += 1
+        }
+        var expressionID u64 = 0
+        while expressionID < target.expressions.len() {
+            const targetExpression = cExpressionAt(&target, expressionID)
+            if cExpressionIsBlocking($targetExpression) {
+                cWrite(&builder, cIndent(depth) + frame + "->" +
+                    cBlockingJobName(expressionID) + " = NULL;\n")
+            }
+            const callbackExpression = cExpressionAt(&target, expressionID)
+            if cExpressionIsCallback($callbackExpression) {
+                cWrite(&builder, cIndent(depth) + frame + "->" +
+                    cCallbackOperationName(expressionID) + " = NULL;\n")
+            }
+            expressionID += 1
+        }
+    }
+    if !target.returnType.kind.Matches("Void") {
+        cWrite(&builder, cIndent(depth) + frame +
+            "->fdn_result_active = false;\n")
+    }
+    cWrite(&builder, cIndent(depth) + "fdn_task *" + taskHandle +
+        " = fdn_task_spawn(" + frame + ", &" +
+        cTaskPollName(&program, call.function) + ", &" +
+        cTaskMoveResultName(&program, call.function) + ", &" +
+        cTaskDropFrameName(&program, call.function) + ");\n")
+    cEmitted($taskHandle, false)
+}

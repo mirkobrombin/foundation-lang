@@ -1,0 +1,600 @@
+package foundation.compiler
+
+import std.text
+
+fn cStatementAt(&function firFunction, id u64) firStatement {
+    const selected = match function.statements.take(id) {
+        None: panic("FIR statement slot is empty")
+        Some(found): found
+    }
+    const firStatementCopy { original value } = copyFirStatement($selected)
+    function.statements.restore(id, $original)
+    value
+}
+
+fn cBlockAt(&function firFunction, id u64) firBlock {
+    var selected = match function.blocks.take(id) {
+        None: panic("FIR block slot is empty")
+        Some(found): found
+    }
+    const result = firBlock {
+        statements = copyFirU64Arena(&selected.statements)
+        drops = copyFirU64Arena(&selected.drops)
+    }
+    function.blocks.restore(id, $selected)
+    result
+}
+
+fn cAssignmentIsAssign(value firAssignmentOperator) bool {
+    match value { Assign: true _: false }
+}
+
+fn cAssignmentBinary(value firAssignmentOperator) firBinaryOperator {
+    match value {
+        Add: .Add
+        Subtract: .Subtract
+        Multiply: .Multiply
+        Divide: .Divide
+        Remainder: .Remainder
+        ShiftLeft: .ShiftLeft
+        ShiftRight: .ShiftRight
+        Assign: panic("assign has no binary operation")
+    }
+}
+
+fn cEmitLocalDrop(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    local u64,
+    depth u64
+) void {
+    var valueType = cLocalTypeAt(&function, local)
+    const value = cLocalValue(&function, local, state.taskPoll)
+    if !state.taskPoll || !cTypeRequiresDrop(&program, &valueType) {
+        cEmitDropValue(&builder, &program, &valueType, value, depth)
+        return
+    }
+    cWrite(&builder, cIndent(depth) + "if (" + cLocalActive(local) + ") {\n")
+    cEmitDropValue(&builder, &program, &valueType, value, depth + 1)
+    cWrite(&builder, cIndent(depth + 1) + cLocalActive(local) + " = false;\n")
+    cWrite(&builder, cIndent(depth) + "}\n")
+}
+
+fn cActivateLocal(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    local u64,
+    depth u64
+) void {
+    if !state.taskPoll return
+    var valueType = cLocalTypeAt(&function, local)
+    if cTypeRequiresDrop(&program, &valueType) {
+        cWrite(&builder, cIndent(depth) + cLocalActive(local) + " = true;\n")
+    }
+}
+
+fn cEmitDrops(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &drops arena<u64>,
+    depth u64
+) void {
+    var index u64 = 0
+    while index < drops.len() {
+        const local = cU64At(&drops, index)
+        cEmitLocalDrop(&builder, &program, &function, &state, local, depth)
+        index += 1
+    }
+}
+
+fn cEmitBlock(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    id u64,
+    depth u64
+) bool {
+    var block = cBlockAt(&function, id)
+    var index u64 = 0
+    while index < block.statements.len() {
+        const statement = cU64At(&block.statements, index)
+        if state.taskPoll && cEmitSuspendingStatement(
+            &builder, &program, &function, &state, statement, depth) {
+            index += 1
+            continue
+        }
+        if cEmitStatement(
+            &builder, &program, &function, &state, statement, depth) {
+            return true
+        }
+        index += 1
+    }
+    cEmitDrops(&builder, &program, &function, &state, &block.drops, depth)
+    false
+}
+
+fn cEmitVariableStatement(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    variable firVariableStatement,
+    depth u64
+) bool {
+    const initializer = cEmitExpression(&builder, &program, &function,
+        &state, variable.initializer, depth)
+    if initializer.diverges return true
+    var valueType = cLocalTypeAt(&function, variable.local)
+    cWrite(&builder, cIndent(depth))
+    if !state.taskPoll {
+        cWrite(&builder, cTypeName(&valueType) + " ")
+    }
+    const local = cLocalValue(&function, variable.local, state.taskPoll)
+    cWrite(&builder, local + " = " + initializer.value + ";\n")
+    cActivateLocal(
+        &builder, &program, &function, &state, variable.local, depth)
+    cWrite(&builder, cIndent(depth) + "(void)" + local + ";\n")
+    false
+}
+
+fn cEmitLetElseStatement(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    binding firLetElseStatement,
+    depth u64
+) bool {
+    const initializer = cEmitExpression(&builder, &program, &function,
+        &state, binding.initializer, depth)
+    if initializer.diverges return true
+    var resultType = cExpressionTypeAt(&function, binding.initializer)
+    cWrite(&builder, cIndent(depth) + "if (" + initializer.value +
+        ".fdn_tag == " + cEnumTag(resultType.declaration, 1) + ") {\n")
+    var errorType = cLocalTypeAt(&function, binding.errorLocal)
+    cWrite(&builder, cIndent(depth + 1))
+    if !state.taskPoll {
+        cWrite(&builder, cTypeName(&errorType) + " ")
+    }
+    const errorLocal = cLocalValue(
+        &function, binding.errorLocal, state.taskPoll)
+    cWrite(&builder, errorLocal + " = " + initializer.value + ".fdn_data." +
+        cPayloadName(1) + ";\n")
+    cActivateLocal(
+        &builder, &program, &function, &state, binding.errorLocal, depth + 1)
+    cWrite(&builder, cIndent(depth + 1) + "(void)" + errorLocal + ";\n")
+    discard cEmitBlock(&builder, &program, &function, &state,
+        binding.elseBlock, depth + 1)
+    cWrite(&builder, cIndent(depth) + "}\n")
+    var successType = cLocalTypeAt(&function, binding.local)
+    cWrite(&builder, cIndent(depth))
+    if !state.taskPoll {
+        cWrite(&builder, cTypeName(&successType) + " ")
+    }
+    const successLocal = cLocalValue(&function, binding.local, state.taskPoll)
+    cWrite(&builder, successLocal + " = " + initializer.value + ".fdn_data." +
+        cPayloadName(0) + ";\n")
+    cActivateLocal(
+        &builder, &program, &function, &state, binding.local, depth)
+    false
+}
+
+fn cEmitResultElseStatement(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    binding firResultElseStatement,
+    depth u64
+) bool {
+    const initializer = cEmitExpression(&builder, &program, &function,
+        &state, binding.expression, depth)
+    if initializer.diverges return true
+    var resultType = cExpressionTypeAt(&function, binding.expression)
+    cWrite(&builder, cIndent(depth) + "if (" + initializer.value +
+        ".fdn_tag == " + cEnumTag(resultType.declaration, 1) + ") {\n")
+    var errorType = cLocalTypeAt(&function, binding.errorLocal)
+    cWrite(&builder, cIndent(depth + 1))
+    if !state.taskPoll {
+        cWrite(&builder, cTypeName(&errorType) + " ")
+    }
+    const errorLocal = cLocalValue(
+        &function, binding.errorLocal, state.taskPoll)
+    cWrite(&builder, errorLocal + " = " + initializer.value + ".fdn_data." +
+        cPayloadName(1) + ";\n")
+    cActivateLocal(
+        &builder, &program, &function, &state, binding.errorLocal, depth + 1)
+    cWrite(&builder, cIndent(depth + 1) + "(void)" + errorLocal + ";\n")
+    discard cEmitBlock(&builder, &program, &function, &state,
+        binding.elseBlock, depth + 1)
+    cWrite(&builder, cIndent(depth) + "}\n")
+    false
+}
+
+fn cEmitStructDestructureStatement(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    &destructure firStructDestructureStatement,
+    depth u64
+) bool {
+    const initializer = cEmitExpression(&builder, &program, &function,
+        &state, destructure.initializer, depth)
+    if initializer.diverges return true
+    const access = initializer.value + if destructure.owned { "->" } else { "." }
+    var index u64 = 0
+    while index < destructure.bindings.len() {
+        const binding = match destructure.bindings.take(index) {
+            None: panic("FIR struct binding slot is empty")
+            Some(found): found
+        }
+        destructure.bindings.restore(index, binding)
+        var valueType = cLocalTypeAt(&function, binding.local)
+        const moved = cEmitMoveValue(&builder, &program, &state, &valueType,
+            access + cFieldName(binding.field), depth)
+        cWrite(&builder, cIndent(depth))
+        if !state.taskPoll {
+            cWrite(&builder, cTypeName(&valueType) + " ")
+        }
+        const local = cLocalValue(&function, binding.local, state.taskPoll)
+        cWrite(&builder, local + " = " + moved.value + ";\n")
+        cActivateLocal(
+            &builder, &program, &function, &state, binding.local, depth)
+        cWrite(&builder, cIndent(depth) + "(void)" + local + ";\n")
+        index += 1
+    }
+    var initializerType = cExpressionTypeAt(&function, destructure.initializer)
+    cEmitDropValue(&builder, &program, &initializerType,
+        initializer.value, depth)
+    false
+}
+
+fn cEmitAssignmentStatement(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    assignment firAssignmentStatement,
+    span sourceSpan,
+    depth u64
+) bool {
+    if !cAssignmentIsAssign(assignment.operation) {
+        const target = cEmitExpression(&builder, &program, &function,
+            &state, assignment.target, depth)
+        if target.diverges return true
+        var valueType = cExpressionTypeAt(&function, assignment.target)
+        const address = cNextTemporary(&state)
+        cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " *" + address +
+            " = &(" + target.value + ");\n")
+        var value = cEmitExpression(&builder, &program, &function,
+            &state, assignment.value, depth)
+        if value.diverges return true
+        cEmitLocation(&builder, span, depth)
+        const result = cNextTemporary(&state)
+        const arithmetic = cArithmeticValue(
+            cAssignmentBinary(assignment.operation), &valueType,
+            "*" + address, value.value)
+        cWrite(&builder, cIndent(depth) + cTypeName(&valueType) + " " + result +
+            " = " + arithmetic + ";\n")
+        if valueType.kind.Matches("StringValue") {
+            cEmitDropValue(
+                &builder, &program, &valueType, "*" + address, depth)
+        }
+        cWrite(&builder, cIndent(depth) + "*" + address + " = " + result +
+            ";\n")
+        cEmitDropInspectedTemporary(&builder, &program, &function,
+            assignment.value, &value, depth)
+        return false
+    }
+    const value = cEmitExpression(&builder, &program, &function,
+        &state, assignment.value, depth)
+    if value.diverges return true
+    const target = cEmitExpression(&builder, &program, &function,
+        &state, assignment.target, depth)
+    if target.diverges return true
+    var targetType = cExpressionTypeAt(&function, assignment.target)
+    cEmitDropValue(&builder, &program, &targetType, target.value, depth)
+    cWrite(&builder, cIndent(depth) + target.value + " = " + value.value + ";\n")
+    false
+}
+
+fn cEmitReturnStatement(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    $returned firReturnStatement,
+    depth u64
+) bool {
+    const firReturnStatement { value drops } = returned
+    var dropValues = drops
+    match value {
+        None: {
+            cEmitDrops(
+                &builder, &program, &function, &state, &dropValues, depth)
+            if state.taskPoll {
+                cWrite(&builder, cIndent(depth) +
+                    "fdn_task_cancellation_leave(fdn_previous_cancellation);\n")
+                cWrite(&builder, cIndent(depth) +
+                    "fdn_frame_leave(&fdn_frame_current);\n")
+                cWrite(&builder, cIndent(depth) +
+                    "return FDN_TASK_READY;\n")
+                return true
+            }
+            cWrite(&builder, cIndent(depth) +
+                "fdn_frame_leave(&fdn_frame_current);\n")
+            cWrite(&builder, cIndent(depth) + "return;\n")
+        }
+        Some(expression): {
+            const emitted = cEmitExpression(&builder, &program, &function,
+                &state, expression, depth)
+            if emitted.diverges return true
+            var result = "" + emitted.value
+            if dropValues.len() != 0 {
+                var resultType = cExpressionTypeAt(&function, expression)
+                result = cNextTemporary(&state)
+                cWrite(&builder, cIndent(depth) + cTypeName(&resultType) + " " +
+                    result + " = " + emitted.value + ";\n")
+            }
+            cEmitDrops(
+                &builder, &program, &function, &state, &dropValues, depth)
+            if state.taskPoll {
+                cWrite(&builder, cIndent(depth) +
+                    "fdn_frame->fdn_result = " + result + ";\n")
+                cWrite(&builder, cIndent(depth) +
+                    "fdn_frame->fdn_result_active = true;\n")
+                cWrite(&builder, cIndent(depth) +
+                    "fdn_task_cancellation_leave(fdn_previous_cancellation);\n")
+                cWrite(&builder, cIndent(depth) +
+                    "fdn_frame_leave(&fdn_frame_current);\n")
+                cWrite(&builder, cIndent(depth) +
+                    "return FDN_TASK_READY;\n")
+                return true
+            }
+            cWrite(&builder, cIndent(depth) +
+                "fdn_frame_leave(&fdn_frame_current);\n")
+            cWrite(&builder, cIndent(depth) + "return " + result + ";\n")
+        }
+    }
+    true
+}
+
+fn cEmitIfStatement(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    $branch firIfStatement,
+    depth u64
+) bool {
+    const firIfStatement { condition thenBlock elseBlock } = branch
+    var emitted = cEmitExpression(&builder, &program, &function,
+        &state, condition, depth)
+    if emitted.diverges return true
+    cWrite(&builder, cIndent(depth) + "if (" + emitted.value + ") {\n")
+    const thenExits = cEmitBlock(
+        &builder, &program, &function, &state, thenBlock, depth + 1)
+    cWrite(&builder, cIndent(depth) + "}")
+    match elseBlock {
+        None: {
+            cWrite(&builder, "\n")
+            false
+        }
+        Some(otherwise): {
+            cWrite(&builder, " else {\n")
+            const elseExits = cEmitBlock(&builder, &program, &function,
+                &state, otherwise, depth + 1)
+            cWrite(&builder, cIndent(depth) + "}\n")
+            thenExits && elseExits
+        }
+    }
+}
+
+fn cEmitForStatement(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    $loop firForStatement,
+    span sourceSpan,
+    depth u64
+) bool {
+    const firForStatement {
+        sequence sequenceStorage index value body next ownsSequence
+    } = loop
+    var emitted = cEmitExpression(&builder, &program, &function,
+        &state, sequence, depth)
+    if emitted.diverges return true
+    var sequenceType = cLocalTypeAt(&function, sequenceStorage)
+    const sequenceLocal = cLocalValue(
+        &function, sequenceStorage, state.taskPoll)
+    cWrite(&builder, cIndent(depth))
+    if !state.taskPoll {
+        cWrite(&builder, cTypeName(&sequenceType) + " ")
+    }
+    cWrite(&builder, sequenceLocal + " = " + emitted.value + ";\n")
+    if !state.taskPoll {
+        cWrite(&builder, cIndent(depth) + "size_t " +
+            cLocalValue(&function, index, state.taskPoll) + ";\n")
+    }
+    match next {
+        Some(nextExpression): {
+            const indexLocal = cLocalValue(&function, index, state.taskPoll)
+            cWrite(&builder, cIndent(depth) + "for (" + indexLocal +
+                " = (size_t)0; ; " + indexLocal + " = fdn_usize_add(" +
+                indexLocal + ", (size_t)1)) {\n")
+            const nextValue = cEmitExpression(&builder, &program, &function,
+                &state, nextExpression, depth + 1)
+            if nextValue.diverges {
+                cWrite(&builder, cIndent(depth) + "}\n")
+                return true
+            }
+            var optionType = cExpressionTypeAt(&function, nextExpression)
+            cWrite(&builder, cIndent(depth + 1) + "if (" + nextValue.value +
+                ".fdn_tag == " + cEnumTag(optionType.declaration, 0) + ") {\n")
+            cEmitDropValue(&builder, &program, &optionType,
+                nextValue.value, depth + 2)
+            cWrite(&builder, cIndent(depth + 2) + "break;\n")
+            cWrite(&builder, cIndent(depth + 1) + "}\n")
+            cWrite(&builder, cIndent(depth + 1) + "if (" + nextValue.value +
+                ".fdn_tag != " + cEnumTag(optionType.declaration, 1) + ") {\n")
+            cEmitLocation(&builder, span, depth + 2)
+            cWrite(&builder, cIndent(depth + 2) + "fdn_invalid_enum_tag();\n")
+            cWrite(&builder, cIndent(depth + 1) + "}\n")
+            var valueType = cLocalTypeAt(&function, value)
+            const payload = nextValue.value + ".fdn_data." + cPayloadName(1)
+            var assigned = "" + payload
+            if cTypeRequiresDrop(&program, &valueType) {
+                const moved = cEmitMoveValue(&builder, &program, &state,
+                    &valueType, payload, depth + 1)
+                assigned = "" + moved.value
+            }
+            const valueLocal = cLocalValue(&function, value, state.taskPoll)
+            cWrite(&builder, cIndent(depth + 1))
+            if !state.taskPoll {
+                cWrite(&builder, cTypeName(&valueType) + " ")
+            }
+            cWrite(&builder, valueLocal + " = " + assigned + ";\n")
+            cEmitDropValue(&builder, &program, &optionType,
+                nextValue.value, depth + 1)
+            cWrite(&builder, cIndent(depth + 1) + "(void)" + valueLocal + ";\n")
+            discard cEmitBlock(
+                &builder, &program, &function, &state, body, depth + 1)
+            cWrite(&builder, cIndent(depth) + "}\n")
+        }
+        None: {
+            const indexLocal = cLocalValue(&function, index, state.taskPoll)
+            cWrite(&builder, cIndent(depth) + "for (" + indexLocal +
+                " = (size_t)0; " + indexLocal + " < " + sequenceLocal +
+                ".fdn_length; " + indexLocal + " = fdn_usize_add(" +
+                indexLocal + ", (size_t)1)) {\n")
+            var valueType = cLocalTypeAt(&function, value)
+            const valueLocal = cLocalValue(&function, value, state.taskPoll)
+            cWrite(&builder, cIndent(depth + 1))
+            if !state.taskPoll {
+                cWrite(&builder, cTypeName(&valueType) + " ")
+            }
+            cWrite(&builder, valueLocal + " = ")
+            if valueType.kind.Matches("View") || valueType.kind.Matches("Edit") {
+                cWrite(&builder, "&")
+            }
+            cWrite(&builder, sequenceLocal + ".fdn_data[" + indexLocal + "];\n")
+            cWrite(&builder, cIndent(depth + 1) + "(void)" + valueLocal + ";\n")
+            discard cEmitBlock(
+                &builder, &program, &function, &state, body, depth + 1)
+            cWrite(&builder, cIndent(depth) + "}\n")
+        }
+    }
+    if ownsSequence {
+        cEmitLocalDrop(&builder, &program, &function,
+            &state, sequenceStorage, depth)
+    }
+    cEmitCleanups(&builder, &program, &emitted, depth)
+    false
+}
+
+fn cEmitStatement(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state cFunctionEmissionState,
+    id u64,
+    depth u64
+) bool {
+    const statement = cStatementAt(&function, id)
+    const firStatement { value span } = statement
+    match value {
+        Variable(variable): cEmitVariableStatement(&builder, &program,
+            &function, &state, variable, depth)
+        LetElse(binding): cEmitLetElseStatement(&builder, &program,
+            &function, &state, binding, depth)
+        ResultElse(binding): cEmitResultElseStatement(&builder, &program,
+            &function, &state, binding, depth)
+        StructDestructure(destructure): {
+            var selected = destructure
+            cEmitStructDestructureStatement(&builder, &program,
+                &function, &state, &selected, depth)
+        }
+        Assignment(assignment): cEmitAssignmentStatement(&builder, &program,
+            &function, &state, assignment, span, depth)
+        Expression(expression): {
+            var emitted = cEmitExpression(&builder, &program, &function,
+                &state, expression.expression, depth)
+            if emitted.diverges return true
+            cEmitDiscardValue(&builder, &emitted, depth)
+            false
+        }
+        Discard(discarded): {
+            var emitted = cEmitExpression(&builder, &program, &function,
+                &state, discarded.expression, depth)
+            if emitted.diverges return true
+            var valueType = cExpressionTypeAt(&function, discarded.expression)
+            if cTypeRequiresDrop(&program, &valueType) {
+                cEmitDropValue(&builder, &program, &valueType, emitted.value, depth)
+            } else {
+                cEmitDiscardValue(&builder, &emitted, depth)
+            }
+            false
+        }
+        ReturnValue(returned): cEmitReturnStatement(&builder, &program,
+            &function, &state, $returned, depth)
+        IfValue(branch): cEmitIfStatement(&builder, &program,
+            &function, &state, $branch, depth)
+        WhileValue(loop): {
+            cWrite(&builder, cIndent(depth) + "while (true) {\n")
+            const condition = cEmitExpression(&builder, &program, &function,
+                &state, loop.condition, depth + 1)
+            if condition.diverges {
+                cWrite(&builder, cIndent(depth) + "}\n")
+                return true
+            }
+            cWrite(&builder, cIndent(depth + 1) + "if (!" + condition.value +
+                ") {\n")
+            cWrite(&builder, cIndent(depth + 2) + "break;\n")
+            cWrite(&builder, cIndent(depth + 1) + "}\n")
+            discard cEmitBlock(&builder, &program, &function,
+                &state, loop.body, depth + 1)
+            cWrite(&builder, cIndent(depth) + "}\n")
+            false
+        }
+        ForValue(loop): cEmitForStatement(&builder, &program,
+            &function, &state, $loop, span, depth)
+        BreakValue(jump): {
+            var jumpValue = jump
+            cEmitDrops(&builder, &program, &function,
+                &state, &jumpValue.drops, depth)
+            cWrite(&builder, cIndent(depth) + "break;\n")
+            true
+        }
+        ContinueValue(jump): {
+            var jumpValue = jump
+            cEmitDrops(&builder, &program, &function,
+                &state, &jumpValue.drops, depth)
+            cWrite(&builder, cIndent(depth) + "continue;\n")
+            true
+        }
+        SelectValue(selection): {
+            if !state.taskPoll {
+                panic("select requires task emission")
+            }
+            cEmitSelect(&builder, &program, &function,
+                &state, $selection, span, depth)
+            false
+        }
+        UnsafeValue(unsafeValue): {
+            cWrite(&builder, cIndent(depth) + "{\n")
+            const exits = cEmitBlock(&builder, &program, &function,
+                &state, unsafeValue.body, depth + 1)
+            cWrite(&builder, cIndent(depth) + "}\n")
+            exits
+        }
+    }
+}

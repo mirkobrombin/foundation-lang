@@ -1,0 +1,346 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+struct cContractUse {
+    contractType semanticType
+    concreteType semanticType
+    targets own arena<firContractMethodTarget>
+}
+
+fn cContractAt(&program firProgram, id u64) firContract {
+    const selected = match program.contracts.take(id) {
+        None: panic("FIR contract slot is empty")
+        Some(found): found
+    }
+    const firContractCopy { original value } = copyFirContract($selected)
+    program.contracts.restore(id, $original)
+    value
+}
+
+fn cStructAt(&program firProgram, id u64) firStruct {
+    const selected = match program.structs.take(id) {
+        None: panic("FIR struct slot is empty")
+        Some(found): found
+    }
+    const firStructCopy { original value } = copyFirStruct($selected)
+    program.structs.restore(id, $original)
+    value
+}
+
+fn cContractMethodAt(
+    &declaration firContract,
+    index u64
+) firContractMethod {
+    const selected = match declaration.methodList.take(index) {
+        None: panic("FIR contract method slot is empty")
+        Some(found): found
+    }
+    var container = newArena<firContractMethod>()
+    discard container.add($selected)
+    var copied = copyFirContractMethodArena(&container)
+    const original = match container.take(0) {
+        None: panic("FIR contract method copy invariant failed")
+        Some(found): found
+    }
+    declaration.methodList.restore(index, $original)
+    match copied.take(0) {
+        None: panic("FIR contract method copy invariant failed")
+        Some(found): found
+    }
+}
+
+fn cContractTargetAt(
+    &use cContractUse,
+    index u64
+) firContractMethodTarget {
+    var selected = match use.targets.take(index) {
+        None: panic("FIR contract target slot is empty")
+        Some(found): found
+    }
+    const result = copyFirContractMethodTarget(&selected)
+    use.targets.restore(index, $selected)
+    result
+}
+
+fn cCollectContractUses(
+    &program firProgram
+) own arena<cContractUse> {
+    var result = newArena<cContractUse>()
+    var keys = newArena<String>()
+    var functionID u64 = 0
+    while functionID < program.functions.len() {
+        var function = cFunctionAt(&program, functionID)
+        var expressionID u64 = 0
+        while expressionID < function.expressions.len() {
+            const expression = cExpressionAt(&function, expressionID)
+            const firExpression { value type span } = expression
+            discard type
+            discard span
+            match value {
+                ContractValue(payload): {
+                    var selected = payload
+                    const contractKey = semanticTypeKey(&selected.contractType)
+                    const concreteKey = semanticTypeKey(&selected.concreteType)
+                    const key = contractKey + ":" + concreteKey
+                    if !semanticStringContains(&keys, key) {
+                        discard keys.add(text.Copy(key))
+                        discard result.add(cContractUse {
+                            contractType = copySemanticType(&selected.contractType)
+                            concreteType = copySemanticType(&selected.concreteType)
+                            targets = copyFirContractMethodTargetArena(
+                                &selected.methodTargets)
+                        })
+                    }
+                }
+                _: {}
+            }
+            expressionID += 1
+        }
+        functionID += 1
+    }
+    result
+}
+
+fn cContractTargetData(
+    &program firProgram,
+    &use cContractUse,
+    &target firContractMethodTarget
+) String {
+    var data = "fdn_data"
+    var type = copySemanticType(&use.concreteType)
+    var index u64 = 0
+    while index < target.delegatePath.len() {
+        const field = cU64At(&target.delegatePath, index)
+        if !type.kind.Matches("StructValue") ||
+            type.declaration >= program.structs.len() {
+            panic("contract delegation path is invalid")
+        }
+        var declaration = cStructAt(&program, type.declaration)
+        if field >= declaration.fields.len() {
+            panic("contract delegation path is invalid")
+        }
+        var selected = match declaration.fields.take(field) {
+            None: panic("contract delegate field slot is empty")
+            Some(found): found
+        }
+        data = "&((" + cTypeName(&type) + " *)" + data + ")->" +
+            cFieldName(field)
+        type = copySemanticType(&selected.type)
+        declaration.fields.restore(field, $selected)
+        index += 1
+    }
+    data
+}
+
+fn cContractMethodIndex(
+    &declaration firContract,
+    name String
+) u64 {
+    var index u64 = 0
+    while index < declaration.methodList.len() {
+        var method = cContractMethodAt(&declaration, index)
+        if method.name == name return index
+        index += 1
+    }
+    panic("default contract method is missing from the effective contract")
+}
+
+fn cDefaultSelfVtableName(table String, method u64) String {
+    table + "_m" + format.U64(method) + "_self"
+}
+
+fn cEmitDefaultSelfVtable(
+    &builder text.Builder,
+    &program firProgram,
+    &use cContractUse,
+    &target firContractMethodTarget,
+    table String,
+    methodIndex u64
+) void {
+    if !target.defaultContract.kind.Matches("ContractValue") ||
+        target.defaultContract.declaration >= program.contracts.len() {
+        panic("default method contract is invalid")
+    }
+    var effective = cContractAt(&program, use.contractType.declaration)
+    var origin = cContractAt(
+        &program, target.defaultContract.declaration)
+    const selfTable = cDefaultSelfVtableName(table, methodIndex)
+    var methodID u64 = 0
+    while methodID < origin.methodList.len() {
+        var declaration = cContractMethodAt(&origin, methodID)
+        const effectiveMethod = cContractMethodIndex(
+            &effective, declaration.name)
+        cWrite(&builder, "static " + cTypeName(&declaration.returnType) + " " +
+            selfTable + "_m" + format.U64(methodID) + "(void *fdn_data")
+        var parameter u64 = 0
+        while parameter < declaration.parameters.len() {
+            var parameterType = semanticTypeArenaAt(
+                &declaration.parameters, parameter)
+            cWrite(&builder, ", " + cTypeName(&parameterType) + " fdn_arg_" +
+                format.U64(parameter))
+            parameter += 1
+        }
+        cWrite(&builder, ") {\n    ")
+        if !declaration.returnType.kind.Matches("Void") {
+            cWrite(&builder, "return ")
+        }
+        cWrite(&builder, table + "_m" + format.U64(effectiveMethod) +
+            "(fdn_data")
+        parameter = 0
+        while parameter < declaration.parameters.len() {
+            cWrite(&builder, ", fdn_arg_" + format.U64(parameter))
+            parameter += 1
+        }
+        cWrite(&builder, ");\n}\n")
+        methodID += 1
+    }
+    cWrite(&builder, "static const struct fdn_contract_" +
+        format.U64(target.defaultContract.declaration) + "_vtable " +
+        selfTable + " = {\n")
+    cWrite(&builder, "    " + table + "_drop")
+    cWrite(&builder, if origin.methodList.len() == 0 { "\n" } else { ",\n" })
+    methodID = 0
+    while methodID < origin.methodList.len() {
+        cWrite(&builder, "    " + selfTable + "_m" + format.U64(methodID))
+        cWrite(&builder, if methodID + 1 == origin.methodList.len() {
+            "\n"
+        } else { ",\n" })
+        methodID += 1
+    }
+    cWrite(&builder, "};\n")
+}
+
+fn cEmitContractAdapterSignature(
+    &builder text.Builder,
+    &method firContractMethod,
+    name String,
+    prototype bool
+) void {
+    cWrite(&builder, "static " + cTypeName(&method.returnType) + " " +
+        name + "(void *fdn_data")
+    var parameter u64 = 0
+    while parameter < method.parameters.len() {
+        var parameterType = semanticTypeArenaAt(&method.parameters, parameter)
+        cWrite(&builder, ", " + cTypeName(&parameterType))
+        if !prototype {
+            cWrite(&builder, " fdn_arg_" + format.U64(parameter))
+        }
+        parameter += 1
+    }
+    cWrite(&builder, ")")
+}
+
+fn cEmitContractAdapters(
+    &builder text.Builder,
+    &program firProgram,
+    &use cContractUse
+) void {
+    if !use.contractType.kind.Matches("ContractValue") ||
+        use.contractType.declaration >= program.contracts.len() {
+        panic("contract adapter type is invalid")
+    }
+    var contractDeclaration = cContractAt(
+        &program, use.contractType.declaration)
+    if use.targets.len() != contractDeclaration.methodList.len() {
+        panic("contract adapter method count mismatch")
+    }
+    var contractType = copySemanticType(&use.contractType)
+    var concreteType = copySemanticType(&use.concreteType)
+    const table = cVtableName(&contractType, &concreteType)
+    cWrite(&builder, "static void " + table + "_drop(void *fdn_data) {\n")
+    cWrite(&builder, "    if (fdn_data == NULL) {\n        return;\n    }\n")
+    if cTypeRequiresDrop(&program, &use.concreteType) {
+        cWrite(&builder, "    " + cDropName(&use.concreteType) + "((" +
+            cTypeName(&use.concreteType) + " *)fdn_data);\n")
+    }
+    cWrite(&builder, "    fdn_dealloc(fdn_data);\n}\n")
+    var methodID u64 = 0
+    while methodID < contractDeclaration.methodList.len() {
+        var method = cContractMethodAt(&contractDeclaration, methodID)
+        cEmitContractAdapterSignature(&builder, &method,
+            table + "_m" + format.U64(methodID), true)
+        cWrite(&builder, ";\n")
+        methodID += 1
+    }
+    methodID = 0
+    while methodID < contractDeclaration.methodList.len() {
+        var declaration = cContractMethodAt(&contractDeclaration, methodID)
+        var target = cContractTargetAt(&use, methodID)
+        if target.function >= program.functions.len() {
+            panic("contract adapter implementation is invalid")
+        }
+        var function = cFunctionAt(&program, target.function)
+        if function.parameters.len() == 0 {
+            panic("contract adapter implementation is invalid")
+        }
+        const adapter = table + "_m" + format.U64(methodID)
+        if target.contractDefault {
+            cEmitDefaultSelfVtable(
+                &builder, &program, &use, &target, table, methodID)
+        }
+        cEmitContractAdapterSignature(
+            &builder, &declaration, adapter, false)
+        cWrite(&builder, " {\n    ")
+        if !declaration.returnType.kind.Matches("Void") && !function.diverges {
+            cWrite(&builder, "return ")
+        }
+        if target.contractDefault {
+            cWrite(&builder, "struct fdn_contract_" +
+                format.U64(target.defaultContract.declaration) +
+                " fdn_self = {fdn_data, &" +
+                cDefaultSelfVtableName(table, methodID) + "};\n    ")
+            if !declaration.returnType.kind.Matches("Void") && !function.diverges {
+                cWrite(&builder, "return ")
+            }
+            cWrite(&builder, cFunctionName(&program, target.function) + "(fdn_self")
+        } else {
+            const receiver = cU64At(&function.parameters, 0)
+            var receiverType = cLocalTypeAt(&function, receiver)
+            cWrite(&builder, cFunctionName(&program, target.function) + "((" +
+                cTypeName(&receiverType) + ")" +
+                cContractTargetData(&program, &use, &target))
+        }
+        var parameter u64 = 0
+        while parameter < declaration.parameters.len() {
+            cWrite(&builder, ", fdn_arg_" + format.U64(parameter))
+            parameter += 1
+        }
+        cWrite(&builder, ");\n}\n")
+        methodID += 1
+    }
+    cWrite(&builder, "static const struct fdn_contract_" +
+        format.U64(use.contractType.declaration) + "_vtable " + table +
+        " = {\n")
+    cWrite(&builder, "    " + table + "_drop")
+    cWrite(&builder, if contractDeclaration.methodList.len() == 0 {
+        "\n"
+    } else { ",\n" })
+    methodID = 0
+    while methodID < contractDeclaration.methodList.len() {
+        cWrite(&builder, "    " + table + "_m" + format.U64(methodID))
+        cWrite(&builder, if methodID + 1 == contractDeclaration.methodList.len() {
+            "\n"
+        } else { ",\n" })
+        methodID += 1
+    }
+    cWrite(&builder, "};\n\n")
+}
+
+fn cEmitAllContractAdapters(
+    &builder text.Builder,
+    &program firProgram,
+    &uses arena<cContractUse>
+) void {
+    var index u64 = 0
+    while index < uses.len() {
+        var use = match uses.take(index) {
+            None: panic("contract use slot is empty")
+            Some(found): found
+        }
+        cEmitContractAdapters(&builder, &program, &use)
+        uses.restore(index, $use)
+        index += 1
+    }
+}

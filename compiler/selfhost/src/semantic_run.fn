@@ -185,6 +185,7 @@ fn analyzeProgram(
 ) semanticAnalysis {
     var analyzer = newSemanticAnalyzer(&source, options)
     declareSemanticTypes(&analyzer, &source)
+    declareSemanticDropOwners(&analyzer, &source)
     resolveSemanticContracts(&analyzer, &source)
     resolveSemanticStructs(&analyzer, &source)
     resolveSemanticEnums(&analyzer, &source)

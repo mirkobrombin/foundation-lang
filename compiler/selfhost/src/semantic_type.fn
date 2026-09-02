@@ -239,8 +239,8 @@ fn isSemanticNumeric(&value semanticType) bool {
 }
 
 fn isSemanticMachineScalar(&value semanticType) bool {
-    isSemanticNumeric(&value) || value.kind.Matches("Bool") || value.kind.Matches("Raw") ||
-        value.kind.Matches("RawConst")
+    value.kind.Matches("Void") || value.kind.Matches("Never") ||
+        isSemanticNumeric(&value) || value.kind.Matches("Bool")
 }
 
 fn isTransferableSemanticFunction(&value semanticType) bool {
@@ -276,6 +276,46 @@ fn substituteSemanticType(
         index += 1
     }
     substituted
+}
+
+fn normalizeSubstitutedSemanticType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    $type semanticType
+) semanticType {
+    var value = type
+    var normalized = declaredSemanticType(value.kind, value.declaration)
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = match value.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(argument): argument
+        }
+        discard normalized.arguments.add(normalizeSubstitutedSemanticType(
+                &analyzer, &source, $argument))
+        index += 1
+    }
+    if normalized.kind.Matches("View") && normalized.declaration == 1 &&
+        normalized.arguments.len() == 1 {
+        var target = semanticTypeArgument(&normalized, 0)
+        if isCopySemanticParameterType(&analyzer, &source, &target) {
+            return target
+        }
+    }
+    normalized
+}
+
+fn substituteCheckedSemanticType(
+    &analyzer semanticAnalyzer,
+    &source program,
+    &type semanticType,
+    &arguments arena<semanticType>
+) semanticType {
+    normalizeSubstitutedSemanticType(
+        &analyzer,
+        &source,
+        substituteSemanticType(&type, &arguments)
+    )
 }
 
 fn semanticTypeName(kind semanticTypeKind) String {

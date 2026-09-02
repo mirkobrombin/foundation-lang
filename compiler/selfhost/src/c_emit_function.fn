@@ -1,0 +1,514 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn cFunctionHasCaptures(&function firFunction) bool {
+    var index u64 = 0
+    while index < function.locals.len() {
+        const local = cLocalAt(&function, index)
+        if local.captured return true
+        index += 1
+    }
+    false
+}
+
+fn cEmitFunctionSignature(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if id == program.main {
+        cWrite(&builder, "static int32_t " + cFunctionName(&program, id) + "(")
+    } else {
+        if function.closure {
+            cWrite(&builder, cTypeName(&function.returnType) + " " +
+                cFunctionName(&program, id) + "(void *fdn_env")
+            var index u64 = 0
+            while index < function.parameters.len() {
+                const local = cU64At(&function.parameters, index)
+                var localType = cLocalTypeAt(&function, local)
+                cWrite(&builder, ", " + cTypeName(&localType) + " " +
+                    cLocalName(&function, local))
+                index += 1
+            }
+            cWrite(&builder, ")")
+            return
+        }
+        if function.diverges {
+            cWrite(&builder, "_Noreturn void ")
+        } else {
+            cWrite(&builder, cTypeName(&function.returnType) + " ")
+        }
+        cWrite(&builder, cFunctionName(&program, id) + "(")
+    }
+    if function.parameters.len() == 0 {
+        cWrite(&builder, "void")
+    } else {
+        var index u64 = 0
+        while index < function.parameters.len() {
+            if index != 0 {
+                cWrite(&builder, ", ")
+            }
+            const local = cU64At(&function.parameters, index)
+            var localType = cLocalTypeAt(&function, local)
+            cWrite(&builder, cTypeName(&localType) + " " +
+                cLocalName(&function, local))
+            index += 1
+        }
+    }
+    cWrite(&builder, ")")
+}
+
+fn cEmitClosureEnvironmentDefinition(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.closure || !cFunctionHasCaptures(&function) return
+    cWrite(&builder, "struct " + cClosureEnvironmentName(&program, id) + " {\n")
+    var localID u64 = 0
+    while localID < function.locals.len() {
+        const local = cLocalAt(&function, localID)
+        if local.captured {
+            var localType = cLocalTypeAt(&function, localID)
+            cWrite(&builder, "    ")
+            if cCaptureModeView(local.captureMode) {
+                cWrite(&builder, "const ")
+            }
+            cWrite(&builder, cTypeName(&localType))
+            if cCaptureModeView(local.captureMode) ||
+                cCaptureModeEdit(local.captureMode) {
+                cWrite(&builder, " *")
+            } else {
+                cWrite(&builder, " ")
+            }
+            cWrite(&builder, "fdn_capture_" + format.U64(localID) + ";\n")
+        }
+        localID += 1
+    }
+    cWrite(&builder, "};\n\n")
+}
+
+fn cEmitClosureDrop(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.closure || !cFunctionHasCaptures(&function) return
+    const environment = cClosureEnvironmentName(&program, id)
+    cWrite(&builder, "static void " + cClosureDropName(&program, id) +
+        "(void *fdn_raw) {\n")
+    cWrite(&builder, "    struct " + environment +
+        " *fdn_env = (struct " + environment + " *)fdn_raw;\n")
+    var localID = function.locals.len()
+    while localID != 0 {
+        localID -= 1
+        const local = cLocalAt(&function, localID)
+        if local.captured && !cCaptureModeView(local.captureMode) &&
+            !cCaptureModeEdit(local.captureMode) {
+            var localType = cLocalTypeAt(&function, localID)
+            cEmitDropValue(&builder, &program, &localType,
+                "fdn_env->fdn_capture_" + format.U64(localID), 1)
+        }
+    }
+    cWrite(&builder, "    fdn_dealloc(fdn_env);\n}\n\n")
+}
+
+fn cEmitAllFunctionPrototypes(
+    &builder text.Builder,
+    &program firProgram
+) void {
+    var callbackCancels = newArena<String>()
+    var index u64 = 0
+    while index < program.functions.len() {
+        var function = cFunctionAt(&program, index)
+        match replace function.cSymbol with .None {
+            None: {}
+            Some(symbol): {
+                if function.callback {
+                    function.cSymbol = .Some(text.Copy(symbol))
+                    cEmitCallbackStartSignature(&builder, &function, false)
+                    cWrite(&builder, ";\n")
+                } else {
+                    cWrite(&builder, cTypeName(&function.returnType) + " " +
+                        symbol + "(")
+                    cEmitCParameters(&builder, &function, false)
+                    cWrite(&builder, ");\n")
+                }
+            }
+        }
+        match replace function.callbackCancelSymbol with .None {
+            None: {}
+            Some(symbol): {
+                if !semanticStringContains(&callbackCancels, symbol) {
+                    discard callbackCancels.add(text.Copy(symbol))
+                    cEmitCallbackCancelSignature(&builder, symbol, false)
+                    cWrite(&builder, ";\n")
+                }
+            }
+        }
+        index += 1
+    }
+    cWrite(&builder, "\n")
+    index = 0
+    while index < program.functions.len() {
+        var function = cFunctionAt(&program, index)
+        if !function.callback && (!function.taskFunction ||
+            cTaskSuspensionCount(&function) == 0) {
+            cEmitFunctionSignature(&builder, &program, index)
+            cWrite(&builder, ";\n")
+        }
+        index += 1
+    }
+    cWrite(&builder, "\n")
+}
+
+fn cEmitCParameters(
+    &builder text.Builder,
+    &function firFunction,
+    includeNames bool
+) void {
+    if function.parameters.len() == 0 {
+        cWrite(&builder, "void")
+        return
+    }
+    var index u64 = 0
+    while index < function.parameters.len() {
+        if index != 0 {
+            cWrite(&builder, ", ")
+        }
+        const local = cU64At(&function.parameters, index)
+        var localType = cLocalTypeAt(&function, local)
+        cWrite(&builder, cTypeName(&localType))
+        if includeNames {
+            cWrite(&builder, " fdn_arg_" + format.U64(index))
+        }
+        index += 1
+    }
+}
+
+fn cEmitCallArguments(
+    &builder text.Builder,
+    &function firFunction,
+    abiNames bool
+) void {
+    var index u64 = 0
+    while index < function.parameters.len() {
+        if index != 0 {
+            cWrite(&builder, ", ")
+        }
+        if abiNames {
+            cWrite(&builder, "fdn_arg_" + format.U64(index))
+        } else {
+            const local = cU64At(&function.parameters, index)
+            cWrite(&builder, cLocalName(&function, local))
+        }
+        index += 1
+    }
+}
+
+fn cEmitImportedFunction(
+    &builder text.Builder,
+    &program firProgram,
+    id u64,
+    sourcePath String
+) void {
+    var function = cFunctionAt(&program, id)
+    const symbol = match replace function.cSymbol with .None {
+        None: panic("imported function has no C symbol")
+        Some(found): found
+    }
+    cEmitFunctionSignature(&builder, &program, id)
+    cWrite(&builder, " {\n    fdn_frame fdn_frame_current;\n")
+    const traceSource = if function.sourcePath == "" {
+        text.Copy(sourcePath)
+    } else {
+        text.Copy(function.sourcePath)
+    }
+    cWrite(&builder, "    fdn_frame_enter_native(&fdn_frame_current, " +
+        cStringLiteral(symbol) + ", " + cStringLiteral(traceSource) + ", " +
+        format.U64(function.sourceSpan.line) + ", " +
+        format.U64(function.sourceSpan.column) + ");\n")
+    if function.returnType.kind.Matches("Void") {
+        cWrite(&builder, "    " + symbol + "(")
+        cEmitCallArguments(&builder, &function, false)
+        cWrite(&builder, ");\n    fdn_frame_leave(&fdn_frame_current);\n")
+        cWrite(&builder, "    return;\n}\n")
+    } else {
+        cWrite(&builder, "    " + cTypeName(&function.returnType) +
+            " fdn_result = " + symbol + "(")
+        cEmitCallArguments(&builder, &function, false)
+        cWrite(&builder, ");\n    fdn_frame_leave(&fdn_frame_current);\n")
+        cWrite(&builder, "    return fdn_result;\n}\n")
+    }
+}
+
+fn cEmitFunctionBody(
+    &builder text.Builder,
+    &program firProgram,
+    id u64,
+    sourcePath String
+) void {
+    var function = cFunctionAt(&program, id)
+    if function.callback return
+    if function.taskFunction && cTaskSuspensionCount(&function) != 0 return
+    if !function.hasBody {
+        cEmitImportedFunction(&builder, &program, id, sourcePath)
+        return
+    }
+    cEmitFunctionSignature(&builder, &program, id)
+    cWrite(&builder, " {\n    fdn_frame fdn_frame_current;\n")
+    const framePackage = if function.packageName == "" {
+        "main"
+    } else {
+        text.Copy(function.packageName)
+    }
+    const traceSource = if function.sourcePath == "" {
+        text.Copy(sourcePath)
+    } else {
+        text.Copy(function.sourcePath)
+    }
+    cWrite(&builder, "    fdn_frame_enter(&fdn_frame_current, " +
+        cStringLiteral(framePackage) + ", " + cStringLiteral(function.name) +
+        ", " + cStringLiteral(traceSource) + ", " +
+        format.U64(function.sourceSpan.line) + ", " +
+        format.U64(function.sourceSpan.column) + ");\n")
+    if function.closure {
+        if cFunctionHasCaptures(&function) {
+            const environment = cClosureEnvironmentName(&program, id)
+            cWrite(&builder, "    struct " + environment +
+                " *fdn_env_data = (struct " + environment + " *)fdn_env;\n")
+        } else {
+            cWrite(&builder, "    (void)fdn_env;\n")
+        }
+    }
+    var parameterIndex u64 = 0
+    while parameterIndex < function.parameters.len() {
+        const local = cU64At(&function.parameters, parameterIndex)
+        cWrite(&builder, "    (void)" + cLocalName(&function, local) + ";\n")
+        parameterIndex += 1
+    }
+    match replace function.stateTransition with .None {
+        None: {}
+        Some(transition): {
+            cEmitStateTransitionBody(
+                &builder, &program, &function, $transition)
+            cWrite(&builder, "}\n")
+            return
+        }
+    }
+    match replace function.stateTimeout with .None {
+        None: {}
+        Some(timeoutValue): {
+            cEmitStateTimeoutBody(
+                &builder, &program, &function, $timeoutValue)
+            cWrite(&builder, "}\n")
+            return
+        }
+    }
+    match replace function.workflow with .None {
+        None: {}
+        Some(workflow): {
+            cEmitWorkflowBody(
+                &builder, &program, &function, $workflow)
+            cWrite(&builder, "}\n")
+            return
+        }
+    }
+    var state = newCFunctionEmissionState(id, false)
+    const body = function.body
+    var exits = false
+    if id == program.main && function.diverges {
+        cWrite(&builder, "    for (;;) {\n")
+        exits = cEmitBlock(
+            &builder, &program, &function, &state, body, 2)
+        cWrite(&builder, "    }\n")
+    } else {
+        exits = cEmitBlock(
+            &builder, &program, &function, &state, body, 1)
+    }
+    if function.returnType.kind.Matches("Void") && !exits {
+        cWrite(&builder, "    fdn_frame_leave(&fdn_frame_current);\n")
+    }
+    cWrite(&builder, "}\n")
+}
+
+fn cCollectFunctionValueUses(&program firProgram) own arena<u64> {
+    var result = newArena<u64>()
+    var functionID u64 = 0
+    while functionID < program.functions.len() {
+        var function = cFunctionAt(&program, functionID)
+        var expressionID u64 = 0
+        while expressionID < function.expressions.len() {
+            const expression = cExpressionAt(&function, expressionID)
+            const firExpression { value type span } = expression
+            discard span
+            var valueType = type
+            match value {
+                FunctionValue(functionValue): {
+                    if !isCSemanticFunction(&valueType) &&
+                        !cU64ArenaContains(&result, functionValue.function) {
+                        discard result.add(functionValue.function)
+                    }
+                }
+                _: {}
+            }
+            expressionID += 1
+        }
+        functionID += 1
+    }
+    result
+}
+
+fn cU64ArenaContains(&values arena<u64>, value u64) bool {
+    var index u64 = 0
+    while index < values.len() {
+        if cU64At(&values, index) == value return true
+        index += 1
+    }
+    false
+}
+
+fn cEmitFunctionValueAdapter(
+    &builder text.Builder,
+    &program firProgram,
+    id u64,
+    prototype bool
+) void {
+    var function = cFunctionAt(&program, id)
+    cWrite(&builder, "static " + cTypeName(&function.returnType) + " " +
+        cFunctionAdapterName(&program, id) + "(void *fdn_env")
+    var index u64 = 0
+    while index < function.parameters.len() {
+        const local = cU64At(&function.parameters, index)
+        var localType = cLocalTypeAt(&function, local)
+        cWrite(&builder, ", " + cTypeName(&localType))
+        if !prototype {
+            cWrite(&builder, " fdn_arg_" + format.U64(index))
+        }
+        index += 1
+    }
+    cWrite(&builder, ")")
+    if prototype {
+        cWrite(&builder, ";\n")
+        return
+    }
+    cWrite(&builder, " {\n    (void)fdn_env;\n    ")
+    if !function.returnType.kind.Matches("Void") && !function.diverges {
+        cWrite(&builder, "return ")
+    }
+    cWrite(&builder, cFunctionName(&program, id) + "(")
+    index = 0
+    while index < function.parameters.len() {
+        if index != 0 {
+            cWrite(&builder, ", ")
+        }
+        cWrite(&builder, "fdn_arg_" + format.U64(index))
+        index += 1
+    }
+    cWrite(&builder, ");\n")
+    if function.diverges {
+        cWrite(&builder,
+            "    fdn_panic_cstr(\"unreachable function value adapter\");\n")
+    }
+    cWrite(&builder, "}\n\n")
+}
+
+fn cEmitMainWrapper(
+    &builder text.Builder,
+    &program firProgram
+) void {
+    const mainFunction = program.main
+    var function = cFunctionAt(&program, mainFunction)
+    const acceptsArguments = function.parameters.len() == 1
+    cWrite(&builder, "\nint main(")
+    if acceptsArguments {
+        cWrite(&builder, "int fdn_argc, char **fdn_argv")
+    } else {
+        cWrite(&builder, "void")
+    }
+    cWrite(&builder, ") {\n")
+    if acceptsArguments {
+        const parameter = cU64At(&function.parameters, 0)
+        var parameterType = cLocalTypeAt(&function, parameter)
+        cWrite(&builder, "    const size_t fdn_argument_count = ")
+        cWrite(&builder, "fdn_argc > 1 ? (size_t)(fdn_argc - 1) : 0;\n")
+        cWrite(&builder, "    fdn_string *fdn_argument_values = NULL;\n")
+        cWrite(&builder, "    if (fdn_argument_count != 0) {\n")
+        cWrite(&builder, "        if (fdn_argument_count > " +
+            "SIZE_MAX / sizeof(*fdn_argument_values)) {\n")
+        cWrite(&builder, "            fdn_panic_cstr(" +
+            "\"command-line argument count overflow\");\n")
+        cWrite(&builder, "        }\n")
+        cWrite(&builder, "        fdn_argument_values = fdn_alloc(")
+        cWrite(&builder, "fdn_argument_count * sizeof(*fdn_argument_values));\n")
+        cWrite(&builder, "        for (size_t fdn_index = 0; ")
+        cWrite(&builder, "fdn_index < fdn_argument_count; ++fdn_index) {\n")
+        cWrite(&builder, "            const char *fdn_argument = ")
+        cWrite(&builder, "fdn_argv[fdn_index + 1];\n")
+        cWrite(&builder, "            fdn_argument_values[fdn_index] = ")
+        cWrite(&builder, "fdn_string_static(fdn_argument, strlen(fdn_argument));\n")
+        cWrite(&builder, "        }\n    }\n")
+        cWrite(&builder, "    const " + cTypeName(&parameterType) +
+            " fdn_arguments = {fdn_argument_values, fdn_argument_count};\n")
+        cWrite(&builder, "    const int32_t fdn_result = " +
+            cFunctionName(&program, mainFunction) + "(fdn_arguments);\n")
+        cWrite(&builder, "    fdn_dealloc(fdn_argument_values);\n")
+        cWrite(&builder, "#if defined(FOUNDATION_VERIFY_ALLOCATIONS)\n")
+        cWrite(&builder, "    if (fdn_live_allocations() != 0) {\n")
+        cWrite(&builder, "        fdn_panic_cstr(" +
+            "\"live allocations after main\");\n")
+        cWrite(&builder, "    }\n#endif\n")
+        cWrite(&builder, "    return (int)fdn_result;\n")
+    } else {
+        cWrite(&builder, "#if defined(FOUNDATION_VERIFY_ALLOCATIONS)\n")
+        cWrite(&builder, "    const int32_t fdn_result = " +
+            cFunctionName(&program, mainFunction) + "();\n")
+        cWrite(&builder, "    if (fdn_live_allocations() != 0) {\n")
+        cWrite(&builder, "        fdn_panic_cstr(" +
+            "\"live allocations after main\");\n")
+        cWrite(&builder, "    }\n")
+        cWrite(&builder, "    return (int)fdn_result;\n#else\n")
+        cWrite(&builder, "    return (int)" +
+            cFunctionName(&program, mainFunction) + "();\n#endif\n")
+    }
+    cWrite(&builder, "}\n")
+}
+
+fn cEmitFunctions(
+    &builder text.Builder,
+    &program firProgram,
+    sourcePath String
+) void {
+    var uses = cCollectFunctionValueUses(&program)
+    var index u64 = 0
+    while index < uses.len() {
+        cEmitFunctionValueAdapter(
+            &builder, &program, cU64At(&uses, index), true)
+        index += 1
+    }
+    if uses.len() != 0 {
+        cWrite(&builder, "\n")
+    }
+    index = 0
+    while index < uses.len() {
+        cEmitFunctionValueAdapter(
+            &builder, &program, cU64At(&uses, index), false)
+        index += 1
+    }
+    index = 0
+    while index < program.functions.len() {
+        var function = cFunctionAt(&program, index)
+        if !function.taskFunction || cTaskSuspensionCount(&function) == 0 {
+            cEmitFunctionBody(&builder, &program, index, sourcePath)
+        }
+        if index + 1 != program.functions.len() {
+            cWrite(&builder, "\n")
+        }
+        index += 1
+    }
+}

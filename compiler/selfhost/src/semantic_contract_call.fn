@@ -131,6 +131,11 @@ fn analyzeSemanticContractMethod(
         analyzer.diagnostics.reportError(
             "FDN2103", "own method requires an owned contract binding", span)
     }
+    const previousTransient = analyzer.state.transientBorrowsAllowed
+    const loanCount = analyzer.state.loanStates.len()
+    var previousLoans = semanticLoanPrefix(
+        &analyzer.state.loanStates, loanCount)
+    analyzer.state.transientBorrowsAllowed = true
     var arguments = semanticCallArgumentIDs(&member.arguments)
     var argumentNames = semanticCallArgumentNames(&member.argumentNames)
     var parameterMap = semanticMapArgumentParameters(
@@ -159,7 +164,7 @@ fn analyzeSemanticContractMethod(
                 None: panic("contract parameter slot is empty")
                 Some(pattern): pattern
             }
-            pattern = substituteSemanticType(&pattern, &contractType.arguments)
+            pattern = substituteCheckedSemanticType(&analyzer, &source, &pattern, &contractType.arguments)
             if parameter < semantic.parameterModes.len() {
                 mode = match semantic.parameterModes.take(parameter) {
                     None: panic("contract parameter mode slot is empty")
@@ -201,6 +206,8 @@ fn analyzeSemanticContractMethod(
         discard parameters.add(parameter)
         index += 1
     }
+    analyzer.state.transientBorrowsAllowed = previousTransient
+    restoreSemanticLoans(&analyzer.state.loanStates, &previousLoans)
     var target = newCallTarget(
         .ConstrainedMethod if constrained else .ContractMethod)
     match member.base {
@@ -216,5 +223,5 @@ fn analyzeSemanticContractMethod(
     target.argumentConversions = conversions
     target.argumentParameters = parameters
     setSemanticCallTarget(&analyzer, expression, $target)
-    substituteSemanticType(&semantic.returnType, &contractType.arguments)
+    substituteCheckedSemanticType(&analyzer, &source, &semantic.returnType, &contractType.arguments)
 }
