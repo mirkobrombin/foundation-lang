@@ -743,6 +743,10 @@ if(BUILD_TESTING)
         set(FOUNDATION_SHORT_COMPILE_RUN_TIMEOUT 180)
         set(FOUNDATION_COMPILE_RUN_TIMEOUT 180)
     endif()
+    set(FOUNDATION_WAMR_COMPILE_RUN_TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT})
+    if(FOUNDATION_WAMR_COMPILE_RUN_TIMEOUT LESS 60)
+        set(FOUNDATION_WAMR_COMPILE_RUN_TIMEOUT 60)
+    endif()
     if(TARGET foundation_openssl_provider)
         find_package(Threads REQUIRED)
         target_compile_definitions(foundation_openssl_provider PRIVATE FOUNDATION_OPENSSL_TESTING=1)
@@ -1911,7 +1915,7 @@ if(BUILD_TESTING)
                 compiler.run.plugin-wamr-provider-real
                 PROPERTIES
                     FIXTURES_REQUIRED foundation_wamr_guests
-                    TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT}
+                    TIMEOUT ${FOUNDATION_WAMR_COMPILE_RUN_TIMEOUT}
             )
         endif()
     endif()
