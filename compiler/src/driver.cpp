@@ -518,16 +518,17 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
     if (compilerId == "MSVC") {
         auto objectDirectory = generated.parent_path().string();
         objectDirectory.push_back(std::filesystem::path::preferred_separator);
-        arguments.insert(arguments.end(),
-                         {"/nologo", "/std:c11", "/W4", "/WX", generated.string(),
-                          "/Fo:" + objectDirectory});
-        for (const auto &source : runtimeSources) {
-            arguments.push_back(source.string());
-        }
-        arguments.insert(arguments.end(), {"/I" + runtimeInclude.string(),
-                                           "/I" + nativeInclude.string()});
+        arguments.insert(arguments.end(), {"/nologo", "/std:c11", "/W4", "/WX",
+                                           "/Fo:" + objectDirectory,
+                                           "/I" + runtimeInclude.string(),
+                                           "/I" + nativeInclude.string(),
+                                           "/Fe:" + output.string()});
         if (verifyAllocations) {
             arguments.push_back("/DFOUNDATION_VERIFY_ALLOCATIONS=1");
+        }
+        arguments.push_back(generated.string());
+        for (const auto &source : runtimeSources) {
+            arguments.push_back(source.string());
         }
         for (const auto &input : nativeInputs) {
             arguments.push_back(input.string());
@@ -537,7 +538,6 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
         }
         arguments.push_back("bcrypt.lib");
         arguments.push_back("ws2_32.lib");
-        arguments.push_back("/Fe:" + output.string());
         arguments.insert(arguments.end(), {"/link", "/STACK:8388608"});
         return arguments;
     }

@@ -36,6 +36,40 @@ static int bytes_are(uint64_t handle, const char *expected) {
            (length == 0 || memcmp(data, expected, length) == 0);
 }
 
+static int path_bytes_are(uint64_t handle, const char *expected) {
+#if defined(_WIN32)
+    const uint8_t *data = NULL;
+    size_t length = 0;
+    const size_t expected_length = strlen(expected);
+    if (fdn_bytes_view(handle, &data, &length) != 0 ||
+        length != expected_length) {
+        return 0;
+    }
+    for (size_t index = 0; index < length; ++index) {
+        unsigned char actual = data[index];
+        unsigned char wanted = (unsigned char)expected[index];
+        if (actual == '\\') {
+            actual = '/';
+        }
+        if (wanted == '\\') {
+            wanted = '/';
+        }
+        if (actual >= 'A' && actual <= 'Z') {
+            actual = (unsigned char)(actual - 'A' + 'a');
+        }
+        if (wanted >= 'A' && wanted <= 'Z') {
+            wanted = (unsigned char)(wanted - 'A' + 'a');
+        }
+        if (actual != wanted) {
+            return 0;
+        }
+    }
+    return 1;
+#else
+    return bytes_are(handle, expected);
+#endif
+}
+
 static int child_main(int argc, char **argv) {
 #if defined(_WIN32)
     if (_setmode(_fileno(stdout), _O_BINARY) == -1 ||
@@ -158,15 +192,17 @@ static int run_process(const char *program, const char *working_directory) {
     foundation_runtime_bytes_close(&stderr_handle);
     foundation_runtime_process_close(&process);
 
-    if (snprintf(expected_cwd, sizeof(expected_cwd), "%s\n", working_directory) < 0 ||
-        foundation_runtime_process_open(&program_value, 4096, true, &process) != 0 ||
+    if (snprintf(expected_cwd, sizeof(expected_cwd), "%s\n", working_directory) < 0) {
+        return 2;
+    }
+    if (foundation_runtime_process_open(&program_value, 4096, true, &process) != 0 ||
         foundation_runtime_process_add_argument(process, &child) != 0 ||
         foundation_runtime_process_add_argument(process, &cwd) != 0 ||
         foundation_runtime_process_set_working_directory(
             process, &working_directory_value) != 0 ||
         foundation_runtime_process_run(process, &exit_code, &stdout_handle,
                                        &stderr_handle) != 0 ||
-        exit_code != 0 || !bytes_are(stdout_handle, expected_cwd) ||
+        exit_code != 0 || !path_bytes_are(stdout_handle, expected_cwd) ||
         !bytes_are(stderr_handle, "")) {
         foundation_runtime_bytes_close(&stdout_handle);
         foundation_runtime_bytes_close(&stderr_handle);
