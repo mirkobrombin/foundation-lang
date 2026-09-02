@@ -21,8 +21,8 @@
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
-#include <bcrypt.h>
 #include <windows.h>
+#include <bcrypt.h>
 #else
 #include <dirent.h>
 #include <fcntl.h>
