@@ -1,0 +1,673 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn applicationHasLifetime(
+    &model applicationModel,
+    lifetime applicationLifetime
+) bool {
+    var index u64 = 0
+    while index < model.services.len() {
+        var plan = match model.services.take(index) {
+            None: panic("application serviceID plan slot is empty")
+            Some(value): value
+        }
+        const found = plan.lifetime.Matches(lifetime.Name())
+        model.services.restore(index, $plan)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn applicationRequiresScopeFrom(
+    &model applicationModel,
+    serviceID u64,
+    &visited arena<u64>
+) bool {
+    if applicationRequiredServiceContains(&visited, serviceID) return false
+    discard visited.add(serviceID)
+    const planIndex = match applicationServicePlanIndex(&model, serviceID) {
+        None: {
+            return false
+        }
+        Some(value): value
+    }
+    var plan = match model.services.take(planIndex) {
+        None: panic("application serviceID plan slot is empty")
+        Some(value): value
+    }
+    if plan.lifetime.Matches("Scoped") {
+        model.services.restore(planIndex, $plan)
+        return true
+    }
+    if plan.lifetime.Matches("Singleton") {
+        model.services.restore(planIndex, $plan)
+        return false
+    }
+    const dependencyCount = plan.dependencies.len()
+    model.services.restore(planIndex, $plan)
+    var index u64 = 0
+    while index < dependencyCount {
+        var active = match model.services.take(planIndex) {
+            None: panic("application serviceID plan slot is empty")
+            Some(value): value
+        }
+        var dependency = match active.dependencies.take(index) {
+            None: panic("application dependency slot is empty")
+            Some(value): value
+        }
+        const provider = dependency.provider
+        active.dependencies.restore(index, $dependency)
+        model.services.restore(planIndex, $active)
+        match provider {
+            None: {}
+            Some(value): {
+                if applicationRequiresScopeFrom(&model, value, &visited) return true
+            }
+        }
+        index += 1
+    }
+    false
+}
+
+fn applicationRequiresScope(
+    &model applicationModel,
+    serviceID u64
+) bool {
+    var visited = newArena<u64>()
+    applicationRequiresScopeFrom(&model, serviceID, &visited)
+}
+
+fn applicationCommonFallibleError(
+    &program firProgram,
+    &model applicationModel,
+    lifetime applicationLifetime,
+    code String,
+    message String,
+    &diagnostics diagnostics
+) Option<semanticType> {
+    var selected Option<semanticType> = .None
+    var index u64 = 0
+    while index < model.services.len() {
+        var plan = match model.services.take(index) {
+            None: panic("application serviceID plan slot is empty")
+            Some(value): value
+        }
+        if plan.lifetime.Matches(lifetime.Name()) && plan.fallible {
+            var function = match program.functions.take(plan.constructor) {
+                None: panic("constructor function slot is empty")
+                Some(value): value
+            }
+            var candidate = semanticTypeArgument(&function.returnType, 1)
+            match selected {
+                None: {
+                    selected = .Some(copySemanticType(&candidate))
+                }
+                Some(value): {
+                    var current = value
+                    if !sameSemanticType(&current, &candidate) {
+                        diagnostics.reportError(
+                            text.Copy(code),
+                            text.Copy(message),
+                            function.sourceSpan
+                        )
+                    }
+                    selected = .Some(current)
+                }
+            }
+            program.functions.restore(plan.constructor, $function)
+        }
+        model.services.restore(index, $plan)
+        index += 1
+    }
+    selected
+}
+
+fn applicationEmitImports(
+    &model applicationModel,
+    &output String
+) void {
+    var index u64 = 0
+    while index < model.imports.len() {
+        var value = match model.imports.take(index) {
+            None: panic("application import slot is empty")
+            Some(value): value
+        }
+        applicationAppend(
+            &output,
+            "import " + value.packageName + " as " + value.alias + "\n"
+        )
+        model.imports.restore(index, $value)
+        index += 1
+    }
+    if model.imports.len() != 0 {
+        applicationAppend(&output, "\n")
+    }
+}
+
+fn applicationEmitStoredStructs(
+    &program firProgram,
+    &model applicationModel,
+    &output String
+) void {
+    applicationAppend(&output, "struct FoundationApplication")
+    if model.webRoutes.len() != 0 {
+        applicationAppend(
+            &output,
+            " implements " + applicationQualifiedName(
+                &model, "foundation.web.Application") +
+            "<FoundationWebError>"
+        )
+    }
+    applicationAppend(&output, " {\n")
+    if model.webRoutes.len() != 0 {
+        applicationAppend(
+            &output,
+            "    foundationRoutes own " + applicationQualifiedName(
+                &model, "foundation.web.RouteTable") + "\n"
+        )
+    }
+    var index u64 = 0
+    while index < model.order.len() {
+        const serviceID = match model.order.take(index) {
+            None: panic("application order slot is empty")
+            Some(value): value
+        }
+        model.order.restore(index, serviceID)
+        if applicationServiceLifetimeAt(&model, serviceID).Matches("Singleton") {
+            var type = declaredSemanticType(.StructValue, serviceID)
+            applicationAppend(
+                &output,
+                "    " + applicationStoredFieldName(
+                    &program, &model, serviceID, .Singleton) + " " +
+                applicationSourceTypeName(&program, &model, &type) + "\n"
+            )
+        }
+        index += 1
+    }
+    applicationAppend(&output, "}\n\n")
+    if !applicationHasLifetime(&model, .Scoped) return
+    applicationAppend(&output, "struct FoundationScope {\n")
+    index = 0
+    while index < model.order.len() {
+        const serviceID = match model.order.take(index) {
+            None: panic("application order slot is empty")
+            Some(value): value
+        }
+        model.order.restore(index, serviceID)
+        if applicationServiceLifetimeAt(&model, serviceID).Matches("Scoped") {
+            var type = declaredSemanticType(.StructValue, serviceID)
+            applicationAppend(
+                &output,
+                "    " + applicationStoredFieldName(
+                    &program, &model, serviceID, .Scoped) + " " +
+                applicationSourceTypeName(&program, &model, &type) + "\n"
+            )
+        }
+        index += 1
+    }
+    applicationAppend(&output, "}\n\n")
+}
+
+fn applicationEmitBuilder(
+    &program firProgram,
+    &model applicationModel,
+    $startupError Option<semanticType>,
+    &output String
+) void {
+    var builder = newApplicationConstruction("    ")
+    if model.webRoutes.len() != 0 {
+        discard builder.identifiers.add("foundationRoutes")
+        applicationAppend(
+            &builder.body,
+            "    var foundationRoutes = " + applicationQualifiedName(
+                &model, "foundation.web.NewRouteTable") + "()\n"
+        )
+        var routeIndex u64 = 0
+        while routeIndex < model.webRoutes.len() {
+            var route = match model.webRoutes.take(routeIndex) {
+                None: panic("web route slot is empty")
+                Some(value): value
+            }
+            applicationAppend(
+                &builder.body,
+                "    foundationRequireWebRoute($foundationRoutes.Add(" +
+                format.U64(routeIndex + 1) + ", ." + route.method + ", " +
+                applicationStringLiteral(route.path) + "))\n"
+            )
+            model.webRoutes.restore(routeIndex, $route)
+            routeIndex += 1
+        }
+    }
+    var index u64 = 0
+    while index < model.order.len() {
+        const serviceID = match model.order.take(index) {
+            None: panic("application order slot is empty")
+            Some(value): value
+        }
+        model.order.restore(index, serviceID)
+        if applicationServiceLifetimeAt(&model, serviceID).Matches("Singleton") {
+            const name = applicationStoredFieldName(
+                &program, &model, serviceID, .Singleton)
+            discard applicationEmitConstruction(
+                &program,
+                &model,
+                serviceID,
+                &builder,
+                .Some(name),
+                false
+            )
+        }
+        index += 1
+    }
+    applicationAppend(
+        &output,
+        "fn BuildFoundationApplication(" + applicationHostParameters(
+            &program, &model, &builder.inputs, false) + ") "
+    )
+    var fallible = false
+    var errorType = invalidSemanticType()
+    match startupError {
+        None: applicationAppend(
+            &output,
+            ("own " if model.webRoutes.len() != 0 else "") +
+            "FoundationApplication"
+        )
+        Some(value): {
+            fallible = true
+            errorType = value
+            applicationAppend(
+                &output,
+                "Result<" +
+                ("own " if model.webRoutes.len() != 0 else "") +
+                "FoundationApplication, " +
+                applicationSourceTypeName(&program, &model, &errorType) + ">"
+            )
+        }
+    }
+    applicationAppend(&output, " {\n" + builder.body + "    ")
+    if fallible {
+        applicationAppend(&output, ".Ok(")
+    }
+    applicationAppend(
+        &output,
+        ("own " if model.webRoutes.len() != 0 else "") +
+        "FoundationApplication {"
+    )
+    var hasField = false
+    if model.webRoutes.len() != 0 {
+        applicationAppend(&output, " foundationRoutes = foundationRoutes")
+        hasField = true
+    }
+    index = 0
+    while index < model.order.len() {
+        const serviceID = match model.order.take(index) {
+            None: panic("application order slot is empty")
+            Some(value): value
+        }
+        model.order.restore(index, serviceID)
+        if applicationServiceLifetimeAt(&model, serviceID).Matches("Singleton") {
+            const field = applicationStoredFieldName(
+                &program, &model, serviceID, .Singleton)
+            applicationAppend(&output, " " + field + " = " + field)
+            hasField = true
+        }
+        index += 1
+    }
+    applicationAppend(&output, " }" if hasField else "}")
+    if fallible {
+        applicationAppend(&output, ")")
+    }
+    applicationAppend(&output, "\n}\n")
+}
+
+fn applicationEmitScopeBuilder(
+    &program firProgram,
+    &model applicationModel,
+    $scopeError Option<semanticType>,
+    continueMethods bool,
+    &output String
+) void {
+    if !applicationHasLifetime(&model, .Scoped) return
+    var builder = newApplicationConstruction("        ")
+    builder.applicationReceiver = true
+    var index u64 = 0
+    while index < model.order.len() {
+        const serviceID = match model.order.take(index) {
+            None: panic("application order slot is empty")
+            Some(value): value
+        }
+        model.order.restore(index, serviceID)
+        if applicationServiceLifetimeAt(&model, serviceID).Matches("Scoped") {
+            const name = applicationStoredFieldName(
+                &program, &model, serviceID, .Scoped)
+            discard applicationEmitConstruction(
+                &program,
+                &model,
+                serviceID,
+                &builder,
+                .Some(name),
+                false
+            )
+        }
+        index += 1
+    }
+    applicationAppend(
+        &output,
+        "\nmethods FoundationApplication {\n    fn NewScope(" +
+        applicationHostParameters(
+            &program, &model, &builder.inputs, true) + ") "
+    )
+    var fallible = false
+    var errorType = invalidSemanticType()
+    match scopeError {
+        None: applicationAppend(&output, "FoundationScope")
+        Some(value): {
+            fallible = true
+            errorType = value
+            applicationAppend(
+                &output,
+                "Result<FoundationScope, " +
+                applicationSourceTypeName(&program, &model, &errorType) + ">"
+            )
+        }
+    }
+    applicationAppend(&output, " {\n" + builder.body + "        ")
+    if fallible {
+        applicationAppend(&output, ".Ok(")
+    }
+    applicationAppend(&output, "FoundationScope {")
+    index = 0
+    while index < model.order.len() {
+        const serviceID = match model.order.take(index) {
+            None: panic("application order slot is empty")
+            Some(value): value
+        }
+        model.order.restore(index, serviceID)
+        if applicationServiceLifetimeAt(&model, serviceID).Matches("Scoped") {
+            const field = applicationStoredFieldName(
+                &program, &model, serviceID, .Scoped)
+            applicationAppend(&output, " " + field + " = " + field)
+        }
+        index += 1
+    }
+    applicationAppend(&output, " }")
+    if fallible {
+        applicationAppend(&output, ")")
+    }
+    applicationAppend(
+        &output, "\n    }\n\n" if continueMethods else "\n    }\n}\n")
+}
+
+fn applicationCopyActionValues(
+    &values arena<String>
+) own arena<String> {
+    var result = newArena<String>()
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("actionPlan value slot is empty")
+            Some(value): value
+        }
+        discard result.add(text.Copy(value))
+        values.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn applicationEmitActionMethods(
+    &program firProgram,
+    &model applicationModel,
+    &diagnostics diagnostics,
+    continueMethods bool,
+    &output String
+) own arena<applicationDispatchAction> {
+    var dispatch = newArena<applicationDispatchAction>()
+    if model.actions.len() == 0 return dispatch
+    if !continueMethods {
+        applicationAppend(&output, "\nmethods FoundationApplication {\n")
+    }
+    var actionIndex u64 = 0
+    while actionIndex < model.actions.len() {
+        var actionPlan = match model.actions.take(actionIndex) {
+            None: panic("application actionPlan slot is empty")
+            Some(value): value
+        }
+        var function = match program.functions.take(actionPlan.function) {
+            None: panic("actionPlan function slot is empty")
+            Some(value): value
+        }
+        const receiver = applicationReceiver(&function)
+        const lifetime = applicationServiceLifetimeAt(&model, actionPlan.serviceID)
+        const transient = lifetime.Matches("Transient")
+        const scoped = lifetime.Matches("Scoped")
+        const scopedAction = applicationRequiresScope(&model, actionPlan.serviceID)
+        var activation = newApplicationConstruction("        ")
+        activation.applicationReceiver = true
+        discard activation.identifiers.add("self")
+        const first u64 = 1 if optionU64Present(match function.receiver {
+            None: .None
+            Some(value): {
+                discard value
+                .Some(0)
+            }
+        }) else 0
+        var parameterIndex = first
+        while parameterIndex < function.parameters.len() {
+            var parameter = applicationParameter(&function, parameterIndex)
+            discard activation.identifiers.add(text.Copy(parameter.name))
+            parameterIndex += 1
+        }
+        var parameters = newArena<String>()
+        const receiverText = "&self" if lifetime.Matches("Singleton") &&
+            receiver.Matches("Edit") else "self"
+        discard parameters.add(text.Copy(receiverText))
+        var scopeName = ""
+        if scopedAction {
+            scopeName = applicationUniqueIdentifier(
+                &activation, "foundationScope")
+            activation.scopeReceiver = true
+            activation.scopeName = text.Copy(scopeName)
+            const marker = "&" if scoped && receiver.Matches("Edit") else ""
+            discard parameters.add(marker + scopeName + " FoundationScope")
+        }
+        var target = ""
+        if transient {
+            target = applicationEmitConstruction(
+                &program,
+                &model,
+                actionPlan.serviceID,
+                &activation,
+                .None,
+                receiver.Matches("Edit")
+            )
+        } else {
+            if scoped {
+                target = scopeName + "." + applicationStoredFieldName(
+                    &program, &model, actionPlan.serviceID, .Scoped)
+            } else {
+                target = "self." + applicationStoredFieldName(
+                    &program, &model, actionPlan.serviceID, .Singleton)
+            }
+        }
+        var dispatchParameters = newArena<applicationDispatchParameter>()
+        var inputIndex u64 = 0
+        while inputIndex < activation.inputs.len() {
+            var input = match activation.inputs.take(inputIndex) {
+                None: panic("activation input slot is empty")
+                Some(value): value
+            }
+            var base = applicationBaseType(&input.type)
+            discard parameters.add(
+                applicationParameterMarker(input.mode) + input.name + " " +
+                applicationSourceTypeName(&program, &model, &base)
+            )
+            discard dispatchParameters.add(applicationDispatchParameter {
+                name = text.Copy(input.name)
+                type = copySemanticType(&input.type)
+                mode = input.mode
+            })
+            activation.inputs.restore(inputIndex, $input)
+            inputIndex += 1
+        }
+        var arguments = newArena<String>()
+        parameterIndex = first
+        while parameterIndex < function.parameters.len() {
+            var parameter = applicationParameter(&function, parameterIndex)
+            const mode = applicationParameterMode(&function, parameterIndex)
+            var base = applicationBaseType(&parameter.type)
+            discard parameters.add(
+                applicationParameterMarker(mode) + parameter.name + " " +
+                applicationSourceTypeName(&program, &model, &base)
+            )
+            discard arguments.add(applicationParameterMarker(mode) + parameter.name)
+            discard dispatchParameters.add(applicationDispatchParameter {
+                name = text.Copy(parameter.name)
+                type = copySemanticType(&parameter.type)
+                mode = mode
+            })
+            parameterIndex += 1
+        }
+        var activationError = applicationActivationError(
+            &program, &model, actionPlan.serviceID, &diagnostics)
+        var wrapsResult = false
+        const selectedActivation = replace activationError with .None
+        match selectedActivation {
+            None: {}
+            Some(value): {
+                var activationType = value
+                var alreadyMatches = false
+                if applicationIsResult(&program, &function.returnType) {
+                    var executionType = semanticTypeArgument(
+                        &function.returnType, 1)
+                    alreadyMatches = sameSemanticType(
+                        &activationType, &executionType)
+                }
+                wrapsResult = !alreadyMatches
+                activationError = .Some(activationType)
+            }
+        }
+        var emittedReturn = applicationSourceTypeName(
+            &program, &model, &function.returnType)
+        if wrapsResult {
+            const selected = replace activationError with .None
+            match selected {
+                None: panic("action activation error is missing")
+                Some(value): {
+                    var activationType = value
+                    emittedReturn = "Result<" + emittedReturn + ", " +
+                        applicationSourceTypeName(
+                        &program, &model, &activationType) + ">"
+                    activationError = .Some(activationType)
+                }
+            }
+        }
+        applicationAppend(
+            &output,
+            "    fn " + actionPlan.method + "(" + applicationJoin(&parameters) + ") " +
+            emittedReturn + " {\n" +
+            activation.body + "        "
+        )
+        var invocation = ""
+        if transient && receiver.Matches("Own") {
+            invocation = "$"
+        }
+        invocation = invocation + target + "." +
+            applicationShortName(function.name) + "(" +
+            applicationJoin(&arguments) + ")"
+        if wrapsResult && applicationTypeIsVoid(&function.returnType) {
+            applicationAppend(&output, invocation + "\n        .Ok\n    }\n")
+        } else {
+            if wrapsResult && !applicationTypeIsNever(&function.returnType) {
+                applicationAppend(&output, ".Ok(" + invocation + ")\n    }\n")
+            } else {
+                applicationAppend(&output, invocation + "\n    }\n")
+            }
+        }
+        var successType = copySemanticType(&function.returnType)
+        var executionError Option<semanticType> = .None
+        if applicationIsResult(&program, &function.returnType) {
+            successType = semanticTypeArgument(&function.returnType, 0)
+            executionError = .Some(semanticTypeArgument(&function.returnType, 1))
+        }
+        const functionID = actionPlan.function
+        const method = text.Copy(actionPlan.method)
+        const name = text.Copy(actionPlan.name)
+        const actionKeys = applicationCopyActionValues(&actionPlan.keys)
+        const policies = applicationCopyActionValues(&actionPlan.policies)
+        program.functions.restore(actionPlan.function, $function)
+        model.actions.restore(actionIndex, $actionPlan)
+        discard dispatch.add(applicationDispatchAction {
+            function = functionID
+            method = method
+            name = name
+            keys = actionKeys
+            policies = policies
+            parameters = dispatchParameters
+            successType = successType
+            executionError = executionError
+            activationError = activationError
+            scoped = scopedAction
+            scopeEdit = scoped && receiver.Matches("Edit")
+            receiverEdit = lifetime.Matches("Singleton") &&
+                receiver.Matches("Edit")
+        })
+        if actionIndex + 1 != model.actions.len() {
+            applicationAppend(&output, "\n")
+        }
+        actionIndex += 1
+    }
+    applicationAppend(&output, "}\n")
+    dispatch
+}
+
+fn emitApplicationHostSource(
+    &program firProgram,
+    &model applicationModel,
+    &diagnostics diagnostics
+) String {
+    const startupError = applicationCommonFallibleError(
+        &program,
+        &model,
+        .Singleton,
+        "FDN2332",
+        "fallible constructors in one application must use the same error type",
+        &diagnostics
+    )
+    const scopeError = applicationCommonFallibleError(
+        &program,
+        &model,
+        .Scoped,
+        "FDN2339",
+        "fallible constructors in one scope must use the same error type",
+        &diagnostics
+    )
+    if diagnostics.hasErrors() return ""
+    var output = "package " + model.rootPackage + "\n\n"
+    applicationEmitImports(&model, &output)
+    applicationEmitSerializers(&program, &model, &output)
+    applicationEmitGuards(&program, &model, &output)
+    applicationEmitValidations(&program, &model, &output)
+    applicationEmitBindings(&program, &model, &output)
+    if !model.includeApplicationHost {
+        applicationAppend(&output, "// foundation:generated package/v1\n")
+        return output
+    }
+    applicationEmitWebTypes(&program, &model, &output)
+    applicationEmitStoredStructs(&program, &model, &output)
+    applicationEmitBuilder(&program, &model, $startupError, &output)
+    applicationEmitWebSupport(&program, &model, &output)
+    applicationEmitWebMethods(&program, &model, &output)
+    const combinedMethods = applicationHasLifetime(&model, .Scoped) &&
+        model.actions.len() != 0
+    applicationEmitScopeBuilder(
+        &program, &model, $scopeError, combinedMethods, &output)
+    var dispatch = applicationEmitActionMethods(
+        &program, &model, &diagnostics, combinedMethods, &output)
+    emitApplicationDispatch(&program, &model, &dispatch, &diagnostics, &output)
+    applicationAppend(&output, "\n// foundation:generated application/v1\n")
+    output
+}

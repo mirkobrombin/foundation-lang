@@ -1,0 +1,917 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+struct applicationDispatchKeyBinding {
+    key String
+    actionName String
+}
+
+fn applicationDispatchKeyBindingLess(
+    &left applicationDispatchKeyBinding,
+    &right applicationDispatchKeyBinding
+) bool {
+    if left.key != right.key {
+        return applicationStringLess(left.key, right.key)
+    }
+    applicationStringLess(left.actionName, right.actionName)
+}
+
+fn applicationDispatchKeyBindings(
+    &actions arena<applicationDispatchAction>
+) own arena<applicationDispatchKeyBinding> {
+    var result = newArena<applicationDispatchKeyBinding>()
+    var actionIndex u64 = 0
+    while actionIndex < actions.len() {
+        var actionPlan = match actions.take(actionIndex) {
+            None: panic("dispatch action plan slot is empty")
+            Some(value): value
+        }
+        var keyIndex u64 = 0
+        while keyIndex < actionPlan.keys.len() {
+            const key = match actionPlan.keys.take(keyIndex) {
+                None: panic("action key slot is empty")
+                Some(value): value
+            }
+            discard result.add(applicationDispatchKeyBinding {
+                key = text.Copy(key)
+                actionName = text.Copy(actionPlan.name)
+            })
+            actionPlan.keys.restore(keyIndex, $key)
+            keyIndex += 1
+        }
+        actions.restore(actionIndex, $actionPlan)
+        actionIndex += 1
+    }
+    var leftIndex u64 = 0
+    while leftIndex < result.len() {
+        var rightIndex = leftIndex + 1
+        while rightIndex < result.len() {
+            var left = match result.take(leftIndex) {
+                None: panic("action key binding slot is empty")
+                Some(value): value
+            }
+            var right = match result.take(rightIndex) {
+                None: panic("action key binding slot is empty")
+                Some(value): value
+            }
+            if applicationDispatchKeyBindingLess(&right, &left) {
+                result.restore(leftIndex, $right)
+                result.restore(rightIndex, $left)
+            } else {
+                result.restore(leftIndex, $left)
+                result.restore(rightIndex, $right)
+            }
+            rightIndex += 1
+        }
+        leftIndex += 1
+    }
+    result
+}
+
+fn applicationDispatchPayloadName(
+    &actionPlan applicationDispatchAction
+) String {
+    "Foundation" + actionPlan.method + "Action"
+}
+
+fn applicationDispatchHasPolicies(
+    &actions arena<applicationDispatchAction>
+) bool {
+    var index u64 = 0
+    while index < actions.len() {
+        var actionPlan = match actions.take(index) {
+            None: panic("dispatch actionPlan slot is empty")
+            Some(value): value
+        }
+        const found = actionPlan.policies.len() != 0
+        actions.restore(index, $actionPlan)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn applicationDispatchHasKeys(
+    &actions arena<applicationDispatchAction>,
+    scoped bool
+) bool {
+    var index u64 = 0
+    while index < actions.len() {
+        var actionPlan = match actions.take(index) {
+            None: panic("dispatch actionPlan slot is empty")
+            Some(value): value
+        }
+        const found = actionPlan.scoped == scoped && actionPlan.keys.len() != 0
+        actions.restore(index, $actionPlan)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn applicationDispatchGroupCount(
+    &actions arena<applicationDispatchAction>,
+    scoped bool
+) u64 {
+    var result u64 = 0
+    var index u64 = 0
+    while index < actions.len() {
+        var actionPlan = match actions.take(index) {
+            None: panic("dispatch actionPlan slot is empty")
+            Some(value): value
+        }
+        if actionPlan.scoped == scoped {
+            result += 1
+        }
+        actions.restore(index, $actionPlan)
+        index += 1
+    }
+    result
+}
+
+fn applicationDispatchExecutionErrorPresent(
+    &actionPlan applicationDispatchAction
+) bool {
+    const selected = replace actionPlan.executionError with .None
+    const result = match selected {
+        None: false
+        Some(value): {
+            actionPlan.executionError = .Some(value)
+            true
+        }
+    }
+    result
+}
+
+fn applicationDispatchParameterType(
+    &program firProgram,
+    &model applicationModel,
+    &parameter applicationDispatchParameter
+) String {
+    var base = applicationBaseType(&parameter.type)
+    if base.kind.Matches("ContractValue") && parameter.mode.Matches("Transfer") {
+        return "own " + applicationSourceTypeName(&program, &model, &base)
+    }
+    applicationSourceTypeName(&program, &model, &base)
+}
+
+fn applicationEmitDispatchTypes(
+    &program firProgram,
+    &model applicationModel,
+    &actions arena<applicationDispatchAction>,
+    &diagnostics diagnostics,
+    &output String
+) void {
+    var index u64 = 0
+    while index < actions.len() {
+        var actionPlan = match actions.take(index) {
+            None: panic("dispatch actionPlan slot is empty")
+            Some(value): value
+        }
+        var parameterIndex u64 = 0
+        while parameterIndex < actionPlan.parameters.len() {
+            var parameter = match actionPlan.parameters.take(parameterIndex) {
+                None: panic("dispatch parameter slot is empty")
+                Some(value): value
+            }
+            const base = applicationBaseType(&parameter.type)
+            if base.kind.Matches("Slice") ||
+                (base.kind.Matches("ContractValue") &&
+                !parameter.mode.Matches("Transfer")) {
+                diagnostics.reportError(
+                    "FDN2341",
+                    "dispatched actionPlan payload cannot store borrowed parameter " +
+                    parameter.name,
+                    applicationFunctionSpan(&program, actionPlan.function)
+                )
+            }
+            actionPlan.parameters.restore(parameterIndex, $parameter)
+            parameterIndex += 1
+        }
+        if actionPlan.successType.kind.Matches("View") ||
+            actionPlan.successType.kind.Matches("Edit") ||
+            actionPlan.successType.kind.Matches("Slice") ||
+            actionPlan.successType.kind.Matches("ContractValue") ||
+            (applicationTypeIsNever(&actionPlan.successType) &&
+            applicationDispatchExecutionErrorPresent(&actionPlan)) {
+            diagnostics.reportError(
+                "FDN2342",
+                "dispatched actionPlan result must be an owned or value type",
+                applicationFunctionSpan(&program, actionPlan.function)
+            )
+        }
+        if actionPlan.parameters.len() != 0 {
+            applicationAppend(
+                &output,
+                "\nstruct " + applicationDispatchPayloadName(&actionPlan) + " {\n"
+            )
+            parameterIndex = 0
+            while parameterIndex < actionPlan.parameters.len() {
+                var parameter = match actionPlan.parameters.take(parameterIndex) {
+                    None: panic("dispatch parameter slot is empty")
+                    Some(value): value
+                }
+                applicationAppend(
+                    &output,
+                    "    " + parameter.name + " " +
+                    applicationDispatchParameterType(
+                        &program, &model, &parameter) + "\n"
+                )
+                actionPlan.parameters.restore(parameterIndex, $parameter)
+                parameterIndex += 1
+            }
+            applicationAppend(&output, "}\n")
+        }
+        actions.restore(index, $actionPlan)
+        index += 1
+    }
+    if diagnostics.hasErrors() return
+    var scopedGroup = false
+    var groupIndex u64 = 0
+    while groupIndex < 2 {
+        const count = applicationDispatchGroupCount(&actions, scopedGroup)
+        if count != 0 {
+            const name = "FoundationScopedAction" if scopedGroup else
+            "FoundationAction"
+            applicationAppend(&output, "\nenum " + name + " {\n")
+            index = 0
+            while index < actions.len() {
+                var actionPlan = match actions.take(index) {
+                    None: panic("dispatch actionPlan slot is empty")
+                    Some(value): value
+                }
+                if actionPlan.scoped == scopedGroup {
+                    applicationAppend(&output, "    " + actionPlan.method)
+                    if actionPlan.parameters.len() != 0 {
+                        applicationAppend(
+                            &output, "(" + applicationDispatchPayloadName(&actionPlan) + ")")
+                    }
+                    applicationAppend(&output, "\n")
+                }
+                actions.restore(index, $actionPlan)
+                index += 1
+            }
+            applicationAppend(&output, "}\n")
+        }
+        scopedGroup = true
+        groupIndex += 1
+    }
+    applicationAppend(
+        &output,
+        "\nstruct FoundationActionKeyBinding {\n" +
+        "    key String\n" +
+        "    actionName String\n" +
+        "}\n\n" +
+        "enum FoundationActionResult {\n"
+    )
+    index = 0
+    while index < actions.len() {
+        var actionPlan = match actions.take(index) {
+            None: panic("dispatch actionPlan slot is empty")
+            Some(value): value
+        }
+        applicationAppend(&output, "    " + actionPlan.method)
+        if !applicationTypeIsVoid(&actionPlan.successType) &&
+            !applicationTypeIsNever(&actionPlan.successType) {
+            applicationAppend(
+                &output,
+                "(value " + applicationSourceTypeName(
+                    &program, &model, &actionPlan.successType) + ")"
+            )
+        }
+        applicationAppend(&output, "\n")
+        actions.restore(index, $actionPlan)
+        index += 1
+    }
+    applicationAppend(
+        &output,
+        "}\n\nenum FoundationDispatchError {\n" +
+        "    UnknownName\n" +
+        "    UnknownKey\n" +
+        "    ActionMismatch\n"
+    )
+    if applicationDispatchHasPolicies(&actions) {
+        applicationAppend(&output, "    Denied(policy String)\n")
+    }
+    index = 0
+    while index < actions.len() {
+        var actionPlan = match actions.take(index) {
+            None: panic("dispatch actionPlan slot is empty")
+            Some(value): value
+        }
+        const sameError = applicationDispatchErrorsMatch(&actionPlan)
+        const selectedActivation = replace actionPlan.activationError with .None
+        match selectedActivation {
+            None: {}
+            Some(value): {
+                var errorType = value
+                if !sameError {
+                    applicationAppend(
+                        &output,
+                        "    " + actionPlan.method + "Activation(error " +
+                        applicationSourceTypeName(
+                            &program, &model, &errorType) + ")\n"
+                    )
+                }
+                actionPlan.activationError = .Some(errorType)
+            }
+        }
+        const selectedError = replace actionPlan.executionError with .None
+        match selectedError {
+            None: {}
+            Some(value): {
+                var errorType = value
+                applicationAppend(
+                    &output,
+                    "    " + actionPlan.method + "Failed(error " +
+                    applicationSourceTypeName(
+                        &program, &model, &errorType) + ")\n"
+                )
+                actionPlan.executionError = .Some(errorType)
+            }
+        }
+        actions.restore(index, $actionPlan)
+        index += 1
+    }
+    applicationAppend(&output, "}\n")
+}
+
+fn applicationEmitActionInventory(
+    &actions arena<applicationDispatchAction>,
+    &output String
+) void {
+    applicationAppend(
+        &output,
+        "\nmethods FoundationApplication {\n" +
+        "    fn HasAction(self, name String) bool {\n        "
+    )
+    var index u64 = 0
+    while index < actions.len() {
+        var actionPlan = match actions.take(index) {
+            None: panic("dispatch actionPlan slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            applicationAppend(&output, " || ")
+        }
+        applicationAppend(
+            &output, "name == " + applicationStringLiteral(actionPlan.name))
+        actions.restore(index, $actionPlan)
+        index += 1
+    }
+    applicationAppend(
+        &output,
+        "\n    }\n\n    fn ActionNames(self) [" +
+        format.U64(actions.len()) + "]String {\n        ["
+    )
+    index = 0
+    while index < actions.len() {
+        var actionPlan = match actions.take(index) {
+            None: panic("dispatch actionPlan slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            applicationAppend(&output, ", ")
+        }
+        applicationAppend(&output, applicationStringLiteral(actionPlan.name))
+        actions.restore(index, $actionPlan)
+        index += 1
+    }
+    var keyBindings = applicationDispatchKeyBindings(&actions)
+    applicationAppend(
+        &output,
+        "]\n    }\n\n    fn ActionKeyBindings(self) [" +
+        format.U64(keyBindings.len()) +
+        "]FoundationActionKeyBinding {\n        ["
+    )
+    index = 0
+    while index < keyBindings.len() {
+        var binding = match keyBindings.take(index) {
+            None: panic("action key binding slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            applicationAppend(&output, ", ")
+        }
+        applicationAppend(
+            &output,
+            "FoundationActionKeyBinding { key = " +
+            applicationStringLiteral(binding.key) + " actionName = " +
+            applicationStringLiteral(binding.actionName) + " }"
+        )
+        keyBindings.restore(index, $binding)
+        index += 1
+    }
+    applicationAppend(&output, "]\n    }\n}\n")
+}
+
+fn applicationDispatchSuccess(
+    &actionPlan applicationDispatchAction,
+    value String
+) String {
+    if applicationTypeIsVoid(&actionPlan.successType) ||
+        applicationTypeIsNever(&actionPlan.successType) {
+        return ".Ok(." + actionPlan.method + ")"
+    }
+    ".Ok(." + actionPlan.method + "(value = " + value + "))"
+}
+
+fn applicationEmitExecutionMatch(
+    &actionPlan applicationDispatchAction,
+    invocation String,
+    indent String,
+    &output String
+) void {
+    applicationAppend(&output, indent + "match " + invocation + " {\n")
+    if applicationTypeIsVoid(&actionPlan.successType) {
+        applicationAppend(
+            &output,
+            indent + "    Ok: " +
+            applicationDispatchSuccess(&actionPlan, "") + "\n"
+        )
+    } else {
+        applicationAppend(
+            &output,
+            indent + "    Ok(value): " +
+            applicationDispatchSuccess(&actionPlan, "value") + "\n"
+        )
+    }
+    applicationAppend(
+        &output,
+        indent + "    Err(error): .Err(." + actionPlan.method +
+        "Failed(error = error))\n" + indent + "}"
+    )
+}
+
+fn applicationEmitCheckedDispatchHelper(
+    &model applicationModel,
+    &actionPlan applicationDispatchAction,
+    kind String,
+    authorizerType String,
+    &output String
+) void {
+    var parameters = newArena<String>()
+    discard parameters.add("&self" if actionPlan.receiverEdit else "self")
+    if actionPlan.scoped {
+        discard parameters.add(
+            ("&" if actionPlan.scopeEdit else "") +
+            "foundationScope FoundationScope")
+    }
+    const checkedName = "foundationDispatchName" if kind == "Name" else
+    "foundationDispatchKey"
+    discard parameters.add(checkedName + " String")
+    if actionPlan.parameters.len() != 0 {
+        discard parameters.add(
+            "$payload " + applicationDispatchPayloadName(&actionPlan))
+    }
+    if actionPlan.policies.len() != 0 {
+        discard parameters.add("authorizer " + authorizerType)
+    }
+    applicationAppend(
+        &output,
+        "\n    fn foundationDispatch" + kind + actionPlan.method + "(" +
+        applicationJoin(&parameters) +
+        ") Result<FoundationActionResult, FoundationDispatchError> {\n" +
+        "        if "
+    )
+    if kind == "Name" {
+        applicationAppend(
+            &output,
+            checkedName + " != " + applicationStringLiteral(actionPlan.name))
+    } else {
+        if actionPlan.keys.len() == 0 {
+            applicationAppend(&output, "true")
+        } else {
+            var keyIndex u64 = 0
+            while keyIndex < actionPlan.keys.len() {
+                const key = match actionPlan.keys.take(keyIndex) {
+                    None: panic("actionPlan key slot is empty")
+                    Some(value): value
+                }
+                const keyText = text.Copy(key)
+                actionPlan.keys.restore(keyIndex, $key)
+                if keyIndex != 0 {
+                    applicationAppend(&output, " && ")
+                }
+                applicationAppend(
+                    &output,
+                    checkedName + " != " + applicationStringLiteral(keyText))
+                keyIndex += 1
+            }
+        }
+    }
+    applicationAppend(&output, " return .Err(.ActionMismatch)\n")
+    var arguments = newArena<String>()
+    if actionPlan.scoped {
+        discard arguments.add(
+            ("&" if actionPlan.scopeEdit else "") + "foundationScope")
+    }
+    if actionPlan.parameters.len() != 0 {
+        discard arguments.add("$payload")
+    }
+    if actionPlan.policies.len() != 0 {
+        discard arguments.add("authorizer")
+    }
+    applicationAppend(
+        &output,
+        "        self.foundationDispatch" + actionPlan.method + "(" +
+        applicationJoin(&arguments) + ")\n    }\n"
+    )
+}
+
+fn applicationEmitDispatchHelpers(
+    &program firProgram,
+    &model applicationModel,
+    &actions arena<applicationDispatchAction>,
+    &output String
+) void {
+    var authorizerType = ""
+    if applicationDispatchHasPolicies(&actions) {
+        authorizerType = applicationQualifiedName(
+            &model, "foundation.actions.Authorizer")
+    }
+    applicationAppend(&output, "\nmethods FoundationApplication {\n")
+    var index u64 = 0
+    while index < actions.len() {
+        var actionPlan = match actions.take(index) {
+            None: panic("dispatch actionPlan slot is empty")
+            Some(value): value
+        }
+        var parameters = newArena<String>()
+        discard parameters.add("&self" if actionPlan.receiverEdit else "self")
+        if actionPlan.scoped {
+            discard parameters.add(
+                ("&" if actionPlan.scopeEdit else "") +
+                "foundationScope FoundationScope")
+        }
+        if actionPlan.parameters.len() != 0 {
+            discard parameters.add(
+                "$payload " + applicationDispatchPayloadName(&actionPlan))
+        }
+        if actionPlan.policies.len() != 0 {
+            discard parameters.add("authorizer " + authorizerType)
+        }
+        applicationAppend(
+            &output,
+            "    fn foundationDispatch" + actionPlan.method + "(" +
+            applicationJoin(&parameters) +
+            ") Result<FoundationActionResult, FoundationDispatchError> {\n"
+        )
+        if actionPlan.parameters.len() != 0 {
+            applicationAppend(
+                &output,
+                "        const " + applicationDispatchPayloadName(&actionPlan) + " {"
+            )
+            var parameterIndex u64 = 0
+            while parameterIndex < actionPlan.parameters.len() {
+                var parameter = match actionPlan.parameters.take(parameterIndex) {
+                    None: panic("dispatch parameter slot is empty")
+                    Some(value): value
+                }
+                applicationAppend(&output, " " + parameter.name)
+                actionPlan.parameters.restore(parameterIndex, $parameter)
+                parameterIndex += 1
+            }
+            applicationAppend(&output, " } = payload\n")
+        }
+        var arguments = newArena<String>()
+        if actionPlan.scoped {
+            discard arguments.add(
+                ("&" if actionPlan.scopeEdit else "") + "foundationScope")
+        }
+        var parameterIndex u64 = 0
+        while parameterIndex < actionPlan.parameters.len() {
+            var parameter = match actionPlan.parameters.take(parameterIndex) {
+                None: panic("dispatch parameter slot is empty")
+                Some(value): value
+            }
+            if parameter.mode.Matches("Edit") {
+                const local = "foundationDispatchEdit" + format.U64(parameterIndex)
+                applicationAppend(
+                    &output,
+                    "        var " + local + " = " + parameter.name + "\n"
+                )
+                discard arguments.add("&" + local)
+            } else {
+                discard arguments.add(
+                    applicationParameterMarker(parameter.mode) + parameter.name)
+            }
+            actionPlan.parameters.restore(parameterIndex, $parameter)
+            parameterIndex += 1
+        }
+        var policyIndex u64 = 0
+        while policyIndex < actionPlan.policies.len() {
+            const policy = match actionPlan.policies.take(policyIndex) {
+                None: panic("actionPlan policy slot is empty")
+                Some(value): value
+            }
+            const policyText = text.Copy(policy)
+            actionPlan.policies.restore(policyIndex, $policy)
+            applicationAppend(
+                &output,
+                "        if !authorizer.Allows(" +
+                applicationStringLiteral(actionPlan.name) + ", " +
+                applicationStringLiteral(policyText) + ") {\n" +
+                "            return .Err(.Denied(policy = " +
+                applicationStringLiteral(policyText) + "))\n" +
+                "        }\n"
+            )
+            policyIndex += 1
+        }
+        const invocation = "self." + actionPlan.method + "(" +
+            applicationJoin(&arguments) + ")"
+        const sameError = applicationDispatchErrorsMatch(&actionPlan)
+        const hasActivation = applicationDispatchHasActivation(&actionPlan)
+        const selectedError = replace actionPlan.executionError with .None
+        if sameError {
+            match selectedError {
+                None: panic("matching action errors require an execution error")
+                Some(errorType): {
+                    applicationEmitExecutionMatch(
+                        &actionPlan, invocation, "        ", &output)
+                    actionPlan.executionError = .Some(errorType)
+                }
+            }
+        } else {
+            if hasActivation {
+                applicationAppend(&output, "        match " + invocation + " {\n")
+                match selectedError {
+                    None: {
+                        if applicationTypeIsVoid(&actionPlan.successType) {
+                            applicationAppend(
+                                &output,
+                                "            Ok: " +
+                                applicationDispatchSuccess(&actionPlan, "") + "\n"
+                            )
+                        } else {
+                            applicationAppend(
+                                &output,
+                                "            Ok(value): " +
+                                applicationDispatchSuccess(
+                                    &actionPlan, "value") + "\n"
+                            )
+                        }
+                    }
+                    Some(errorType): {
+                        applicationAppend(&output, "            Ok(result): ")
+                        applicationEmitExecutionMatch(
+                            &actionPlan, "result", "            ", &output)
+                        applicationAppend(&output, "\n")
+                        actionPlan.executionError = .Some(errorType)
+                    }
+                }
+                applicationAppend(
+                    &output,
+                    "            Err(error): .Err(." + actionPlan.method +
+                    "Activation(error = error))\n        }"
+                )
+            } else {
+                match selectedError {
+                    None: {
+                        if applicationTypeIsVoid(&actionPlan.successType) {
+                            applicationAppend(
+                                &output,
+                                "        " + invocation + "\n        " +
+                                applicationDispatchSuccess(&actionPlan, "")
+                            )
+                        } else {
+                            if applicationTypeIsNever(&actionPlan.successType) {
+                                applicationAppend(&output, "        " + invocation)
+                            } else {
+                                applicationAppend(
+                                    &output,
+                                    "        " + applicationDispatchSuccess(
+                                        &actionPlan, invocation)
+                                )
+                            }
+                        }
+                    }
+                    Some(errorType): {
+                        applicationEmitExecutionMatch(
+                            &actionPlan, invocation, "        ", &output)
+                        actionPlan.executionError = .Some(errorType)
+                    }
+                }
+            }
+        }
+        applicationAppend(&output, "\n    }\n")
+        applicationEmitCheckedDispatchHelper(
+            &model, &actionPlan, "Name", authorizerType, &output)
+        applicationEmitCheckedDispatchHelper(
+            &model, &actionPlan, "Key", authorizerType, &output)
+        if index + 1 != actions.len() {
+            applicationAppend(&output, "\n")
+        }
+        actions.restore(index, $actionPlan)
+        index += 1
+    }
+    applicationAppend(&output, "}\n")
+}
+
+fn applicationEmitDispatchArm(
+    &actionPlan applicationDispatchAction,
+    checkedKind String,
+    groupHasPolicies bool,
+    &output String
+) void {
+    applicationAppend(&output, "            " + actionPlan.method)
+    if actionPlan.parameters.len() == 0 {
+        applicationAppend(&output, ": ")
+    } else {
+        applicationAppend(&output, "(payload): ")
+    }
+    var arguments = newArena<String>()
+    if actionPlan.scoped {
+        discard arguments.add(
+            ("&" if actionPlan.scopeEdit else "") + "foundationScope")
+    }
+    if checkedKind == "Name" {
+        discard arguments.add("foundationDispatchName")
+    }
+    if checkedKind == "Key" {
+        discard arguments.add("foundationDispatchKey")
+    }
+    if actionPlan.parameters.len() != 0 {
+        discard arguments.add("$payload")
+    }
+    if actionPlan.policies.len() != 0 {
+        discard arguments.add("authorizer")
+    } else {
+        discard groupHasPolicies
+    }
+    applicationAppend(
+        &output,
+        "self.foundationDispatch" + checkedKind + actionPlan.method + "(" +
+        applicationJoin(&arguments) + ")\n"
+    )
+}
+
+fn applicationEmitDispatchGroupMethod(
+    &actions arena<applicationDispatchAction>,
+    scoped bool,
+    prefix String,
+    checkedKind String,
+    authorizerType String,
+    &output String
+) void {
+    const count = applicationDispatchGroupCount(&actions, scoped)
+    if count == 0 return
+    var receiverEdit = false
+    var scopeEdit = false
+    var groupHasPolicies = false
+    var index u64 = 0
+    while index < actions.len() {
+        var actionPlan = match actions.take(index) {
+            None: panic("dispatch actionPlan slot is empty")
+            Some(value): value
+        }
+        if actionPlan.scoped == scoped {
+            if actionPlan.receiverEdit {
+                receiverEdit = true
+            }
+            if actionPlan.scopeEdit {
+                scopeEdit = true
+            }
+            if actionPlan.policies.len() != 0 {
+                groupHasPolicies = true
+            }
+        }
+        actions.restore(index, $actionPlan)
+        index += 1
+    }
+    var parameters = newArena<String>()
+    discard parameters.add("&self" if receiverEdit else "self")
+    if scoped {
+        discard parameters.add(
+            ("&" if scopeEdit else "") + "foundationScope FoundationScope")
+    }
+    if groupHasPolicies {
+        discard parameters.add("authorizer " + authorizerType)
+    }
+    if checkedKind == "Name" {
+        discard parameters.add("foundationDispatchName String")
+    }
+    if checkedKind == "Key" {
+        discard parameters.add("foundationDispatchKey String")
+    }
+    const requestType = "FoundationScopedAction" if scoped else "FoundationAction"
+    discard parameters.add("$request " + requestType)
+    applicationAppend(
+        &output,
+        "\nmethods FoundationApplication {\n    fn " + prefix +
+        ("Scoped" if scoped else "") + "(" +
+        applicationJoin(&parameters) +
+        ") Result<FoundationActionResult, FoundationDispatchError> {\n"
+    )
+    if checkedKind == "Name" {
+        applicationAppend(&output, "        if ")
+        var emitted u64 = 0
+        index = 0
+        while index < actions.len() {
+            var actionPlan = match actions.take(index) {
+                None: panic("dispatch actionPlan slot is empty")
+                Some(value): value
+            }
+            if actionPlan.scoped == scoped {
+                if emitted != 0 {
+                    applicationAppend(&output, " && ")
+                }
+                applicationAppend(
+                    &output,
+                    "foundationDispatchName != " +
+                    applicationStringLiteral(actionPlan.name)
+                )
+                emitted += 1
+            }
+            actions.restore(index, $actionPlan)
+            index += 1
+        }
+        applicationAppend(&output, " return .Err(.UnknownName)\n")
+    }
+    if checkedKind == "Key" {
+        applicationAppend(&output, "        if ")
+        var emitted u64 = 0
+        index = 0
+        while index < actions.len() {
+            var actionPlan = match actions.take(index) {
+                None: panic("dispatch actionPlan slot is empty")
+                Some(value): value
+            }
+            if actionPlan.scoped == scoped {
+                var keyIndex u64 = 0
+                while keyIndex < actionPlan.keys.len() {
+                    const key = match actionPlan.keys.take(keyIndex) {
+                        None: panic("actionPlan key slot is empty")
+                        Some(value): value
+                    }
+                    const keyText = text.Copy(key)
+                    actionPlan.keys.restore(keyIndex, $key)
+                    if emitted != 0 {
+                        applicationAppend(&output, " && ")
+                    }
+                    applicationAppend(
+                        &output,
+                        "foundationDispatchKey != " +
+                        applicationStringLiteral(keyText)
+                    )
+                    emitted += 1
+                    keyIndex += 1
+                }
+            }
+            actions.restore(index, $actionPlan)
+            index += 1
+        }
+        applicationAppend(&output, " return .Err(.UnknownKey)\n")
+    }
+    applicationAppend(&output, "        match request {\n")
+    index = 0
+    while index < actions.len() {
+        var actionPlan = match actions.take(index) {
+            None: panic("dispatch actionPlan slot is empty")
+            Some(value): value
+        }
+        if actionPlan.scoped == scoped {
+            applicationEmitDispatchArm(
+                &actionPlan, checkedKind, groupHasPolicies, &output)
+        }
+        actions.restore(index, $actionPlan)
+        index += 1
+    }
+    applicationAppend(&output, "        }\n    }\n}\n")
+}
+
+fn emitApplicationDispatch(
+    &program firProgram,
+    &model applicationModel,
+    &actions arena<applicationDispatchAction>,
+    &diagnostics diagnostics,
+    &output String
+) void {
+    if actions.len() == 0 return
+    applicationEmitDispatchTypes(
+        &program, &model, &actions, &diagnostics, &output)
+    if diagnostics.hasErrors() return
+    applicationEmitActionInventory(&actions, &output)
+    applicationEmitDispatchHelpers(&program, &model, &actions, &output)
+    var authorizerType = ""
+    if applicationDispatchHasPolicies(&actions) {
+        authorizerType = applicationQualifiedName(
+            &model, "foundation.actions.Authorizer")
+    }
+    var scoped = false
+    var group u64 = 0
+    while group < 2 {
+        applicationEmitDispatchGroupMethod(
+            &actions, scoped, "Dispatch", "", authorizerType, &output)
+        applicationEmitDispatchGroupMethod(
+            &actions, scoped, "DispatchName", "Name", authorizerType, &output)
+        if applicationDispatchHasKeys(&actions, scoped) {
+            applicationEmitDispatchGroupMethod(
+                &actions, scoped, "DispatchKey", "Key", authorizerType, &output)
+        }
+        scoped = true
+        group += 1
+    }
+}

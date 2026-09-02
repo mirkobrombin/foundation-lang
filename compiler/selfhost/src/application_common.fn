@@ -1,0 +1,625 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+methods firAttributeValueKind {
+    fn Name(self) String {
+        match self {
+            Integer: "Integer"
+            Floating: "Floating"
+            Boolean: "Boolean"
+            StringValue: "StringValue"
+            EnumValue: "EnumValue"
+            Array: "Array"
+            StructValue: "StructValue"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+methods firReceiverKind {
+    fn Name(self) String {
+        match self {
+            View: "View"
+            Edit: "Edit"
+            Own: "Own"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+fn applicationByteAt(value String, index u64) u64 {
+    const selected = text.ByteAt(value, index) else error {
+        discard error
+        panic("application source byte offset is invalid")
+    }
+    selected
+}
+
+fn applicationSlice(value String, start u64, end u64) String {
+    const selected = text.Slice(value, start, end) else error {
+        discard error
+        panic("application source slice is invalid")
+    }
+    selected
+}
+
+fn applicationLastSeparator(value String) Option<u64> {
+    var found Option<u64> = .None
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        if applicationByteAt(value, index) == 46 {
+            found = .Some(index)
+        }
+        index += 1
+    }
+    found
+}
+
+fn applicationShortName(value String) String {
+    match applicationLastSeparator(value) {
+        None: text.Copy(value)
+        Some(index): applicationSlice(value, index + 1, text.ByteLen(value))
+    }
+}
+
+fn applicationPackageName(value String) String {
+    match applicationLastSeparator(value) {
+        None: ""
+        Some(index): applicationSlice(value, 0, index)
+    }
+}
+
+fn applicationOwnerName(&function firFunction) String {
+    applicationPackageName(function.name)
+}
+
+fn applicationASCIIAlpha(value u64) bool {
+    (value >= 65 && value <= 90) || (value >= 97 && value <= 122)
+}
+
+fn applicationASCIIDigit(value u64) bool {
+    value >= 48 && value <= 57
+}
+
+fn applicationASCIIAlphaNumeric(value u64) bool {
+    applicationASCIIAlpha(value) || applicationASCIIDigit(value)
+}
+
+fn applicationUpper(value u64) u64 {
+    value - 32 if value >= 97 && value <= 122 else value
+}
+
+fn applicationLower(value u64) u64 {
+    value + 32 if value >= 65 && value <= 90 else value
+}
+
+fn applicationHostIdentifier(value String, exported bool) String {
+    var builder = text.NewBuilder()
+    var capitalize = true
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        const byte = applicationByteAt(value, index)
+        if !applicationASCIIAlphaNumeric(byte) && byte != 95 {
+            capitalize = true
+            index += 1
+            continue
+        }
+        const written = builder.WriteCodePoint(
+            applicationUpper(byte) if capitalize && applicationASCIIAlpha(byte) else byte
+        ) else error {
+            discard error
+            panic("application identifier is invalid")
+        }
+        discard written
+        capitalize = false
+        index += 1
+    }
+    var result = cFinish(&builder)
+    if text.IsEmpty(result) || applicationASCIIDigit(applicationByteAt(result, 0)) {
+        result = "Action" + result
+    }
+    if !exported && applicationASCIIAlpha(applicationByteAt(result, 0)) {
+        var lowered = text.NewBuilder()
+        const written = lowered.WriteCodePoint(
+            applicationLower(applicationByteAt(result, 0))) else error {
+            discard error
+            panic("application identifier is invalid")
+        }
+        discard written
+        cWrite(&lowered, applicationSlice(result, 1, text.ByteLen(result)))
+        result = cFinish(&lowered)
+    }
+    result
+}
+
+fn applicationAttributeIndex(
+    &program firProgram,
+    &uses arena<firAttributeUse>,
+    name String
+) Option<u64> {
+    var index u64 = 0
+    while index < uses.len() {
+        var use = match uses.take(index) {
+            None: panic("attribute use slot is empty")
+            Some(value): value
+        }
+        var matches = false
+        if use.declaration < program.attributeDeclarations.len() {
+            var declaration = match program.attributeDeclarations.take(use.declaration) {
+                None: panic("attribute declaration slot is empty")
+                Some(value): value
+            }
+            matches = declaration.name == name
+            program.attributeDeclarations.restore(use.declaration, $declaration)
+        }
+        uses.restore(index, $use)
+        if matches return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn applicationHasAttribute(
+    &program firProgram,
+    &uses arena<firAttributeUse>,
+    name String
+) bool {
+    match applicationAttributeIndex(&program, &uses, name) {
+        None: false
+        Some(index): {
+            discard index
+            true
+        }
+    }
+}
+
+fn applicationAttributeString(
+    &program firProgram,
+    &uses arena<firAttributeUse>,
+    name String,
+    argument u64
+) Option<String> {
+    const selected = applicationAttributeIndex(&program, &uses, name)
+    const useIndex = match selected {
+        None: {
+            return .None
+        }
+        Some(value): value
+    }
+    var use = match uses.take(useIndex) {
+        None: panic("attribute use slot is empty")
+        Some(value): value
+    }
+    if argument >= use.arguments.len() {
+        uses.restore(useIndex, $use)
+        return .None
+    }
+    var value = match use.arguments.take(argument) {
+        None: panic("attribute argument slot is empty")
+        Some(value): value
+    }
+    var result Option<String> = .None
+    if value.value.kind.Matches("StringValue") {
+        result = .Some(text.Copy(value.value.text))
+    }
+    use.arguments.restore(argument, $value)
+    uses.restore(useIndex, $use)
+    result
+}
+
+fn applicationAttributeEnum(
+    &program firProgram,
+    &uses arena<firAttributeUse>,
+    name String,
+    argument u64
+) Option<String> {
+    const selected = applicationAttributeIndex(&program, &uses, name)
+    const useIndex = match selected {
+        None: {
+            return .None
+        }
+        Some(value): value
+    }
+    var use = match uses.take(useIndex) {
+        None: panic("attribute use slot is empty")
+        Some(value): value
+    }
+    if argument >= use.arguments.len() {
+        uses.restore(useIndex, $use)
+        return .None
+    }
+    var value = match use.arguments.take(argument) {
+        None: panic("attribute argument slot is empty")
+        Some(value): value
+    }
+    var result Option<String> = .None
+    if value.value.kind.Matches("EnumValue") &&
+        value.value.type.kind.Matches("EnumValue") &&
+        value.value.type.declaration < program.enums.len() {
+        var declaration = match program.enums.take(value.value.type.declaration) {
+            None: panic("enum slot is empty")
+            Some(value): value
+        }
+        if value.value.variant < declaration.variants.len() {
+            var variant = match declaration.variants.take(value.value.variant) {
+                None: panic("enum variant slot is empty")
+                Some(value): value
+            }
+            result = .Some(text.Copy(variant.name))
+            declaration.variants.restore(value.value.variant, $variant)
+        }
+        program.enums.restore(value.value.type.declaration, $declaration)
+    }
+    use.arguments.restore(argument, $value)
+    uses.restore(useIndex, $use)
+    result
+}
+
+fn applicationBaseType(&value semanticType) semanticType {
+    var result = copySemanticType(&value)
+    var done = false
+    while !done {
+        if (result.kind.Matches("Own") || result.kind.Matches("View") ||
+            result.kind.Matches("Edit")) && result.arguments.len() == 1 {
+            const next = semanticTypeArgument(&result, 0)
+            result = next
+        } else {
+            done = true
+        }
+    }
+    result
+}
+
+fn applicationParameterMode(
+    &function firFunction,
+    index u64
+) applicationParameterMode {
+    const local = match function.parameters.take(index) {
+        None: panic("function parameter slot is empty")
+        Some(value): value
+    }
+    var value = match function.locals.take(local) {
+        None: panic("function local slot is empty")
+        Some(value): value
+    }
+    const kind = value.type.kind.Name()
+    function.locals.restore(local, $value)
+    function.parameters.restore(index, local)
+    if kind == "Edit" return .Edit
+    if kind == "View" return .Read
+    if index < function.readParameters.len() {
+        const read = match function.readParameters.take(index) {
+            None: panic("read parameter slot is empty")
+            Some(value): value
+        }
+        function.readParameters.restore(index, read)
+        if read return .Read
+    }
+    .Transfer
+}
+
+fn applicationParameterMarker(mode applicationParameterMode) String {
+    match mode {
+        Read: ""
+        Edit: "&"
+        Transfer: "$"
+    }
+}
+
+fn applicationAddImport(&model applicationModel, packageName String) void {
+    if text.IsEmpty(packageName) || packageName == model.rootPackage return
+    var index u64 = 0
+    while index < model.imports.len() {
+        var value = match model.imports.take(index) {
+            None: panic("application import slot is empty")
+            Some(value): value
+        }
+        const found = value.packageName == packageName
+        model.imports.restore(index, $value)
+        if found return
+        index += 1
+    }
+    discard model.imports.add(applicationImport {
+        packageName = text.Copy(packageName)
+        alias = "foundationHost" + format.U64(model.imports.len())
+    })
+}
+
+fn applicationStringLess(left String, right String) bool {
+    const leftLength = text.ByteLen(left)
+    const rightLength = text.ByteLen(right)
+    const count = leftLength if leftLength < rightLength else rightLength
+    var index u64 = 0
+    while index < count {
+        const leftByte = applicationByteAt(left, index)
+        const rightByte = applicationByteAt(right, index)
+        if leftByte < rightByte return true
+        if leftByte > rightByte return false
+        index += 1
+    }
+    leftLength < rightLength
+}
+
+fn applicationSortStrings(&values arena<String>) void {
+    var leftIndex u64 = 0
+    while leftIndex < values.len() {
+        var rightIndex = leftIndex + 1
+        while rightIndex < values.len() {
+            const left = match values.take(leftIndex) {
+                None: panic("string slot is empty")
+                Some(value): value
+            }
+            const right = match values.take(rightIndex) {
+                None: panic("string slot is empty")
+                Some(value): value
+            }
+            if applicationStringLess(right, left) {
+                values.restore(leftIndex, $right)
+                values.restore(rightIndex, $left)
+            } else {
+                values.restore(leftIndex, $left)
+                values.restore(rightIndex, $right)
+            }
+            rightIndex += 1
+        }
+        leftIndex += 1
+    }
+}
+
+fn applicationSortImports(&model applicationModel) void {
+    var leftIndex u64 = 0
+    while leftIndex < model.imports.len() {
+        var rightIndex = leftIndex + 1
+        while rightIndex < model.imports.len() {
+            var left = match model.imports.take(leftIndex) {
+                None: panic("application import slot is empty")
+                Some(left): left
+            }
+            var right = match model.imports.take(rightIndex) {
+                None: panic("application import slot is empty")
+                Some(right): right
+            }
+            if applicationStringLess(right.packageName, left.packageName) {
+                model.imports.restore(leftIndex, $right)
+                model.imports.restore(rightIndex, $left)
+            } else {
+                model.imports.restore(leftIndex, $left)
+                model.imports.restore(rightIndex, $right)
+            }
+            rightIndex += 1
+        }
+        leftIndex += 1
+    }
+    var index u64 = 0
+    while index < model.imports.len() {
+        var value = match model.imports.take(index) {
+            None: panic("application import slot is empty")
+            Some(value): value
+        }
+        value.alias = "foundationHost" + format.U64(index)
+        model.imports.restore(index, $value)
+        index += 1
+    }
+}
+
+fn applicationCollectTypeImports(
+    &program firProgram,
+    &model applicationModel,
+    &value semanticType
+) void {
+    var declarationName = ""
+    if value.kind.Matches("StructValue") && value.declaration < program.structs.len() {
+        var declaration = match program.structs.take(value.declaration) {
+            None: panic("struct slot is empty")
+            Some(value): value
+        }
+        declarationName = text.Copy(declaration.name)
+        program.structs.restore(value.declaration, $declaration)
+    } else {
+        if value.kind.Matches("EnumValue") && value.declaration < program.enums.len() {
+            var declaration = match program.enums.take(value.declaration) {
+                None: panic("enum slot is empty")
+                Some(value): value
+            }
+            declarationName = text.Copy(declaration.name)
+            program.enums.restore(value.declaration, $declaration)
+        } else {
+            if value.kind.Matches("ContractValue") &&
+                value.declaration < program.contracts.len() {
+                var declaration = match program.contracts.take(value.declaration) {
+                    None: panic("contractType slot is empty")
+                    Some(value): value
+                }
+                declarationName = text.Copy(declaration.name)
+                program.contracts.restore(value.declaration, $declaration)
+            }
+        }
+    }
+    if !text.IsEmpty(declarationName) {
+        applicationAddImport(&model, applicationPackageName(declarationName))
+    }
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = match value.arguments.take(index) {
+            None: panic("semantic type argument slot is empty")
+            Some(value): value
+        }
+        applicationCollectTypeImports(&program, &model, &argument)
+        value.arguments.restore(index, $argument)
+        index += 1
+    }
+}
+
+fn applicationImportAlias(
+    &model applicationModel,
+    packageName String
+) Option<String> {
+    var index u64 = 0
+    while index < model.imports.len() {
+        var value = match model.imports.take(index) {
+            None: panic("application import slot is empty")
+            Some(value): value
+        }
+        const found = value.packageName == packageName
+        const alias = text.Copy(value.alias)
+        model.imports.restore(index, $value)
+        if found return .Some(alias)
+        index += 1
+    }
+    .None
+}
+
+fn applicationQualifiedName(
+    &model applicationModel,
+    name String
+) String {
+    const packageName = applicationPackageName(name)
+    const declaration = applicationShortName(name)
+    if text.IsEmpty(packageName) || packageName == model.rootPackage {
+        return declaration
+    }
+    match applicationImportAlias(&model, packageName) {
+        None: text.Copy(name)
+        Some(alias): alias + "." + declaration
+    }
+}
+
+fn applicationSourceTypeName(
+    &program firProgram,
+    &model applicationModel,
+    &value semanticType
+) String {
+    if isSemanticMachineScalar(&value) || value.kind.Matches("StringValue") {
+        return semanticTypeName(value.kind)
+    }
+    if value.kind.Matches("Parameter") {
+        return "T" + format.U64(value.declaration)
+    }
+    if (value.kind.Matches("Own") || value.kind.Matches("View") ||
+        value.kind.Matches("Edit")) && value.arguments.len() == 1 {
+        var argument = semanticTypeArgument(&value, 0)
+        const prefix = "own " if value.kind.Matches("Own") else
+        "view " if value.kind.Matches("View") else "edit "
+        return prefix + applicationSourceTypeName(&program, &model, &argument)
+    }
+    if (value.kind.Matches("Raw") || value.kind.Matches("RawConst")) &&
+        value.arguments.len() == 1 {
+        var argument = semanticTypeArgument(&value, 0)
+        const prefix = "*" if value.kind.Matches("Raw") else "*const "
+        return prefix + applicationSourceTypeName(&program, &model, &argument)
+    }
+    if value.kind.Matches("Array") && value.arguments.len() == 1 {
+        var argument = semanticTypeArgument(&value, 0)
+        return "[" + format.U64(value.declaration) + "]" +
+            applicationSourceTypeName(&program, &model, &argument)
+    }
+    if value.kind.Matches("Slice") && value.arguments.len() == 1 {
+        var argument = semanticTypeArgument(&value, 0)
+        return "[" + applicationSourceTypeName(&program, &model, &argument) + "]"
+    }
+    if (value.kind.Matches("Task") || value.kind.Matches("Channel") ||
+        value.kind.Matches("Sender") || value.kind.Matches("Receiver")) &&
+        value.arguments.len() == 1 {
+        var argument = semanticTypeArgument(&value, 0)
+        return semanticTypeName(value.kind) + "<" +
+            applicationSourceTypeName(&program, &model, &argument) + ">"
+    }
+    var result = semanticTypeName(value.kind)
+    if value.kind.Matches("StructValue") && value.declaration < program.structs.len() {
+        var declaration = match program.structs.take(value.declaration) {
+            None: panic("struct slot is empty")
+            Some(value): value
+        }
+        result = applicationQualifiedName(&model, declaration.name)
+        program.structs.restore(value.declaration, $declaration)
+    } else {
+        if value.kind.Matches("EnumValue") && value.declaration < program.enums.len() {
+            var declaration = match program.enums.take(value.declaration) {
+                None: panic("enum slot is empty")
+                Some(value): value
+            }
+            result = applicationQualifiedName(&model, declaration.name)
+            program.enums.restore(value.declaration, $declaration)
+        } else {
+            if value.kind.Matches("ContractValue") &&
+                value.declaration < program.contracts.len() {
+                var declaration = match program.contracts.take(value.declaration) {
+                    None: panic("contractType slot is empty")
+                    Some(value): value
+                }
+                result = applicationQualifiedName(&model, declaration.name)
+                program.contracts.restore(value.declaration, $declaration)
+            }
+        }
+    }
+    if value.arguments.len() != 0 {
+        result = result + "<"
+        var index u64 = 0
+        while index < value.arguments.len() {
+            if index != 0 {
+                result = result + ", "
+            }
+            var argument = match value.arguments.take(index) {
+                None: panic("semantic type argument slot is empty")
+                Some(value): value
+            }
+            result = result + applicationSourceTypeName(&program, &model, &argument)
+            value.arguments.restore(index, $argument)
+            index += 1
+        }
+        result = result + ">"
+    }
+    result
+}
+
+fn applicationFunctionName(
+    &model applicationModel,
+    &function firFunction
+) String {
+    const prefix = function.packageName + "."
+    const relative = applicationSlice(
+        function.name,
+        text.ByteLen(prefix),
+        text.ByteLen(function.name)
+    ) if !text.IsEmpty(function.packageName) &&
+        text.StartsWith(function.name, prefix) else
+    applicationShortName(function.name)
+    if text.IsEmpty(function.packageName) || function.packageName == model.rootPackage {
+        return relative
+    }
+    match applicationImportAlias(&model, function.packageName) {
+        None: text.Copy(function.name)
+        Some(alias): alias + "." + relative
+    }
+}
+
+fn applicationServiceFieldName(
+    &program firProgram,
+    serviceID u64
+) String {
+    var type = match program.structs.take(serviceID) {
+        None: panic("serviceID slot is empty")
+        Some(value): value
+    }
+    const result = "foundation" +
+        applicationHostIdentifier(applicationShortName(type.name), true)
+    program.structs.restore(serviceID, $type)
+    result
+}
+
+fn applicationInputName(
+    &program firProgram,
+    serviceID u64,
+    parameter String
+) String {
+    applicationServiceFieldName(&program, serviceID) +
+        applicationHostIdentifier(parameter, true)
+}

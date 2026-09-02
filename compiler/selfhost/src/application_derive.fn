@@ -1,0 +1,181 @@
+package foundation.compiler
+
+import std.text
+
+fn applicationRootPackage(&program firProgram) Option<String> {
+    if program.main < program.functions.len() {
+        var mainFunction = match program.functions.take(program.main) {
+            None: panic("main function slot is empty")
+            Some(value): value
+        }
+        const mainPackage = text.Copy(mainFunction.packageName)
+        program.functions.restore(program.main, $mainFunction)
+        if !text.IsEmpty(mainPackage) return .Some(mainPackage)
+    }
+    var index u64 = 0
+    while index < program.functions.len() {
+        var function = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(value): value
+        }
+        const packageName = text.Copy(function.packageName)
+        program.functions.restore(index, $function)
+        if !text.IsEmpty(packageName) return .Some(packageName)
+        index += 1
+    }
+    index = 0
+    while index < program.structs.len() {
+        var type = match program.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(value): value
+        }
+        const packageName = applicationPackageName(type.name)
+        program.structs.restore(index, $type)
+        if !text.IsEmpty(packageName) return .Some(packageName)
+        index += 1
+    }
+    index = 0
+    while index < program.enums.len() {
+        var type = match program.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(value): value
+        }
+        const packageName = applicationPackageName(type.name)
+        program.enums.restore(index, $type)
+        if !text.IsEmpty(packageName) return .Some(packageName)
+        index += 1
+    }
+    index = 0
+    while index < program.contracts.len() {
+        var type = match program.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(value): value
+        }
+        const packageName = applicationPackageName(type.name)
+        program.contracts.restore(index, $type)
+        if !text.IsEmpty(packageName) return .Some(packageName)
+        index += 1
+    }
+    .None
+}
+
+fn applicationRequiresHost(&program firProgram) bool {
+    const missingRoot = match applicationRootPackage(&program) {
+        None: true
+        Some(value): {
+            discard value
+            false
+        }
+    }
+    if missingRoot return false
+    var index u64 = 0
+    while index < program.functions.len() {
+        var function = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(value): value
+        }
+        var required = false
+        if function.constructor {
+            required = match applicationServiceForOwner(
+                &program, applicationOwnerName(&function)) {
+                None: false
+                Some(value): {
+                    discard value
+                    true
+                }
+            }
+        }
+        if !required {
+            required = applicationHasAttribute(
+                &program, &function.attributes, "foundation.web.Route")
+        }
+        program.functions.restore(index, $function)
+        if required return true
+        index += 1
+    }
+    false
+}
+
+fn applicationDisableBodies(
+    &source program
+) own arena<bool> {
+    var result = newArena<bool>()
+    var index u64 = 0
+    while index < source.functions.len() {
+        var function = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(value): value
+        }
+        discard result.add(function.hasBody)
+        function.hasBody = false
+        source.functions.restore(index, $function)
+        index += 1
+    }
+    result
+}
+
+fn applicationRestoreBodies(
+    &source program,
+    &bodies arena<bool>
+) void {
+    var index u64 = 0
+    while index < source.functions.len() {
+        var function = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(value): value
+        }
+        const hasBody = match bodies.take(index) {
+            None: panic("function body state slot is empty")
+            Some(value): value
+        }
+        bodies.restore(index, hasBody)
+        function.hasBody = hasBody
+        source.functions.restore(index, $function)
+        index += 1
+    }
+}
+
+fn deriveApplicationSource(
+    &source program,
+    &diagnostics diagnostics
+) Option<String> {
+    var bodies = applicationDisableBodies(&source)
+    const analyzed = analyzeProgram(
+        &source,
+        analyzeOptions {
+        requireMain = false
+        retainInvalidModel = true
+    }
+    )
+    const semanticAnalysis {
+        model as selectedModel
+        diagnostics as declarationDiagnostics
+    } = analyzed
+    discard declarationDiagnostics
+    var semantic = match selectedModel {
+        None: {
+            applicationRestoreBodies(&source, &bodies)
+            return .None
+        }
+        Some(value): value
+    }
+    var lowered = lowerProgram(&source, &semantic)
+    applicationRestoreBodies(&source, &bodies)
+    const rootPackage = match applicationRootPackage(&lowered) {
+        None: {
+            return .None
+        }
+        Some(value): value
+    }
+    var model = planApplication(&lowered, rootPackage, &diagnostics)
+    if diagnostics.hasErrors() return .None
+    if !model.includeApplicationHost && model.bindings.len() == 0 &&
+        model.validations.len() == 0 && model.guards.len() == 0 &&
+        model.serializers.len() == 0 {
+        return .None
+    }
+    const generated = emitApplicationHostSource(
+        &lowered, &model, &diagnostics)
+    if diagnostics.hasErrors() || text.IsEmpty(generated) return .None
+    .Some(generated)
+}

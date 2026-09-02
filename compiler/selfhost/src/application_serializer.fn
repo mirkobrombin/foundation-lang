@@ -1,0 +1,1025 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn applicationNamedEnum(
+    &program firProgram,
+    &type semanticType,
+    name String
+) bool {
+    var base = applicationBaseType(&type)
+    if !base.kind.Matches("EnumValue") ||
+        base.declaration >= program.enums.len() {
+        return false
+    }
+    var declaration = match program.enums.take(base.declaration) {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    const found = declaration.name == name
+    program.enums.restore(base.declaration, $declaration)
+    found
+}
+
+fn applicationSerializerScalarName(&type semanticType) String {
+    var base = applicationBaseType(&type)
+    match base.kind {
+        StringValue: "String"
+        Bool: "Boolean"
+        I8: "I8"
+        I16: "I16"
+        I32: "I32"
+        I64: "I64"
+        Isize: "Isize"
+        U8: "U8"
+        U16: "U16"
+        U32: "U32"
+        U64: "U64"
+        Usize: "Usize"
+        F32: "F32"
+        F64: "F64"
+        Invalid: ""
+        Void: ""
+        Never: ""
+        Raw: ""
+        RawConst: ""
+        Array: ""
+        Slice: ""
+        Own: ""
+        View: ""
+        Edit: ""
+        Parameter: ""
+        StructValue: ""
+        EnumValue: ""
+        ContractValue: ""
+        Function: ""
+        Task: ""
+        Channel: ""
+        Sender: ""
+        Receiver: ""
+    }
+}
+
+fn applicationSerializerTypeSupported(
+    &program firProgram,
+    &type semanticType
+) bool {
+    var base = applicationBaseType(&type)
+    if !text.IsEmpty(applicationSerializerScalarName(&base)) ||
+        applicationNamedStruct(&program, &base, "std.prelude.UUID") {
+        return true
+    }
+    if applicationBuiltinOption(&program, &base) {
+        var argument = semanticTypeArgument(&base, 0)
+        return applicationSerializerTypeSupported(&program, &argument)
+    }
+    if !base.kind.Matches("StructValue") ||
+        base.declaration >= program.structs.len() {
+        return false
+    }
+    var declaration = match program.structs.take(base.declaration) {
+        None: panic("struct slot is empty")
+        Some(declaration): declaration
+    }
+    const supported = applicationHasAttribute(
+        &program, &declaration.attributes, "foundation.serializer.Serializable")
+    program.structs.restore(base.declaration, $declaration)
+    supported
+}
+
+fn applicationSerializerResult(
+    &program firProgram,
+    &type semanticType,
+    &success semanticType
+) bool {
+    var base = applicationBaseType(&type)
+    if !applicationNamedEnum(&program, &base, "Result") ||
+        base.arguments.len() != 2 {
+        return false
+    }
+    var actualSuccess = semanticTypeArgument(&base, 0)
+    var error = semanticTypeArgument(&base, 1)
+    sameSemanticType(&actualSuccess, &success) &&
+        applicationNamedStruct(
+        &program, &error, "foundation.serializer.Error")
+}
+
+fn applicationStructSerializerMetadata(
+    &program firProgram,
+    &type firStruct
+) bool {
+    var index u64 = 0
+    while index < type.fields.len() {
+        var field = match type.fields.take(index) {
+            None: panic("struct field slot is empty")
+            Some(field): field
+        }
+        const found = applicationHasAttribute(
+            &program, &field.attributes, "foundation.serializer.Name") ||
+            applicationHasAttribute(
+            &program, &field.attributes, "foundation.serializer.Ignore")
+        type.fields.restore(index, $field)
+        if found return true
+        index += 1
+    }
+    index = 0
+    while index < program.functions.len() {
+        var function = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(function): function
+        }
+        const found = applicationOwnerName(&function) == type.name &&
+            (applicationHasAttribute(
+                &program, &function.attributes, "foundation.serializer.Encode") ||
+            applicationHasAttribute(
+                &program, &function.attributes, "foundation.serializer.Decode"))
+        program.functions.restore(index, $function)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn applicationSerializerPolicyParameter(
+    &program firProgram,
+    &function firFunction,
+    parameter u64
+) bool {
+    if parameter >= function.parameters.len() return false
+    const local = match function.parameters.take(parameter) {
+        None: panic("function parameter slot is empty")
+        Some(local): local
+    }
+    function.parameters.restore(parameter, local)
+    if local >= function.locals.len() return false
+    var value = match function.locals.take(local) {
+        None: panic("function local slot is empty")
+        Some(value): value
+    }
+    const valid = applicationNamedStruct(
+        &program, &value.type, "foundation.serializer.Policy")
+    function.locals.restore(local, $value)
+    valid
+}
+
+fn applicationSerializerFunctionBaseValid(&function firFunction) bool {
+    !function.generic && !function.taskFunction && !function.blocking &&
+        !function.callback && !function.actionFunction
+}
+
+fn applicationSerializerEncoderValid(
+    &program firProgram,
+    &function firFunction
+) bool {
+    var viewReceiver = false
+    const selected = replace function.receiver with .None
+    match selected {
+        None: {}
+        Some(receiver): {
+            viewReceiver = receiver.Matches("View")
+            function.receiver = .Some(receiver)
+        }
+    }
+    if !applicationSerializerFunctionBaseValid(&function) || !viewReceiver ||
+        function.parameters.len() != 2 ||
+        !applicationSerializerPolicyParameter(&program, &function, 1) {
+        return false
+    }
+    var result = applicationBaseType(&function.returnType)
+    if !applicationNamedEnum(&program, &result, "Result") ||
+        result.arguments.len() != 2 {
+        return false
+    }
+    var success = semanticTypeArgument(&result, 0)
+    var error = semanticTypeArgument(&result, 1)
+    applicationNamedEnum(&program, &success, "std.json.Value") &&
+        applicationNamedStruct(&program, &error, "foundation.serializer.Error")
+}
+
+fn applicationSerializerDecoderValid(
+    &program firProgram,
+    typeID u64,
+    &function firFunction
+) bool {
+    const selected = replace function.receiver with .None
+    var hasReceiver = false
+    match selected {
+        None: {}
+        Some(receiver): {
+            hasReceiver = true
+            function.receiver = .Some(receiver)
+        }
+    }
+    if !applicationSerializerFunctionBaseValid(&function) || hasReceiver ||
+        !function.method || function.parameters.len() != 2 ||
+        !applicationSerializerPolicyParameter(&program, &function, 1) {
+        return false
+    }
+    const local = match function.parameters.take(0) {
+        None: panic("function parameter slot is empty")
+        Some(local): local
+    }
+    function.parameters.restore(0, local)
+    if local >= function.locals.len() return false
+    var value = match function.locals.take(local) {
+        None: panic("function local slot is empty")
+        Some(value): value
+    }
+    const jsonValue = applicationNamedEnum(
+        &program, &value.type, "std.json.Value")
+    function.locals.restore(local, $value)
+    if !jsonValue || !applicationParameterMode(&function, 0).Matches("Transfer") {
+        return false
+    }
+    var owner = declaredSemanticType(.StructValue, typeID)
+    applicationSerializerResult(&program, &function.returnType, &owner)
+}
+
+fn applicationPlanSerializerFunctions(
+    &program firProgram,
+    &type firStruct,
+    &plan applicationSerializerPlan,
+    &diagnostics diagnostics
+) void {
+    var index u64 = 0
+    while index < program.functions.len() {
+        var function = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(function): function
+        }
+        if applicationOwnerName(&function) == type.name {
+            const encode = applicationHasAttribute(
+                &program, &function.attributes, "foundation.serializer.Encode")
+            const decode = applicationHasAttribute(
+                &program, &function.attributes, "foundation.serializer.Decode")
+            if encode && decode {
+                diagnostics.reportError(
+                    "FDN2415", "one serializer method cannot encode and decode",
+                    function.sourceSpan)
+            } else {
+                if encode {
+                    if !applicationSerializerEncoderValid(&program, &function) {
+                        diagnostics.reportError(
+                            "FDN2415",
+                            "@serializer.Encode requires fn name(self, policy " +
+                            "serializer.Policy) Result<json.Value, serializer.Error>",
+                            function.sourceSpan
+                        )
+                    } else {
+                        match plan.encoder {
+                            None: { plan.encoder = .Some(index) }
+                            Some(existing): {
+                                discard existing
+                                diagnostics.reportError(
+                                    "FDN2415",
+                                    "serializable type has multiple encoders",
+                                    function.sourceSpan)
+                            }
+                        }
+                    }
+                }
+                if decode {
+                    if !applicationSerializerDecoderValid(
+                        &program, plan.type, &function) {
+                        diagnostics.reportError(
+                            "FDN2415",
+                            "@serializer.Decode requires fn name($value json.Value, " +
+                            "policy serializer.Policy) Result<Self, serializer.Error>",
+                            function.sourceSpan
+                        )
+                    } else {
+                        match plan.decoder {
+                            None: { plan.decoder = .Some(index) }
+                            Some(existing): {
+                                discard existing
+                                diagnostics.reportError(
+                                    "FDN2415",
+                                    "serializable type has multiple decoders",
+                                    function.sourceSpan)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        program.functions.restore(index, $function)
+        index += 1
+    }
+}
+
+fn applicationSerializerOptionPresent(value Option<u64>) bool {
+    match value {
+        None: false
+        Some(found): {
+            discard found
+            true
+        }
+    }
+}
+
+fn applicationPlanSerializers(
+    &program firProgram,
+    &model applicationModel,
+    &diagnostics diagnostics
+) void {
+    var typeIndex u64 = 0
+    while typeIndex < program.structs.len() {
+        var type = match program.structs.take(typeIndex) {
+            None: panic("struct slot is empty")
+            Some(type): type
+        }
+        const local = applicationPackageName(type.name) == model.rootPackage
+        const serializable = applicationHasAttribute(
+            &program, &type.attributes, "foundation.serializer.Serializable")
+        const metadata = applicationStructSerializerMetadata(&program, &type)
+        if local && !serializable && metadata {
+            diagnostics.reportError(
+                "FDN2410",
+                "serializer metadata requires @serializer.Serializable on " + type.name,
+                type.sourceSpan)
+        }
+        if local && serializable {
+            if type.typeParameterCount != 0 {
+                diagnostics.reportError(
+                    "FDN2411", "generated serialization requires a concrete struct",
+                    type.sourceSpan)
+            } else {
+                var plan = applicationSerializerPlan {
+                    type = typeIndex
+                    fields = newArena<applicationSerializerField>()
+                    encoder = .None
+                    decoder = .None
+                }
+                var explicitNames = newArena<String>()
+                var fieldIndex u64 = 0
+                while fieldIndex < type.fields.len() {
+                    var field = match type.fields.take(fieldIndex) {
+                        None: panic("struct field slot is empty")
+                        Some(field): field
+                    }
+                    var name = applicationAttributeString(
+                        &program,
+                        &field.attributes,
+                        "foundation.serializer.Name",
+                        0
+                    )
+                    const ignored = applicationHasAttribute(
+                        &program, &field.attributes, "foundation.serializer.Ignore")
+                    const selectedName = replace name with .None
+                    match selectedName {
+                        None: {}
+                        Some(value): {
+                            if text.IsEmpty(value) {
+                                diagnostics.reportError(
+                                    "FDN2412",
+                                    "serializer field name cannot be empty: " + type.name +
+                                    "." + field.name,
+                                    type.sourceSpan)
+                            }
+                            if applicationStringContains(&explicitNames, value) {
+                                diagnostics.reportError(
+                                    "FDN2413", "duplicate serializer field name " + value,
+                                    type.sourceSpan)
+                            } else {
+                                discard explicitNames.add(text.Copy(value))
+                            }
+                            if ignored {
+                                diagnostics.reportError(
+                                    "FDN2414",
+                                    "ignored serializer field cannot declare a name: " +
+                                    type.name + "." + field.name,
+                                    type.sourceSpan)
+                            }
+                            name = .Some(value)
+                        }
+                    }
+                    discard plan.fields.add(applicationSerializerField {
+                        field = fieldIndex
+                        name = name
+                        ignored = ignored
+                    })
+                    type.fields.restore(fieldIndex, $field)
+                    fieldIndex += 1
+                }
+                applicationPlanSerializerFunctions(
+                    &program, &type, &plan, &diagnostics)
+                const hasEncoder = applicationSerializerOptionPresent(plan.encoder)
+                const hasDecoder = applicationSerializerOptionPresent(plan.decoder)
+                if hasEncoder != hasDecoder {
+                    diagnostics.reportError(
+                        "FDN2416", "custom serializer requires both encode and decode",
+                        type.sourceSpan)
+                }
+                if hasEncoder && metadata {
+                    var fieldMetadata = false
+                    fieldIndex = 0
+                    while fieldIndex < type.fields.len() {
+                        var field = match type.fields.take(fieldIndex) {
+                            None: panic("struct field slot is empty")
+                            Some(field): field
+                        }
+                        fieldMetadata = fieldMetadata || applicationHasAttribute(
+                            &program, &field.attributes, "foundation.serializer.Name") ||
+                            applicationHasAttribute(
+                            &program,
+                            &field.attributes,
+                            "foundation.serializer.Ignore")
+                        type.fields.restore(fieldIndex, $field)
+                        fieldIndex += 1
+                    }
+                    if fieldMetadata {
+                        diagnostics.reportError(
+                            "FDN2416",
+                            "custom serializer cannot declare field metadata",
+                            type.sourceSpan)
+                    }
+                }
+                if !hasEncoder {
+                    fieldIndex = 0
+                    while fieldIndex < plan.fields.len() {
+                        var fieldPlan = match plan.fields.take(fieldIndex) {
+                            None: panic("serializer field slot is empty")
+                            Some(fieldPlan): fieldPlan
+                        }
+                        var field = match type.fields.take(fieldPlan.field) {
+                            None: panic("struct field slot is empty")
+                            Some(field): field
+                        }
+                        if !fieldPlan.ignored &&
+                            !applicationSerializerTypeSupported(&program, &field.type) {
+                            diagnostics.reportError(
+                                "FDN2417",
+                                "unsupported generated serializer field type " +
+                                applicationSourceTypeName(
+                                    &program, &model, &field.type) + " for " +
+                                type.name + "." + field.name,
+                                type.sourceSpan
+                            )
+                        }
+                        if fieldPlan.ignored && !field.hasDefault &&
+                            !applicationSerializerTypeSupported(&program, &field.type) {
+                            diagnostics.reportError(
+                                "FDN2417",
+                                "serializer cannot construct ignored field " + type.name +
+                                "." + field.name + " without a default",
+                                type.sourceSpan
+                            )
+                        }
+                        type.fields.restore(fieldPlan.field, $field)
+                        plan.fields.restore(fieldIndex, $fieldPlan)
+                        fieldIndex += 1
+                    }
+                }
+                var methodNames = newArena<String>()
+                discard methodNames.add("Marshal")
+                discard methodNames.add("MarshalWith")
+                discard methodNames.add("ToJSON")
+                discard methodNames.add("Unmarshal")
+                discard methodNames.add("UnmarshalWith")
+                discard methodNames.add("FromJSON")
+                var methodIndex u64 = 0
+                while methodIndex < methodNames.len() {
+                    const name = match methodNames.take(methodIndex) {
+                        None: panic("serializer method name slot is empty")
+                        Some(name): name
+                    }
+                    match applicationGeneratedMethodCollision(&program, type.name, name) {
+                        None: {}
+                        Some(function): diagnostics.reportError(
+                            "FDN2418",
+                            "generated serializer method already exists for " + type.name +
+                            "." + name,
+                            applicationFunctionSpan(&program, function)
+                        )
+                    }
+                    methodNames.restore(methodIndex, $name)
+                    methodIndex += 1
+                }
+                discard model.serializers.add($plan)
+            }
+        }
+        program.structs.restore(typeIndex, $type)
+        typeIndex += 1
+    }
+    if model.serializers.len() == 0 return
+    applicationAddImport(&model, "foundation.serializer")
+    applicationAddImport(&model, "std.json")
+    var serializerIndex u64 = 0
+    while serializerIndex < model.serializers.len() {
+        var serializer = match model.serializers.take(serializerIndex) {
+            None: panic("application serializer plan slot is empty")
+            Some(serializer): serializer
+        }
+        var type = match program.structs.take(serializer.type) {
+            None: panic("serializer struct slot is empty")
+            Some(type): type
+        }
+        var fieldIndex u64 = 0
+        while fieldIndex < type.fields.len() {
+            var field = match type.fields.take(fieldIndex) {
+                None: panic("struct field slot is empty")
+                Some(field): field
+            }
+            applicationCollectTypeImports(&program, &model, &field.type)
+            type.fields.restore(fieldIndex, $field)
+            fieldIndex += 1
+        }
+        program.structs.restore(serializer.type, $type)
+        model.serializers.restore(serializerIndex, $serializer)
+        serializerIndex += 1
+    }
+}
+
+fn applicationSerializerHelperName(
+    type u64,
+    field u64,
+    suffix String,
+    decode bool
+) String {
+    "foundationSerializer" + ("Decode" if decode else "Encode") +
+        format.U64(type) + "Field" + format.U64(field) + suffix
+}
+
+fn applicationSerializerZeroValue(
+    &program firProgram,
+    &model applicationModel,
+    &type semanticType
+) String {
+    var base = applicationBaseType(&type)
+    if base.kind.Matches("StringValue") return "\"\""
+    if base.kind.Matches("Bool") return "false"
+    if isSemanticInteger(&base) return "0"
+    if base.kind.Matches("F32") || base.kind.Matches("F64") return "0.0"
+    if applicationNamedStruct(&program, &base, "std.prelude.UUID") {
+        return "UUID.Nil()"
+    }
+    if applicationBuiltinOption(&program, &base) return ".None"
+    if base.kind.Matches("StructValue") &&
+        base.declaration < program.structs.len() {
+        return applicationSourceTypeName(&program, &model, &base) +
+            ".FoundationSerializerZero()"
+    }
+    ""
+}
+
+fn applicationSerializerFieldKey(
+    &model applicationModel,
+    &field firStructField,
+    &plan applicationSerializerField
+) String {
+    const selected = replace plan.name with .None
+    match selected {
+        None: applicationQualifiedName(
+            &model, "foundation.serializer.FieldName") + "(" +
+            applicationStringLiteral(field.name) + ", policy.Naming)"
+        Some(value): {
+            const result = applicationStringLiteral(value)
+            plan.name = .Some(value)
+            result
+        }
+    }
+}
+
+fn applicationEmitSerializerHelper(
+    &program firProgram,
+    &model applicationModel,
+    &fieldType semanticType,
+    name String,
+    decode bool,
+    &output String
+) void {
+    var value = applicationBaseType(&fieldType)
+    const sourceType = applicationSourceTypeName(&program, &model, &value)
+    const jsonValue = applicationQualifiedName(&model, "std.json.Value")
+    const policyType = applicationQualifiedName(
+        &model, "foundation.serializer.Policy")
+    const errorType = applicationQualifiedName(
+        &model, "foundation.serializer.Error")
+    applicationAppend(
+        &output,
+        "fn " + name + "(" + ("$value " + jsonValue if decode else
+            "value " + sourceType) + ", policy " + policyType +
+        ", field String) Result<" + (sourceType if decode else jsonValue) +
+        ", " + errorType + "> {\n"
+    )
+    const scalar = applicationSerializerScalarName(&value)
+    if !text.IsEmpty(scalar) {
+        const operation = "Text" if decode && scalar == "String" else
+        scalar if decode else scalar + "Value"
+        const function = applicationQualifiedName(
+            &model, "foundation.serializer." + operation)
+        applicationAppend(
+            &output,
+            ("    " + function + "($value, field)\n" if decode else
+                "    .Ok(" + function + "(value))\n") + "}\n\n"
+        )
+        return
+    }
+    if applicationNamedStruct(&program, &value, "std.prelude.UUID") {
+        const operation = "UUIDValueFromJSON" if decode else "UUIDValue"
+        const function = applicationQualifiedName(
+            &model, "foundation.serializer." + operation)
+        applicationAppend(
+            &output,
+            ("    " + function + "($value, field)\n" if decode else
+                "    .Ok(" + function + "(value))\n") + "}\n\n"
+        )
+        return
+    }
+    if applicationBuiltinOption(&program, &value) {
+        const childName = name + "Value"
+        if decode {
+            applicationAppend(
+                &output,
+                "    const selected = " + applicationQualifiedName(
+                    &model, "foundation.serializer.NonNull") + "($value)\n" +
+                "    match selected {\n" +
+                "        None: .Ok(.None)\n" +
+                "        Some(found): {\n" +
+                "            const decoded = " + childName +
+                "($found, policy, field) else error {\n" +
+                "                return .Err(error)\n" +
+                "            }\n" +
+                "            .Ok(.Some(decoded))\n" +
+                "        }\n" +
+                "    }\n" +
+                "}\n\n"
+            )
+        } else {
+            applicationAppend(
+                &output,
+                "    match value {\n" +
+                "        None: .Ok(.Null)\n" +
+                "        Some(found): " + childName + "(found, policy, field)\n" +
+                "    }\n" +
+                "}\n\n"
+            )
+        }
+        var child = semanticTypeArgument(&value, 0)
+        applicationEmitSerializerHelper(
+            &program, &model, &child, childName, decode, &output)
+        return
+    }
+    if value.kind.Matches("StructValue") &&
+        value.declaration < program.structs.len() {
+        const typeName = applicationSourceTypeName(&program, &model, &value)
+        const at = applicationQualifiedName(&model, "foundation.serializer.At")
+        if decode {
+            applicationAppend(
+                &output,
+                "    const decoded = " + typeName +
+                ".FromJSON($value, policy) else error {\n" +
+                "        return .Err(" + at + "(field, $error))\n" +
+                "    }\n" +
+                "    .Ok(decoded)\n"
+            )
+        } else {
+            applicationAppend(
+                &output,
+                "    const encoded = value.ToJSON(policy) else error {\n" +
+                "        return .Err(" + at + "(field, $error))\n" +
+                "    }\n" +
+                "    .Ok(encoded)\n"
+            )
+        }
+        applicationAppend(&output, "}\n\n")
+        return
+    }
+    applicationAppend(
+        &output, "    panic(\"unsupported compiler serializer type\")\n}\n\n")
+}
+
+fn applicationSerializerFunctions(
+    &serializer applicationSerializerPlan,
+    &encoder bool,
+    &encoderFunction u64,
+    &decoder bool,
+    &decoderFunction u64
+) void {
+    const selectedEncoder = replace serializer.encoder with .None
+    match selectedEncoder {
+        None: {}
+        Some(function): {
+            encoder = true
+            encoderFunction = function
+            serializer.encoder = .Some(function)
+        }
+    }
+    const selectedDecoder = replace serializer.decoder with .None
+    match selectedDecoder {
+        None: {}
+        Some(function): {
+            decoder = true
+            decoderFunction = function
+            serializer.decoder = .Some(function)
+        }
+    }
+}
+
+fn applicationEmitSerializerMethods(
+    &program firProgram,
+    &model applicationModel,
+    &type firStruct,
+    &serializer applicationSerializerPlan,
+    &output String
+) void {
+    const typeName = applicationQualifiedName(&model, type.name)
+    const errorType = applicationQualifiedName(
+        &model, "foundation.serializer.Error")
+    const policyType = applicationQualifiedName(
+        &model, "foundation.serializer.Policy")
+    const defaultPolicy = applicationQualifiedName(
+        &model, "foundation.serializer.Default")
+    const jsonValue = applicationQualifiedName(&model, "std.json.Value")
+    var customEncoder = false
+    var encoderFunction u64 = 0
+    var customDecoder = false
+    var decoderFunction u64 = 0
+    applicationSerializerFunctions(
+        &serializer,
+        &customEncoder,
+        &encoderFunction,
+        &customDecoder,
+        &decoderFunction
+    )
+    applicationAppend(
+        &output,
+        "methods " + typeName + " {\n" +
+        "    fn Marshal(self) Result<String, " + errorType + "> {\n" +
+        "        self.MarshalWith(" + defaultPolicy + "())\n" +
+        "    }\n\n" +
+        "    fn MarshalWith(\n" +
+        "        self,\n" +
+        "        policy " + policyType + "\n" +
+        "    ) Result<String, " + errorType + "> {\n" +
+        "        const value = self.ToJSON(policy) else error {\n" +
+        "            return .Err(error)\n" +
+        "        }\n" +
+        "        const encoded = " + applicationQualifiedName(
+            &model, "std.json.Stringify") + "($value) else error {\n" +
+        "            return .Err(" + applicationQualifiedName(
+            &model, "foundation.serializer.Write") + "(error))\n" +
+        "        }\n" +
+        "        .Ok(encoded)\n" +
+        "    }\n\n" +
+        "    fn Unmarshal(source String) Result<" + typeName + ", " +
+        errorType + "> {\n" +
+        "        " + typeName + ".UnmarshalWith(source, " + defaultPolicy + "())\n" +
+        "    }\n\n" +
+        "    fn UnmarshalWith(\n" +
+        "        source String,\n" +
+        "        policy " + policyType + "\n" +
+        "    ) Result<" + typeName + ", " + errorType + "> {\n" +
+        "        const value = " + applicationQualifiedName(&model, "std.json.Parse") +
+        "(source) else error {\n" +
+        "            return .Err(" + applicationQualifiedName(
+            &model, "foundation.serializer.Syntax") + "(error))\n" +
+        "        }\n" +
+        "        " + typeName + ".FromJSON($value, policy)\n" +
+        "    }\n\n" +
+        "    fn FoundationSerializerZero() " + typeName + " {\n" +
+        "        " + typeName + " {"
+    )
+    var fieldIndex u64 = 0
+    while fieldIndex < type.fields.len() {
+        var field = match type.fields.take(fieldIndex) {
+            None: panic("struct field slot is empty")
+            Some(field): field
+        }
+        if !field.hasDefault {
+            applicationAppend(
+                &output,
+                " " + field.name + " = " + applicationSerializerZeroValue(
+                    &program, &model, &field.type)
+            )
+        }
+        type.fields.restore(fieldIndex, $field)
+        fieldIndex += 1
+    }
+    applicationAppend(
+        &output,
+        " }\n" +
+        "    }\n\n" +
+        "    fn ToJSON(\n" +
+        "        self,\n" +
+        "        policy " + policyType + "\n" +
+        "    ) Result<" + jsonValue + ", " + errorType + "> {\n"
+    )
+    if customEncoder {
+        var function = match program.functions.take(encoderFunction) {
+            None: panic("serializer encoder slot is empty")
+            Some(function): function
+        }
+        applicationAppend(
+            &output,
+            "        self." + applicationShortName(function.name) + "(policy)\n"
+        )
+        program.functions.restore(encoderFunction, $function)
+    } else {
+        applicationAppend(
+            &output,
+            "        var object = " + applicationQualifiedName(
+                &model, "std.json.NewObject") + "()\n"
+        )
+        fieldIndex = 0
+        while fieldIndex < serializer.fields.len() {
+            var plan = match serializer.fields.take(fieldIndex) {
+                None: panic("serializer field slot is empty")
+                Some(plan): plan
+            }
+            if !plan.ignored {
+                var field = match type.fields.take(plan.field) {
+                    None: panic("struct field slot is empty")
+                    Some(field): field
+                }
+                const suffix = format.U64(plan.field)
+                const helper = applicationSerializerHelperName(
+                    serializer.type, plan.field, "", false)
+                const key = applicationSerializerFieldKey(&model, &field, &plan)
+                applicationAppend(
+                    &output,
+                    "        const encoded" + suffix + " = " + helper +
+                    "(self." + field.name + ", policy, " +
+                    applicationStringLiteral(field.name) + ") else error {\n" +
+                    "            return .Err(error)\n" +
+                    "        }\n" +
+                    "        const kept" + suffix + " = " +
+                    applicationQualifiedName(&model, "foundation.serializer.Keep") +
+                    "($encoded" + suffix +
+                    ", policy.IgnoreNone, policy.IgnoreZero)\n" +
+                    "        match kept" + suffix + " {\n" +
+                    "            None: {}\n" +
+                    "            Some(value): {\n" +
+                    "                const fieldKey = " + key + "\n" +
+                    "                " + applicationQualifiedName(
+                        &model, "foundation.serializer.Set") +
+                    "(&object, $fieldKey, $value) else error {\n" +
+                    "                    return .Err(error)\n" +
+                    "                }\n" +
+                    "            }\n" +
+                    "        }\n"
+                )
+                type.fields.restore(plan.field, $field)
+            }
+            serializer.fields.restore(fieldIndex, $plan)
+            fieldIndex += 1
+        }
+        applicationAppend(&output, "        .Ok(.Object(object))\n")
+    }
+    applicationAppend(
+        &output,
+        "    }\n\n" +
+        "    fn FromJSON(\n" +
+        "        $value " + jsonValue + ",\n" +
+        "        policy " + policyType + "\n" +
+        "    ) Result<" + typeName + ", " + errorType + "> {\n"
+    )
+    if customDecoder {
+        var function = match program.functions.take(decoderFunction) {
+            None: panic("serializer decoder slot is empty")
+            Some(function): function
+        }
+        applicationAppend(
+            &output,
+            "        " + typeName + "." + applicationShortName(function.name) +
+            "($value, policy)\n"
+        )
+        program.functions.restore(decoderFunction, $function)
+    } else {
+        applicationAppend(
+            &output,
+            "        const selected = " + applicationQualifiedName(
+                &model, "foundation.serializer.RequireObject") +
+            "($value, \"\") else error {\n" +
+            "            return .Err(error)\n" +
+            "        }\n" +
+            "        var object = selected\n" +
+            "        var result = " + typeName + ".FoundationSerializerZero()\n"
+        )
+        fieldIndex = 0
+        while fieldIndex < serializer.fields.len() {
+            var plan = match serializer.fields.take(fieldIndex) {
+                None: panic("serializer field slot is empty")
+                Some(plan): plan
+            }
+            if !plan.ignored {
+                var field = match type.fields.take(plan.field) {
+                    None: panic("struct field slot is empty")
+                    Some(field): field
+                }
+                const suffix = format.U64(plan.field)
+                const key = applicationSerializerFieldKey(&model, &field, &plan)
+                const helper = applicationSerializerHelperName(
+                    serializer.type, plan.field, "", true)
+                applicationAppend(
+                    &output,
+                    "        const fieldKey" + suffix + " = " + key + "\n" +
+                    "        const fieldValue" + suffix +
+                    " = object.Take(fieldKey" + suffix + ")\n" +
+                    "        match fieldValue" + suffix + " {\n" +
+                    "            None: {}\n" +
+                    "            Some(found): {\n" +
+                    "                const decoded = " + helper +
+                    "($found, policy, fieldKey" + suffix + ") else error {\n" +
+                    "                    return .Err(error)\n" +
+                    "                }\n" +
+                    "                result." + field.name + " = decoded\n" +
+                    "            }\n" +
+                    "        }\n"
+                )
+                type.fields.restore(plan.field, $field)
+            }
+            serializer.fields.restore(fieldIndex, $plan)
+            fieldIndex += 1
+        }
+        applicationAppend(
+            &output,
+            "        if policy.RejectUnknown && object.Len() > 0 {\n" +
+            "            const selectedKey = object.FirstKey()\n" +
+            "            const unknownKey = match selectedKey {\n" +
+            "                None: \"\"\n" +
+            "                Some(found): found\n" +
+            "            }\n" +
+            "            return .Err(" + applicationQualifiedName(
+                &model, "foundation.serializer.Unknown") + "(unknownKey))\n" +
+            "        }\n" +
+            "        .Ok(result)\n"
+        )
+    }
+    applicationAppend(&output, "    }\n}\n\n")
+}
+
+fn applicationEmitSerializers(
+    &program firProgram,
+    &model applicationModel,
+    &output String
+) void {
+    var index u64 = 0
+    while index < model.serializers.len() {
+        var serializer = match model.serializers.take(index) {
+            None: panic("application serializer plan slot is empty")
+            Some(serializer): serializer
+        }
+        var type = match program.structs.take(serializer.type) {
+            None: panic("serializer struct slot is empty")
+            Some(type): type
+        }
+        applicationEmitSerializerMethods(
+            &program, &model, &type, &serializer, &output)
+        program.structs.restore(serializer.type, $type)
+        model.serializers.restore(index, $serializer)
+        index += 1
+    }
+    index = 0
+    while index < model.serializers.len() {
+        var serializer = match model.serializers.take(index) {
+            None: panic("application serializer plan slot is empty")
+            Some(serializer): serializer
+        }
+        const custom = applicationSerializerOptionPresent(serializer.encoder)
+        if !custom {
+            var type = match program.structs.take(serializer.type) {
+                None: panic("serializer struct slot is empty")
+                Some(type): type
+            }
+            var fieldIndex u64 = 0
+            while fieldIndex < serializer.fields.len() {
+                var plan = match serializer.fields.take(fieldIndex) {
+                    None: panic("serializer field slot is empty")
+                    Some(plan): plan
+                }
+                if !plan.ignored {
+                    var field = match type.fields.take(plan.field) {
+                        None: panic("struct field slot is empty")
+                        Some(field): field
+                    }
+                    applicationEmitSerializerHelper(
+                        &program,
+                        &model,
+                        &field.type,
+                        applicationSerializerHelperName(
+                            serializer.type, plan.field, "", false),
+                        false,
+                        &output
+                    )
+                    applicationEmitSerializerHelper(
+                        &program,
+                        &model,
+                        &field.type,
+                        applicationSerializerHelperName(
+                            serializer.type, plan.field, "", true),
+                        true,
+                        &output
+                    )
+                    type.fields.restore(plan.field, $field)
+                }
+                serializer.fields.restore(fieldIndex, $plan)
+                fieldIndex += 1
+            }
+            program.structs.restore(serializer.type, $type)
+        }
+        model.serializers.restore(index, $serializer)
+        index += 1
+    }
+}

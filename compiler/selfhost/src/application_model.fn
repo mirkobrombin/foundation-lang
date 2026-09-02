@@ -1,0 +1,376 @@
+package foundation.compiler
+
+import std.text
+
+enum applicationLifetime {
+    Transient
+    Scoped
+    Singleton
+}
+
+methods applicationLifetime {
+    fn Name(self) String {
+        match self {
+            Transient: "Transient"
+            Scoped: "Scoped"
+            Singleton: "Singleton"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+enum applicationParameterMode {
+    Read
+    Edit
+    Transfer
+}
+
+enum applicationBindingFieldKind {
+    StringValue
+    Boolean
+    Integer
+    F32
+    F64
+    Duration
+    StringList
+}
+
+methods applicationBindingFieldKind {
+    fn Name(self) String {
+        match self {
+            StringValue: "StringValue"
+            Boolean: "Boolean"
+            Integer: "Integer"
+            F32: "F32"
+            F64: "F64"
+            Duration: "Duration"
+            StringList: "StringList"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+enum applicationValidationRuleKind {
+    Required
+    Min
+    Max
+    Email
+    Pattern
+    Nested
+}
+
+methods applicationValidationRuleKind {
+    fn Name(self) String {
+        match self {
+            Required: "Required"
+            Min: "Min"
+            Max: "Max"
+            Email: "Email"
+            Pattern: "Pattern"
+            Nested: "Nested"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+enum applicationGuardDynamicKind {
+    Role
+    Relationships
+}
+
+enum applicationWebBindingSource {
+    Path
+    Query
+    Header
+    Form
+    Body
+    Inject
+}
+
+methods applicationWebBindingSource {
+    fn Name(self) String {
+        match self {
+            Path: "Path"
+            Query: "Query"
+            Header: "Header"
+            Form: "Form"
+            Body: "Body"
+            Inject: "Inject"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+enum applicationWebMiddlewareScope {
+    Global
+    Group
+    Route
+}
+
+methods applicationWebMiddlewareScope {
+    fn Name(self) String {
+        match self {
+            Global: "Global"
+            Group: "Group"
+            Route: "Route"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+methods applicationGuardDynamicKind {
+    fn Name(self) String {
+        match self {
+            Role: "Role"
+            Relationships: "Relationships"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+methods applicationParameterMode {
+    fn Name(self) String {
+        match self {
+            Read: "Read"
+            Edit: "Edit"
+            Transfer: "Transfer"
+        }
+    }
+
+    fn Matches(self, name String) bool {
+        self.Name() == name
+    }
+}
+
+struct applicationDependency {
+    parameter String
+    type semanticType
+    mode applicationParameterMode
+    provider Option<u64>
+    input bool
+}
+
+struct applicationServicePlan {
+    type u64
+    constructor u64
+    lifetime applicationLifetime
+    fallible bool
+    dependencies own arena<applicationDependency>
+}
+
+struct applicationActionPlan {
+    function u64
+    serviceID u64
+    method String
+    name String
+    keys own arena<String>
+    policies own arena<String>
+}
+
+struct applicationImport {
+    packageName String
+    alias String
+}
+
+struct applicationBindingSource {
+    source String
+    key String
+}
+
+struct applicationBindingField {
+    field u64
+    key String
+    jsonKey String
+    kind applicationBindingFieldKind
+    sources own arena<applicationBindingSource>
+    defaultValue Option<String>
+}
+
+struct applicationBindingPlan {
+    type u64
+    fields own arena<applicationBindingField>
+    jsonBodyField Option<u64>
+}
+
+struct applicationValidationRule {
+    field u64
+    kind applicationValidationRuleKind
+    argument Option<String>
+    numericLimit f64
+}
+
+struct applicationValidationPlan {
+    type u64
+    rules own arena<applicationValidationRule>
+    customRules own arena<u64>
+}
+
+struct applicationGuardStaticRule {
+    role String
+    operation String
+}
+
+struct applicationGuardDynamicRule {
+    field u64
+    operation String
+    kind applicationGuardDynamicKind
+}
+
+struct applicationGuardPlan {
+    type u64
+    staticRules own arena<applicationGuardStaticRule>
+    dynamicRules own arena<applicationGuardDynamicRule>
+}
+
+struct applicationSerializerField {
+    field u64
+    name Option<String>
+    ignored bool
+}
+
+struct applicationSerializerPlan {
+    type u64
+    fields own arena<applicationSerializerField>
+    encoder Option<u64>
+    decoder Option<u64>
+}
+
+struct applicationWebParameter {
+    index u64
+    source applicationWebBindingSource
+    name String
+    provider Option<u64>
+    description String
+    minimum Option<String>
+    enumValues own arena<String>
+}
+
+struct applicationWebResponse {
+    status u64
+    description String
+}
+
+struct applicationWebRoute {
+    function u64
+    method String
+    path String
+    hostMethod String
+    parameters own arena<applicationWebParameter>
+    taskFunction bool
+    executionError Option<semanticType>
+    activationError Option<semanticType>
+    summary String
+    description String
+    responses own arena<applicationWebResponse>
+}
+
+struct applicationWebMiddleware {
+    function u64
+    scope applicationWebMiddlewareScope
+    method String
+    path String
+    order i64
+}
+
+struct applicationHostInput {
+    name String
+    type semanticType
+    mode applicationParameterMode
+}
+
+struct applicationDispatchParameter {
+    name String
+    type semanticType
+    mode applicationParameterMode
+}
+
+struct applicationDispatchAction {
+    function u64
+    method String
+    name String
+    keys own arena<String>
+    policies own arena<String>
+    parameters own arena<applicationDispatchParameter>
+    successType semanticType
+    executionError Option<semanticType>
+    activationError Option<semanticType>
+    scoped bool
+    scopeEdit bool
+    receiverEdit bool
+}
+
+struct applicationConstruction {
+    inputs own arena<applicationHostInput>
+    identifiers own arena<String>
+    body String
+    indent String
+    applicationReceiver bool
+    scopeReceiver bool
+    scopeName String
+}
+
+struct applicationActivationState {
+    selected Option<semanticType>
+}
+
+struct applicationModel {
+    rootPackage String
+    services own arena<applicationServicePlan>
+    order own arena<u64>
+    actions own arena<applicationActionPlan>
+    bindings own arena<applicationBindingPlan>
+    validations own arena<applicationValidationPlan>
+    guards own arena<applicationGuardPlan>
+    serializers own arena<applicationSerializerPlan>
+    webRoutes own arena<applicationWebRoute>
+    webMiddlewares own arena<applicationWebMiddleware>
+    imports own arena<applicationImport>
+    includeApplicationHost bool
+}
+
+fn newApplicationConstruction(indent String) own applicationConstruction {
+    own applicationConstruction {
+        inputs = newArena<applicationHostInput>()
+        identifiers = newArena<String>()
+        body = ""
+        indent = text.Copy(indent)
+        applicationReceiver = false
+        scopeReceiver = false
+        scopeName = "scope"
+    }
+}
+
+fn newApplicationModel(rootPackage String) own applicationModel {
+    own applicationModel {
+        rootPackage = text.Copy(rootPackage)
+        services = newArena<applicationServicePlan>()
+        order = newArena<u64>()
+        actions = newArena<applicationActionPlan>()
+        bindings = newArena<applicationBindingPlan>()
+        validations = newArena<applicationValidationPlan>()
+        guards = newArena<applicationGuardPlan>()
+        serializers = newArena<applicationSerializerPlan>()
+        webRoutes = newArena<applicationWebRoute>()
+        webMiddlewares = newArena<applicationWebMiddleware>()
+        imports = newArena<applicationImport>()
+        includeApplicationHost = false
+    }
+}

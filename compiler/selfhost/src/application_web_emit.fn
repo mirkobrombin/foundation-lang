@@ -1,0 +1,1143 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn applicationWebActivationErrorPresent(&route applicationWebRoute) bool {
+    const selected = replace route.activationError with .None
+    match selected {
+        None: false
+        Some(found): {
+            route.activationError = .Some(found)
+            true
+        }
+    }
+}
+
+fn applicationWebExecutionErrorPresent(&route applicationWebRoute) bool {
+    const selected = replace route.executionError with .None
+    match selected {
+        None: false
+        Some(found): {
+            route.executionError = .Some(found)
+            true
+        }
+    }
+}
+
+fn applicationWebUsesTypedBody(
+    &program firProgram,
+    &model applicationModel
+) bool {
+    var routeIndex u64 = 0
+    while routeIndex < model.webRoutes.len() {
+        var route = match model.webRoutes.take(routeIndex) {
+            None: panic("web route slot is empty")
+            Some(value): value
+        }
+        var function = match program.functions.take(route.function) {
+            None: panic("web route function slot is empty")
+            Some(value): value
+        }
+        var parameterIndex u64 = 0
+        while parameterIndex < route.parameters.len() {
+            var parameter = match route.parameters.take(parameterIndex) {
+                None: panic("web parameter slot is empty")
+                Some(value): value
+            }
+            var local = applicationParameter(&function, parameter.index)
+            var base = applicationBaseType(&local.type)
+            const found = parameter.source.Matches("Body") &&
+                base.kind.Matches("StructValue")
+            route.parameters.restore(parameterIndex, $parameter)
+            if found {
+                program.functions.restore(route.function, $function)
+                model.webRoutes.restore(routeIndex, $route)
+                return true
+            }
+            parameterIndex += 1
+        }
+        program.functions.restore(route.function, $function)
+        model.webRoutes.restore(routeIndex, $route)
+        routeIndex += 1
+    }
+    false
+}
+
+fn applicationWebUsesValidation(
+    &program firProgram,
+    &model applicationModel
+) bool {
+    var routeIndex u64 = 0
+    while routeIndex < model.webRoutes.len() {
+        var route = match model.webRoutes.take(routeIndex) {
+            None: panic("web route slot is empty")
+            Some(value): value
+        }
+        var function = match program.functions.take(route.function) {
+            None: panic("web route function slot is empty")
+            Some(value): value
+        }
+        var parameterIndex u64 = 0
+        while parameterIndex < route.parameters.len() {
+            var parameter = match route.parameters.take(parameterIndex) {
+                None: panic("web parameter slot is empty")
+                Some(value): value
+            }
+            var local = applicationParameter(&function, parameter.index)
+            var base = applicationBaseType(&local.type)
+            var found = false
+            if parameter.source.Matches("Body") &&
+                base.kind.Matches("StructValue") {
+                match applicationValidationPlanIndex(&model, base.declaration) {
+                    None: {}
+                    Some(value): {
+                        discard value
+                        found = true
+                    }
+                }
+            }
+            route.parameters.restore(parameterIndex, $parameter)
+            if found {
+                program.functions.restore(route.function, $function)
+                model.webRoutes.restore(routeIndex, $route)
+                return true
+            }
+            parameterIndex += 1
+        }
+        program.functions.restore(route.function, $function)
+        model.webRoutes.restore(routeIndex, $route)
+        routeIndex += 1
+    }
+    false
+}
+
+fn applicationWebUsesBool(
+    &program firProgram,
+    &model applicationModel
+) bool {
+    var routeIndex u64 = 0
+    while routeIndex < model.webRoutes.len() {
+        var route = match model.webRoutes.take(routeIndex) {
+            None: panic("web route slot is empty")
+            Some(value): value
+        }
+        var function = match program.functions.take(route.function) {
+            None: panic("web route function slot is empty")
+            Some(value): value
+        }
+        var parameterIndex u64 = 0
+        while parameterIndex < route.parameters.len() {
+            var parameter = match route.parameters.take(parameterIndex) {
+                None: panic("web parameter slot is empty")
+                Some(value): value
+            }
+            var local = applicationParameter(&function, parameter.index)
+            var base = applicationBaseType(&local.type)
+            const found = !parameter.source.Matches("Inject") &&
+                base.kind.Matches("Bool")
+            route.parameters.restore(parameterIndex, $parameter)
+            if found {
+                program.functions.restore(route.function, $function)
+                model.webRoutes.restore(routeIndex, $route)
+                return true
+            }
+            parameterIndex += 1
+        }
+        program.functions.restore(route.function, $function)
+        model.webRoutes.restore(routeIndex, $route)
+        routeIndex += 1
+    }
+    false
+}
+
+fn applicationWebBindingFieldIndex(
+    &plan applicationBindingPlan,
+    field u64
+) Option<u64> {
+    var index u64 = 0
+    while index < plan.fields.len() {
+        var selected = match plan.fields.take(index) {
+            None: panic("application binding field slot is empty")
+            Some(value): value
+        }
+        const found = selected.field == field
+        plan.fields.restore(index, $selected)
+        if found return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn applicationWebBodyInitializer(
+    &program firProgram,
+    &model applicationModel,
+    typeID u64
+) String {
+    const planIndex = match applicationBindingPlanIndex(&model, typeID) {
+        None: panic("typed web body has no binding plan")
+        Some(value): value
+    }
+    var plan = match model.bindings.take(planIndex) {
+        None: panic("application binding plan slot is empty")
+        Some(value): value
+    }
+    var type = match program.structs.take(typeID) {
+        None: panic("typed web body struct slot is empty")
+        Some(value): value
+    }
+    var result = applicationQualifiedName(&model, type.name) + " {"
+    var fieldIndex u64 = 0
+    while fieldIndex < type.fields.len() {
+        var field = match type.fields.take(fieldIndex) {
+            None: panic("typed web body field slot is empty")
+            Some(value): value
+        }
+        if !field.hasDefault {
+            result = result + " " + field.name + " = "
+            match applicationWebBindingFieldIndex(&plan, fieldIndex) {
+                Some(bindingIndex): {
+                    var binding = match plan.fields.take(bindingIndex) {
+                        None: panic("application binding field slot is empty")
+                        Some(value): value
+                    }
+                    match binding.kind {
+                        StringValue: { result = result + "\"\"" }
+                        Boolean: { result = result + "false" }
+                        Integer: { result = result + "0" }
+                        F32: { result = result + "0.0" }
+                        F64: { result = result + "0.0" }
+                        Duration: {
+                            result = result + applicationQualifiedName(
+                                &model, "std.time.Zero") + "()"
+                        }
+                        StringList: {
+                            result = result + applicationQualifiedName(
+                                &model, "std.collections.NewList") + "<String>()"
+                        }
+                    }
+                    plan.fields.restore(bindingIndex, $binding)
+                }
+                None: {
+                    var nested = applicationBaseType(&field.type)
+                    result = result + applicationWebBodyInitializer(
+                        &program, &model, nested.declaration)
+                }
+            }
+        }
+        type.fields.restore(fieldIndex, $field)
+        fieldIndex += 1
+    }
+    result = result + " }"
+    program.structs.restore(typeID, $type)
+    model.bindings.restore(planIndex, $plan)
+    result
+}
+
+fn applicationEmitWebTypes(
+    &program firProgram,
+    &model applicationModel,
+    &output String
+) void {
+    if model.webRoutes.len() == 0 return
+    const typedBody = applicationWebUsesTypedBody(&program, &model)
+    const validation = applicationWebUsesValidation(&program, &model)
+    applicationAppend(
+        &output,
+        "enum FoundationWebBindingSource {\n" +
+        "    Path\n" +
+        "    Query\n" +
+        "    Header\n" +
+        "    Form\n" +
+        "    Body\n" +
+        "}\n\n" +
+        "enum FoundationWebBindingKind {\n" +
+        "    Missing\n" +
+        "    Invalid\n" +
+        "    UnsupportedMediaType\n" +
+        "}\n\n" +
+        "struct FoundationWebBindingError {\n" +
+        "    Kind FoundationWebBindingKind\n" +
+        "    Source FoundationWebBindingSource\n" +
+        "    Name String\n" +
+        "}\n\n" +
+        "enum FoundationWebError {\n" +
+        "    Binding(error FoundationWebBindingError)\n"
+    )
+    if typedBody {
+        applicationAppend(
+            &output,
+            "    JSON(error " + applicationQualifiedName(
+                &model, "foundation.bind.Error") + ")\n"
+        )
+    }
+    if validation {
+        applicationAppend(
+            &output,
+            "    Validation(errors own " + applicationQualifiedName(
+                &model, "foundation.validation.Errors") + ")\n"
+        )
+    }
+    var index u64 = 0
+    while index < model.webRoutes.len() {
+        var route = match model.webRoutes.take(index) {
+            None: panic("web route slot is empty")
+            Some(value): value
+        }
+        const activation = replace route.activationError with .None
+        match activation {
+            None: {}
+            Some(value): {
+                var error = value
+                applicationAppend(
+                    &output,
+                    "    " + route.hostMethod + "ActivationFailed(error " +
+                    applicationSourceTypeName(
+                        &program, &model, &error) + ")\n"
+                )
+                route.activationError = .Some(error)
+            }
+        }
+        const execution = replace route.executionError with .None
+        match execution {
+            None: {}
+            Some(value): {
+                var error = value
+                applicationAppend(
+                    &output,
+                    "    " + route.hostMethod + "Failed(error " +
+                    applicationSourceTypeName(
+                        &program, &model, &error) + ")\n"
+                )
+                route.executionError = .Some(error)
+            }
+        }
+        model.webRoutes.restore(index, $route)
+        index += 1
+    }
+    applicationAppend(&output, "}\n\n")
+}
+
+fn applicationEmitWebSupport(
+    &program firProgram,
+    &model applicationModel,
+    &output String
+) void {
+    if model.webRoutes.len() == 0 return
+    const registrationError = applicationQualifiedName(
+        &model, "foundation.web.RegistrationError")
+    const responseType = applicationQualifiedName(
+        &model, "foundation.web.Response")
+    const textFunction = applicationQualifiedName(&model, "foundation.web.Text")
+    applicationAppend(
+        &output,
+        "\nfn foundationRequireWebRoute(\n" +
+        "    $value Result<void, " + registrationError + ">\n" +
+        ") void {\n" +
+        "    const accepted = match value {\n" +
+        "        Ok: true\n" +
+        "        Err(error): foundationWebRouteInvariant($error)\n" +
+        "    }\n" +
+        "    discard accepted\n" +
+        "}\n\n" +
+        "fn foundationWebRouteInvariant(\n" +
+        "    $error " + registrationError + "\n" +
+        ") never {\n" +
+        "    discard error\n" +
+        "    panic(\"generated web route invariant failed\")\n" +
+        "}\n\n" +
+        "fn foundationRequireWebValue(\n" +
+        "    $value Option<String>,\n" +
+        "    source FoundationWebBindingSource,\n" +
+        "    name String\n" +
+        ") Result<String, FoundationWebBindingError> {\n" +
+        "    match value {\n" +
+        "        None: .Err(FoundationWebBindingError {\n" +
+        "            Kind = .Missing\n" +
+        "            Source = source\n" +
+        "            Name = " + applicationQualifiedName(
+            &model, "std.text.Copy") + "(name)\n" +
+        "        })\n" +
+        "        Some(found): .Ok(found)\n" +
+        "    }\n" +
+        "}\n"
+    )
+    if applicationWebUsesBool(&program, &model) {
+        applicationAppend(
+            &output,
+            "\nfn foundationParseWebBool(\n" +
+            "    $value String,\n" +
+            "    source FoundationWebBindingSource,\n" +
+            "    name String\n" +
+            ") Result<bool, FoundationWebBindingError> {\n" +
+            "    const parsed = " + applicationQualifiedName(
+                &model, "std.parse.Bool") + "(value) else error {\n" +
+            "        discard error\n" +
+            "        discard value\n" +
+            "        return .Err(FoundationWebBindingError {\n" +
+            "            Kind = .Invalid\n" +
+            "            Source = source\n" +
+            "            Name = " + applicationQualifiedName(
+                &model, "std.text.Copy") + "(name)\n" +
+            "        })\n" +
+            "    }\n" +
+            "    discard value\n" +
+            "    .Ok(parsed)\n" +
+            "}\n"
+        )
+    }
+    if applicationWebUsesTypedBody(&program, &model) {
+        const bindError = applicationQualifiedName(
+            &model, "foundation.bind.Error")
+        applicationAppend(
+            &output,
+            "\nfn foundationRequireWebJSON(\n" +
+            "    $value Result<void, " + bindError + ">\n" +
+            ") Result<bool, " + bindError + "> {\n" +
+            "    match value {\n" +
+            "        Ok: .Ok(true)\n" +
+            "        Err(error): .Err(error)\n" +
+            "    }\n" +
+            "}\n\n" +
+            "fn foundationWebJSONErrorResponse(\n" +
+            "    $error " + bindError + "\n" +
+            ") Result<" + responseType + ", FoundationWebError> {\n" +
+            "    discard error\n" +
+            "    .Ok(" + textFunction +
+            "(400, \"invalid request body\"))\n" +
+            "}\n"
+        )
+    }
+    if applicationWebUsesValidation(&program, &model) {
+        applicationAppend(
+            &output,
+            "\nfn foundationWebValidationErrorResponse(\n" +
+            "    $errors own " + applicationQualifiedName(
+                &model, "foundation.validation.Errors") + "\n" +
+            ") Result<" + responseType + ", FoundationWebError> {\n" +
+            "    discard errors\n" +
+            "    .Ok(" + textFunction +
+            "(422, \"request validation failed\"))\n" +
+            "}\n"
+        )
+    }
+}
+
+struct applicationWebServiceValue {
+    serviceID u64
+    name String
+}
+
+fn applicationWebServiceValueName(
+    &values arena<applicationWebServiceValue>,
+    serviceID u64
+) Option<String> {
+    var index u64 = 0
+    while index < values.len() {
+        var value = match values.take(index) {
+            None: panic("web service value slot is empty")
+            Some(value): value
+        }
+        const found = value.serviceID == serviceID
+        const name = text.Copy(value.name)
+        values.restore(index, $value)
+        if found return .Some(name)
+        index += 1
+    }
+    .None
+}
+
+fn applicationEmitWebActivation(
+    &program firProgram,
+    &model applicationModel,
+    &route applicationWebRoute,
+    serviceID u64,
+    &context applicationConstruction,
+    &scoped arena<applicationWebServiceValue>
+) String {
+    const indent = text.Copy(context.indent)
+    const planIndex = match applicationServicePlanIndex(&model, serviceID) {
+        None: panic("web service has no application plan")
+        Some(value): value
+    }
+    var plan = match model.services.take(planIndex) {
+        None: panic("application service plan slot is empty")
+        Some(value): value
+    }
+    if plan.lifetime.Matches("Singleton") {
+        model.services.restore(planIndex, $plan)
+        return "self." + applicationStoredFieldName(
+            &program, &model, serviceID, .Singleton)
+    }
+    if plan.lifetime.Matches("Scoped") {
+        match applicationWebServiceValueName(&scoped, serviceID) {
+            None: {}
+            Some(value): {
+                model.services.restore(planIndex, $plan)
+                return value
+            }
+        }
+    }
+    const constructorID = plan.constructor
+    const fallible = plan.fallible
+    const dependencyCount = plan.dependencies.len()
+    const scopedService = plan.lifetime.Matches("Scoped")
+    model.services.restore(planIndex, $plan)
+    var arguments = newArena<String>()
+    var dependencyIndex u64 = 0
+    while dependencyIndex < dependencyCount {
+        var active = match model.services.take(planIndex) {
+            None: panic("application service plan slot is empty")
+            Some(value): value
+        }
+        var dependency = match active.dependencies.take(dependencyIndex) {
+            None: panic("application dependency slot is empty")
+            Some(value): value
+        }
+        const input = dependency.input
+        const mode = dependency.mode
+        const selectedProvider = replace dependency.provider with .None
+        var providerPresent = false
+        var providerID u64 = 0
+        match selectedProvider {
+            None: {}
+            Some(value): {
+                providerPresent = true
+                providerID = value
+                dependency.provider = .Some(value)
+            }
+        }
+        active.dependencies.restore(dependencyIndex, $dependency)
+        model.services.restore(planIndex, $active)
+        if !input && providerPresent {
+            const name = applicationEmitWebActivation(
+                &program, &model, &route, providerID, &context, &scoped)
+            discard arguments.add(applicationParameterMarker(mode) + name)
+        }
+        dependencyIndex += 1
+    }
+    const local = applicationUniqueIdentifier(
+        &context, applicationServiceFieldName(&program, serviceID))
+    var constructor = match program.functions.take(constructorID) {
+        None: panic("web activation constructor slot is empty")
+        Some(value): value
+    }
+    applicationAppend(
+        &context.body,
+        indent + "const " + local + " = " +
+        applicationFunctionName(&model, &constructor) + "(" +
+        applicationJoin(&arguments) + ")"
+    )
+    program.functions.restore(constructorID, $constructor)
+    if fallible {
+        applicationAppend(
+            &context.body,
+            " else error {\n" + indent +
+            "    return .Err(.Handler(error = ." + route.hostMethod +
+            "ActivationFailed(error = error)))\n" + indent + "}"
+        )
+    }
+    applicationAppend(&context.body, "\n")
+    if scopedService {
+        discard scoped.add(applicationWebServiceValue {
+            serviceID = serviceID
+            name = text.Copy(local)
+        })
+    }
+    local
+}
+
+fn applicationWebProvider(&parameter applicationWebParameter) u64 {
+    const selected = replace parameter.provider with .None
+    match selected {
+        None: panic("injected web parameter has no provider")
+        Some(value): {
+            parameter.provider = .Some(value)
+            value
+        }
+    }
+}
+
+fn applicationWebAccessor(source applicationWebBindingSource) String {
+    match source {
+        Path: "Param"
+        Query: "Query"
+        Header: "Header"
+        Form: "Form"
+        Body: ""
+        Inject: ""
+    }
+}
+
+fn applicationEmitWebRouteMethod(
+    &program firProgram,
+    &model applicationModel,
+    &route applicationWebRoute,
+    &output String
+) void {
+    var function = match program.functions.take(route.function) {
+        None: panic("web route function slot is empty")
+        Some(value): value
+    }
+    const requestType = applicationQualifiedName(
+        &model, "foundation.web.Request")
+    const responseType = applicationQualifiedName(
+        &model, "foundation.web.Response")
+    const dispatchError = applicationQualifiedName(
+        &model, "foundation.web.DispatchError")
+    applicationAppend(
+        &output,
+        "    fn foundationDispatchWeb" + route.hostMethod + "(\n" +
+        "        &self,\n" +
+        "        $foundationRequest " + requestType + "\n" +
+        "    ) Result<" + responseType + ", " + dispatchError +
+        "<FoundationWebError>> {\n" +
+        "        var foundationActiveRequest = foundationRequest\n"
+    )
+    var activation = newApplicationConstruction("        ")
+    activation.applicationReceiver = true
+    discard activation.identifiers.add("foundationActiveRequest")
+    var parameterIndex u64 = 0
+    while parameterIndex < route.parameters.len() {
+        discard activation.identifiers.add(
+            "foundationWebParameter" + format.U64(parameterIndex))
+        parameterIndex += 1
+    }
+    var scoped = newArena<applicationWebServiceValue>()
+    var arguments = newArena<String>()
+    parameterIndex = 0
+    while parameterIndex < route.parameters.len() {
+        var parameter = match route.parameters.take(parameterIndex) {
+            None: panic("web parameter slot is empty")
+            Some(value): value
+        }
+        const local = "foundationWebParameter" + format.U64(parameterIndex)
+        const mode = applicationParameterMode(&function, parameter.index)
+        if parameter.source.Matches("Inject") {
+            const serviceValue = applicationEmitWebActivation(
+                &program,
+                &model,
+                &route,
+                applicationWebProvider(&parameter),
+                &activation,
+                &scoped
+            )
+            discard arguments.add(
+                applicationParameterMarker(mode) + serviceValue)
+            route.parameters.restore(parameterIndex, $parameter)
+            parameterIndex += 1
+            continue
+        }
+        var sourceParameter = applicationParameter(&function, parameter.index)
+        var parameterType = applicationBaseType(&sourceParameter.type)
+        discard arguments.add(
+            applicationParameterMarker(mode) + text.Copy(local))
+        if parameter.source.Matches("Body") {
+            if parameterType.kind.Matches("StringValue") {
+                applicationAppend(
+                    &output,
+                    "        const " + local + " = " +
+                    applicationQualifiedName(&model, "std.text.Copy") +
+                    "(foundationActiveRequest.Body)\n"
+                )
+            } else {
+                applicationAppend(
+                    &output,
+                    "        if !foundationActiveRequest.IsJSON() {\n" +
+                    "            return .Err(.Handler(error = .Binding(error = " +
+                    "FoundationWebBindingError { Kind = .UnsupportedMediaType " +
+                    "Source = .Body Name = \"Content-Type\" })))\n" +
+                    "        }\n" +
+                    "        var " + local + " = " +
+                    applicationWebBodyInitializer(
+                        &program, &model, parameterType.declaration) + "\n" +
+                    "        const " + local +
+                    "Bound = foundationRequireWebJSON($" + local +
+                    ".BindJSON(foundationActiveRequest.Body)) else error {\n" +
+                    "            return .Err(.Handler(error = .JSON(error = " +
+                    "error)))\n" +
+                    "        }\n" +
+                    "        discard " + local + "Bound\n"
+                )
+                match applicationValidationPlanIndex(
+                    &model, parameterType.declaration) {
+                    None: {}
+                    Some(value): {
+                        discard value
+                        applicationAppend(
+                            &output,
+                            "        var " + local + "ValidationErrors = " +
+                            local + ".Validate()\n" +
+                            "        if !" + local +
+                            "ValidationErrors.IsEmpty() {\n" +
+                            "            return .Err(.Handler(error = .Validation(" +
+                            "errors = $" + local +
+                            "ValidationErrors)))\n" +
+                            "        }\n" +
+                            "        discard " + local + "ValidationErrors\n"
+                        )
+                    }
+                }
+            }
+            route.parameters.restore(parameterIndex, $parameter)
+            parameterIndex += 1
+            continue
+        }
+        const accessor = applicationWebAccessor(parameter.source)
+        if applicationBuiltinOption(&program, &parameterType) {
+            applicationAppend(
+                &output,
+                "        const " + local + " = foundationActiveRequest." +
+                accessor + "(" + applicationStringLiteral(parameter.name) +
+                ")\n"
+            )
+            route.parameters.restore(parameterIndex, $parameter)
+            parameterIndex += 1
+            continue
+        }
+        const textLocal = text.Copy(local) if
+        parameterType.kind.Matches("StringValue") else
+        text.Copy(local) + "Text"
+        applicationAppend(
+            &output,
+            "        const " + textLocal +
+            " = foundationRequireWebValue($foundationActiveRequest." +
+            accessor + "(" + applicationStringLiteral(parameter.name) +
+            "), ." + parameter.source.Name() + ", " +
+            applicationStringLiteral(parameter.name) + ") else error {\n" +
+            "            return .Err(.Handler(error = .Binding(error = error)))\n" +
+            "        }\n"
+        )
+        if parameterType.kind.Matches("StringValue") {
+            route.parameters.restore(parameterIndex, $parameter)
+            parameterIndex += 1
+            continue
+        }
+        if parameterType.kind.Matches("Bool") {
+            applicationAppend(
+                &output,
+                "        const " + local + " = foundationParseWebBool($" +
+                textLocal + ", ." + parameter.source.Name() + ", " +
+                applicationStringLiteral(parameter.name) + ") else error {\n" +
+                "            return .Err(.Handler(error = .Binding(error = error)))\n" +
+                "        }\n"
+            )
+            route.parameters.restore(parameterIndex, $parameter)
+            parameterIndex += 1
+            continue
+        }
+        const parser = applicationQualifiedName(
+            &model, "std.parse." + applicationWebIntegerParser(&parameterType))
+        applicationAppend(
+            &output,
+            "        const " + local + " = " + parser + "(" + textLocal +
+            ") else error {\n" +
+            "            discard error\n" +
+            "            return .Err(.Handler(error = .Binding(error = " +
+            "FoundationWebBindingError { Kind = .Invalid Source = ." +
+            parameter.source.Name() + " Name = " +
+            applicationStringLiteral(parameter.name) + " })))\n" +
+            "        }\n" +
+            "        discard " + textLocal + "\n"
+        )
+        route.parameters.restore(parameterIndex, $parameter)
+        parameterIndex += 1
+    }
+    applicationAppend(
+        &output,
+        "        discard foundationActiveRequest\n" + activation.body
+    )
+    const invocation = applicationFunctionName(&model, &function) + "(" +
+        applicationJoin(&arguments) + ")"
+    var completed = text.Copy(invocation)
+    if route.taskFunction {
+        applicationAppend(
+            &output,
+            "        const foundationWebHandler = spawn " + invocation + "\n"
+        )
+        completed = "$foundationWebHandler.wait()"
+    }
+    if applicationWebExecutionErrorPresent(&route) {
+        applicationAppend(
+            &output,
+            "        match " + completed + " {\n" +
+            "            Ok(response): .Ok(response)\n" +
+            "            Err(error): .Err(.Handler(error = ." +
+            route.hostMethod + "Failed(error = error)))\n" +
+            "        }\n"
+        )
+    } else {
+        applicationAppend(&output, "        .Ok(" + completed + ")\n")
+    }
+    applicationAppend(&output, "    }\n\n")
+    program.functions.restore(route.function, $function)
+}
+
+fn applicationWebMiddlewareApplies(
+    &middleware applicationWebMiddleware,
+    &route applicationWebRoute
+) bool {
+    (middleware.scope.Matches("Group") &&
+        applicationWebRouteInGroup(route.path, middleware.path)) ||
+        (middleware.scope.Matches("Route") &&
+        middleware.method == route.method && middleware.path == route.path)
+}
+
+fn applicationWebMiddlewareCount(
+    &model applicationModel,
+    &route applicationWebRoute
+) u64 {
+    var count u64 = 0
+    var index u64 = 0
+    while index < model.webMiddlewares.len() {
+        var middleware = match model.webMiddlewares.take(index) {
+            None: panic("web middleware slot is empty")
+            Some(value): value
+        }
+        if applicationWebMiddlewareApplies(&middleware, &route) {
+            count += 1
+        }
+        model.webMiddlewares.restore(index, $middleware)
+        index += 1
+    }
+    count
+}
+
+fn applicationWebMiddlewareAt(
+    &model applicationModel,
+    &route applicationWebRoute,
+    selectedIndex u64
+) applicationWebMiddleware {
+    var found u64 = 0
+    var index u64 = 0
+    while index < model.webMiddlewares.len() {
+        var middleware = match model.webMiddlewares.take(index) {
+            None: panic("web middleware slot is empty")
+            Some(value): value
+        }
+        if applicationWebMiddlewareApplies(&middleware, &route) {
+            if found == selectedIndex {
+                const result = applicationWebMiddleware {
+                    function = middleware.function
+                    scope = middleware.scope
+                    method = text.Copy(middleware.method)
+                    path = text.Copy(middleware.path)
+                    order = middleware.order
+                }
+                model.webMiddlewares.restore(index, $middleware)
+                return result
+            }
+            found += 1
+        }
+        model.webMiddlewares.restore(index, $middleware)
+        index += 1
+    }
+    panic("web middleware selection is invalid")
+}
+
+fn applicationWebGlobalMiddlewareCount(&model applicationModel) u64 {
+    var count u64 = 0
+    var index u64 = 0
+    while index < model.webMiddlewares.len() {
+        var middleware = match model.webMiddlewares.take(index) {
+            None: panic("web middleware slot is empty")
+            Some(value): value
+        }
+        if middleware.scope.Matches("Global") {
+            count += 1
+        }
+        model.webMiddlewares.restore(index, $middleware)
+        index += 1
+    }
+    count
+}
+
+fn applicationWebGlobalMiddlewareAt(
+    &model applicationModel,
+    selectedIndex u64
+) applicationWebMiddleware {
+    var found u64 = 0
+    var index u64 = 0
+    while index < model.webMiddlewares.len() {
+        var middleware = match model.webMiddlewares.take(index) {
+            None: panic("web middleware slot is empty")
+            Some(value): value
+        }
+        if middleware.scope.Matches("Global") {
+            if found == selectedIndex {
+                const result = applicationWebMiddleware {
+                    function = middleware.function
+                    scope = middleware.scope
+                    method = text.Copy(middleware.method)
+                    path = text.Copy(middleware.path)
+                    order = middleware.order
+                }
+                model.webMiddlewares.restore(index, $middleware)
+                return result
+            }
+            found += 1
+        }
+        model.webMiddlewares.restore(index, $middleware)
+        index += 1
+    }
+    panic("global web middleware selection is invalid")
+}
+
+fn applicationEmitWebMiddlewareMethod(
+    &program firProgram,
+    &model applicationModel,
+    methodName String,
+    &middleware applicationWebMiddleware,
+    nextMethod String,
+    &output String
+) void {
+    var function = match program.functions.take(middleware.function) {
+        None: panic("web middleware function slot is empty")
+        Some(value): value
+    }
+    const requestType = applicationQualifiedName(
+        &model, "foundation.web.Request")
+    const responseType = applicationQualifiedName(
+        &model, "foundation.web.Response")
+    const dispatchError = applicationQualifiedName(
+        &model, "foundation.web.DispatchError")
+    applicationAppend(
+        &output,
+        "    fn " + methodName + "(\n" +
+        "        &self,\n" +
+        "        $foundationRequest " + requestType + "\n" +
+        "    ) Result<" + responseType + ", " + dispatchError +
+        "<FoundationWebError>> {\n" +
+        "        " + applicationFunctionName(&model, &function) +
+        "<FoundationWebError>(\n" +
+        "            $foundationRequest,\n" +
+        "            fn(\n" +
+        "                $foundationNextRequest " + requestType + "\n" +
+        "            ) Result<" + responseType + ", " + dispatchError +
+        "<FoundationWebError>> capture(&self) {\n" +
+        "                self." + nextMethod +
+        "($foundationNextRequest)\n" +
+        "            }\n" +
+        "        )\n" +
+        "    }\n\n"
+    )
+    program.functions.restore(middleware.function, $function)
+}
+
+fn applicationEmitWebRouteMiddlewares(
+    &program firProgram,
+    &model applicationModel,
+    &output String
+) void {
+    var routeIndex u64 = 0
+    while routeIndex < model.webRoutes.len() {
+        var route = match model.webRoutes.take(routeIndex) {
+            None: panic("web route slot is empty")
+            Some(value): value
+        }
+        const count = applicationWebMiddlewareCount(&model, &route)
+        var remaining = count
+        while remaining != 0 {
+            const position = remaining - 1
+            var middleware = applicationWebMiddlewareAt(
+                &model, &route, position)
+            const name = "foundationDispatchWeb" + route.hostMethod +
+                "Middleware" + format.U64(position)
+            const next = "foundationDispatchWeb" + route.hostMethod if
+            position + 1 == count else
+            "foundationDispatchWeb" + route.hostMethod + "Middleware" +
+                format.U64(position + 1)
+            applicationEmitWebMiddlewareMethod(
+                &program, &model, name, &middleware, next, &output)
+            remaining -= 1
+        }
+        model.webRoutes.restore(routeIndex, $route)
+        routeIndex += 1
+    }
+}
+
+fn applicationEmitWebGlobalMiddlewares(
+    &program firProgram,
+    &model applicationModel,
+    &output String
+) void {
+    const count = applicationWebGlobalMiddlewareCount(&model)
+    var remaining = count
+    while remaining != 0 {
+        const position = remaining - 1
+        var middleware = applicationWebGlobalMiddlewareAt(&model, position)
+        const name = "foundationDispatchWebMiddleware" + format.U64(position)
+        const next = "foundationDispatchWebRoutes" if position + 1 == count else
+        "foundationDispatchWebMiddleware" + format.U64(position + 1)
+        applicationEmitWebMiddlewareMethod(
+            &program, &model, name, &middleware, next, &output)
+        remaining -= 1
+    }
+}
+
+fn applicationEmitWebRouter(
+    &model applicationModel,
+    &output String
+) void {
+    const requestType = applicationQualifiedName(
+        &model, "foundation.web.Request")
+    const responseType = applicationQualifiedName(
+        &model, "foundation.web.Response")
+    const dispatchError = applicationQualifiedName(
+        &model, "foundation.web.DispatchError")
+    const routeMatch = applicationQualifiedName(
+        &model, "foundation.web.RouteMatch")
+    applicationAppend(
+        &output,
+        "    fn " +
+        ("Dispatch" if model.webMiddlewares.len() == 0 else
+            "foundationDispatchWebRoutes") + "(\n" +
+        "        &self,\n" +
+        "        $foundationRequest " + requestType + "\n" +
+        "    ) Result<" + responseType + ", " + dispatchError +
+        "<FoundationWebError>> {\n" +
+        "        var foundationActiveRequest = foundationRequest\n" +
+        "        const foundationMatched = self.foundationRoutes.Match(\n" +
+        "            foundationActiveRequest.Method,\n" +
+        "            foundationActiveRequest.Path\n" +
+        "        ) else error {\n" +
+        "            return match error {\n" +
+        "                NotFound: .Err(.NotFound)\n" +
+        "                MethodNotAllowed: .Err(.MethodNotAllowed)\n" +
+        "            }\n" +
+        "        }\n" +
+        "        const " + routeMatch +
+        " { Id Params } = foundationMatched\n" +
+        "        const foundationPreviousParams = replace " +
+        "foundationActiveRequest.Params with Params\n" +
+        "        discard foundationPreviousParams\n"
+    )
+    var routeIndex u64 = 0
+    while routeIndex < model.webRoutes.len() {
+        var route = match model.webRoutes.take(routeIndex) {
+            None: panic("web route slot is empty")
+            Some(value): value
+        }
+        applicationAppend(
+            &output,
+            "        if Id == " + format.U64(routeIndex + 1) +
+            " return self.foundationDispatchWeb" + route.hostMethod +
+            ("Middleware0" if applicationWebMiddlewareCount(
+                    &model, &route) != 0 else "") +
+            "($foundationActiveRequest)\n"
+        )
+        model.webRoutes.restore(routeIndex, $route)
+        routeIndex += 1
+    }
+    applicationAppend(
+        &output,
+        "        discard foundationActiveRequest\n" +
+        "        .Err(.NotFound)\n" +
+        "    }\n\n"
+    )
+    if model.webMiddlewares.len() != 0 {
+        applicationAppend(
+            &output,
+            "    fn Dispatch(\n" +
+            "        &self,\n" +
+            "        $foundationRequest " + requestType + "\n" +
+            "    ) Result<" + responseType + ", " + dispatchError +
+            "<FoundationWebError>> {\n" +
+            "        self." +
+            ("foundationDispatchWebRoutes" if
+                applicationWebGlobalMiddlewareCount(&model) == 0 else
+                "foundationDispatchWebMiddleware0") +
+            "($foundationRequest)\n" +
+            "    }\n\n"
+        )
+    }
+}
+
+fn applicationEmitWebErrorResponse(
+    &program firProgram,
+    &model applicationModel,
+    &output String
+) void {
+    const responseType = applicationQualifiedName(
+        &model, "foundation.web.Response")
+    const textFunction = applicationQualifiedName(&model, "foundation.web.Text")
+    applicationAppend(
+        &output,
+        "    fn ErrorResponse(\n" +
+        "        self,\n" +
+        "        $error FoundationWebError\n" +
+        "    ) Result<" + responseType + ", FoundationWebError> {\n" +
+        "        match error {\n" +
+        "            Binding(error): match error.Kind {\n" +
+        "                Missing: .Ok(" + textFunction +
+        "(400, \"missing request value\"))\n" +
+        "                Invalid: .Ok(" + textFunction +
+        "(400, \"invalid request value\"))\n" +
+        "                UnsupportedMediaType: .Ok(" + textFunction +
+        "(415, \"unsupported media type\"))\n" +
+        "            }\n"
+    )
+    if applicationWebUsesTypedBody(&program, &model) {
+        applicationAppend(
+            &output,
+            "            JSON(error): foundationWebJSONErrorResponse($error)\n"
+        )
+    }
+    if applicationWebUsesValidation(&program, &model) {
+        applicationAppend(
+            &output,
+            "            Validation(errors): " +
+            "foundationWebValidationErrorResponse($errors)\n"
+        )
+    }
+    var routeIndex u64 = 0
+    while routeIndex < model.webRoutes.len() {
+        var route = match model.webRoutes.take(routeIndex) {
+            None: panic("web route slot is empty")
+            Some(value): value
+        }
+        if applicationWebActivationErrorPresent(&route) {
+            applicationAppend(
+                &output,
+                "            " + route.hostMethod +
+                "ActivationFailed(error): .Err(." + route.hostMethod +
+                "ActivationFailed(error = error))\n"
+            )
+        }
+        if applicationWebExecutionErrorPresent(&route) {
+            applicationAppend(
+                &output,
+                "            " + route.hostMethod +
+                "Failed(error): .Err(." + route.hostMethod +
+                "Failed(error = error))\n"
+            )
+        }
+        model.webRoutes.restore(routeIndex, $route)
+        routeIndex += 1
+    }
+    applicationAppend(&output, "        }\n    }\n")
+}
+
+fn applicationEmitWebMethods(
+    &program firProgram,
+    &model applicationModel,
+    &output String
+) void {
+    if model.webRoutes.len() == 0 return
+    applicationAppend(&output, "\nmethods FoundationApplication {\n")
+    var routeIndex u64 = 0
+    while routeIndex < model.webRoutes.len() {
+        var route = match model.webRoutes.take(routeIndex) {
+            None: panic("web route slot is empty")
+            Some(value): value
+        }
+        applicationEmitWebRouteMethod(&program, &model, &route, &output)
+        model.webRoutes.restore(routeIndex, $route)
+        routeIndex += 1
+    }
+    applicationEmitWebRouteMiddlewares(&program, &model, &output)
+    applicationEmitWebGlobalMiddlewares(&program, &model, &output)
+    applicationEmitWebRouter(&model, &output)
+    applicationEmitWebErrorResponse(&program, &model, &output)
+    applicationAppend(&output, "}\n")
+}

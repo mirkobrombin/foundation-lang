@@ -1,0 +1,880 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn applicationStringContains(&values arena<String>, value String) bool {
+    var index u64 = 0
+    while index < values.len() {
+        const current = match values.take(index) {
+            None: panic("application string slot is empty")
+            Some(current): current
+        }
+        const found = current == value
+        values.restore(index, $current)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn applicationNamedStruct(
+    &program firProgram,
+    &type semanticType,
+    name String
+) bool {
+    var base = applicationBaseType(&type)
+    if !base.kind.Matches("StructValue") ||
+        base.declaration >= program.structs.len() {
+        return false
+    }
+    var declaration = match program.structs.take(base.declaration) {
+        None: panic("struct slot is empty")
+        Some(declaration): declaration
+    }
+    const found = declaration.name == name
+    program.structs.restore(base.declaration, $declaration)
+    found
+}
+
+fn applicationBuiltinOption(
+    &program firProgram,
+    &type semanticType
+) bool {
+    var base = applicationBaseType(&type)
+    if !base.kind.Matches("EnumValue") || base.arguments.len() != 1 ||
+        base.declaration >= program.enums.len() {
+        return false
+    }
+    var declaration = match program.enums.take(base.declaration) {
+        None: panic("enum slot is empty")
+        Some(declaration): declaration
+    }
+    const found = declaration.builtin && declaration.name == "Option"
+    program.enums.restore(base.declaration, $declaration)
+    found
+}
+
+fn applicationStringList(
+    &program firProgram,
+    &type semanticType
+) bool {
+    var base = applicationBaseType(&type)
+    if !applicationNamedStruct(&program, &base, "std.collections.List") ||
+        base.arguments.len() != 1 {
+        return false
+    }
+    var element = semanticTypeArgument(&base, 0)
+    element.kind.Matches("StringValue")
+}
+
+fn applicationBindingKind(
+    &program firProgram,
+    &type semanticType
+) Option<applicationBindingFieldKind> {
+    var base = applicationBaseType(&type)
+    if base.kind.Matches("StringValue") return .Some(.StringValue)
+    if base.kind.Matches("Bool") return .Some(.Boolean)
+    if isSemanticInteger(&base) return .Some(.Integer)
+    if base.kind.Matches("F32") return .Some(.F32)
+    if base.kind.Matches("F64") return .Some(.F64)
+    if applicationNamedStruct(&program, &base, "std.time.Duration") {
+        return .Some(.Duration)
+    }
+    if applicationStringList(&program, &base) return .Some(.StringList)
+    .None
+}
+
+fn applicationBindingParser(&type semanticType) String {
+    var base = applicationBaseType(&type)
+    if base.kind.Matches("Bool") return "Bool"
+    if base.kind.Matches("F32") return "F32"
+    if base.kind.Matches("F64") return "F64"
+    match base.kind {
+        I8: "I8"
+        I16: "I16"
+        I32: "I32"
+        I64: "I64"
+        Isize: "Isize"
+        U8: "U8"
+        U16: "U16"
+        U32: "U32"
+        U64: "U64"
+        Usize: "Usize"
+        Invalid: ""
+        Void: ""
+        Never: ""
+        Bool: ""
+        F32: ""
+        F64: ""
+        StringValue: ""
+        StructValue: ""
+        EnumValue: ""
+        ContractValue: ""
+        Function: ""
+        Task: ""
+        Channel: ""
+        Sender: ""
+        Receiver: ""
+        Array: ""
+        Slice: ""
+        Own: ""
+        View: ""
+        Edit: ""
+        Raw: ""
+        RawConst: ""
+        Parameter: ""
+    }
+}
+
+fn applicationAttributeUseName(
+    &program firProgram,
+    &use firAttributeUse
+) String {
+    if use.declaration >= program.attributeDeclarations.len() return ""
+    var declaration = match program.attributeDeclarations.take(use.declaration) {
+        None: panic("attribute declaration slot is empty")
+        Some(declaration): declaration
+    }
+    const name = text.Copy(declaration.name)
+    program.attributeDeclarations.restore(use.declaration, $declaration)
+    name
+}
+
+fn applicationUseString(
+    &use firAttributeUse,
+    argument u64
+) Option<String> {
+    if argument >= use.arguments.len() return .None
+    var value = match use.arguments.take(argument) {
+        None: panic("attribute argument slot is empty")
+        Some(value): value
+    }
+    var result Option<String> = .None
+    if value.value.kind.Matches("StringValue") {
+        result = .Some(text.Copy(value.value.text))
+    }
+    use.arguments.restore(argument, $value)
+    result
+}
+
+fn applicationGeneratedMethodCollision(
+    &program firProgram,
+    owner String,
+    name String
+) Option<u64> {
+    var index u64 = 0
+    while index < program.functions.len() {
+        var function = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(function): function
+        }
+        const found = applicationOwnerName(&function) == owner &&
+            applicationShortName(function.name) == name
+        program.functions.restore(index, $function)
+        if found return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn applicationBindingFieldMetadata(
+    &program firProgram,
+    &field firStructField
+) bool {
+    applicationHasAttribute(&program, &field.attributes, "foundation.bind.Name") ||
+        applicationHasAttribute(&program, &field.attributes, "foundation.bind.Ignore") ||
+        applicationHasAttribute(&program, &field.attributes, "foundation.bind.From") ||
+        applicationHasAttribute(&program, &field.attributes, "foundation.bind.Default") ||
+        applicationHasAttribute(&program, &field.attributes, "foundation.bind.JsonName") ||
+        applicationHasAttribute(&program, &field.attributes, "foundation.bind.JSON")
+}
+
+fn applicationStructBindingMetadata(
+    &program firProgram,
+    &type firStruct
+) bool {
+    var index u64 = 0
+    while index < type.fields.len() {
+        var field = match type.fields.take(index) {
+            None: panic("struct field slot is empty")
+            Some(field): field
+        }
+        const found = applicationBindingFieldMetadata(&program, &field)
+        type.fields.restore(index, $field)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn applicationBindingBodyTypeValid(
+    &program firProgram,
+    &model applicationModel,
+    &type semanticType
+) bool {
+    var base = applicationBaseType(&type)
+    if !base.kind.Matches("StructValue") ||
+        base.declaration >= program.structs.len() {
+        return false
+    }
+    var declaration = match program.structs.take(base.declaration) {
+        None: panic("struct slot is empty")
+        Some(declaration): declaration
+    }
+    const valid = applicationHasAttribute(
+        &program, &declaration.attributes, "foundation.bind.Bindable") &&
+        applicationPackageName(declaration.name) == model.rootPackage
+    program.structs.restore(base.declaration, $declaration)
+    valid
+}
+
+fn applicationPlanBindingField(
+    &program firProgram,
+    &model applicationModel,
+    &type firStruct,
+    fieldIndex u64,
+    &field firStructField,
+    &keys arena<String>,
+    &jsonKeys arena<String>,
+    &plan applicationBindingPlan,
+    &diagnostics diagnostics
+) void {
+    if !field.exported return
+    const ignored = applicationHasAttribute(
+        &program, &field.attributes, "foundation.bind.Ignore")
+    const named = applicationHasAttribute(
+        &program, &field.attributes, "foundation.bind.Name")
+    const defaulted = applicationHasAttribute(
+        &program, &field.attributes, "foundation.bind.Default")
+    const jsonNamed = applicationHasAttribute(
+        &program, &field.attributes, "foundation.bind.JsonName")
+    const jsonBody = applicationHasAttribute(
+        &program, &field.attributes, "foundation.bind.JSON")
+    const hasSources = applicationHasAttribute(
+        &program, &field.attributes, "foundation.bind.From")
+    if ignored && (named || defaulted || jsonNamed || jsonBody || hasSources) {
+        diagnostics.reportError(
+            "FDN2372",
+            "binding field cannot combine @bind.Ignore with other binding metadata: " +
+            field.name,
+            type.sourceSpan
+        )
+        return
+    }
+    if ignored return
+    if jsonBody {
+        if named || defaulted || jsonNamed || hasSources {
+            diagnostics.reportError(
+                "FDN2378",
+                "JSON body field cannot combine with other binding metadata: " +
+                field.name,
+                type.sourceSpan
+            )
+            return
+        }
+        match plan.jsonBodyField {
+            None: {}
+            Some(existing): {
+                discard existing
+                diagnostics.reportError(
+                    "FDN2378",
+                    "binding type has more than one JSON body field",
+                    type.sourceSpan
+                )
+                return
+            }
+        }
+        if !applicationBindingBodyTypeValid(&program, &model, &field.type) {
+            diagnostics.reportError(
+                "FDN2379",
+                "JSON body field requires a local concrete @bind.Bindable struct: " +
+                field.name,
+                type.sourceSpan
+            )
+            return
+        }
+        plan.jsonBodyField = .Some(fieldIndex)
+        return
+    }
+
+    var key = text.Copy(field.name)
+    match applicationAttributeString(
+        &program, &field.attributes, "foundation.bind.Name", 0) {
+        None: {}
+        Some(value): { key = value }
+    }
+    if text.IsEmpty(key) {
+        diagnostics.reportError(
+            "FDN2372", "binding field key cannot be empty: " + field.name,
+            type.sourceSpan)
+        return
+    }
+    if applicationStringContains(&keys, key) {
+        diagnostics.reportError(
+            "FDN2373", "duplicate binding field key " + key, type.sourceSpan)
+        return
+    }
+    discard keys.add(text.Copy(key))
+
+    var jsonKey = text.Copy(field.name)
+    match applicationAttributeString(
+        &program, &field.attributes, "foundation.bind.JsonName", 0) {
+        None: {}
+        Some(value): { jsonKey = value }
+    }
+    if text.IsEmpty(jsonKey) {
+        diagnostics.reportError(
+            "FDN2380", "JSON binding field key cannot be empty: " + field.name,
+            type.sourceSpan)
+        return
+    }
+    if applicationStringContains(&jsonKeys, jsonKey) {
+        diagnostics.reportError(
+            "FDN2381", "duplicate JSON binding field key " + jsonKey,
+            type.sourceSpan)
+        return
+    }
+    discard jsonKeys.add(text.Copy(jsonKey))
+
+    const selectedKind = applicationBindingKind(&program, &field.type)
+    const kind = match selectedKind {
+        None: {
+            diagnostics.reportError(
+                "FDN2374",
+                "unsupported generated binding field type " +
+                applicationSourceTypeName(&program, &model, &field.type) +
+                " for " + field.name,
+                type.sourceSpan
+            )
+            return
+        }
+        Some(value): value
+    }
+    var sources = newArena<applicationBindingSource>()
+    var sourceKeys = newArena<String>()
+    var attributeIndex u64 = 0
+    while attributeIndex < field.attributes.len() {
+        var use = match field.attributes.take(attributeIndex) {
+            None: panic("attribute use slot is empty")
+            Some(use): use
+        }
+        if applicationAttributeUseName(&program, &use) == "foundation.bind.From" {
+            var source = ""
+            var sourceKey = ""
+            match applicationUseString(&use, 0) {
+                None: {}
+                Some(value): { source = value }
+            }
+            match applicationUseString(&use, 1) {
+                None: {}
+                Some(value): { sourceKey = value }
+            }
+            if text.IsEmpty(source) || text.IsEmpty(sourceKey) {
+                diagnostics.reportError(
+                    "FDN2376",
+                    "binding source and key cannot be empty: " + field.name,
+                    type.sourceSpan
+                )
+            } else {
+                const sourceID = source + ":" + sourceKey
+                if applicationStringContains(&sourceKeys, sourceID) {
+                    diagnostics.reportError(
+                        "FDN2377",
+                        "duplicate binding source " + sourceID + " for " + field.name,
+                        type.sourceSpan
+                    )
+                } else {
+                    discard sourceKeys.add($sourceID)
+                    discard sources.add(applicationBindingSource {
+                        source = source
+                        key = sourceKey
+                    })
+                }
+            }
+        }
+        field.attributes.restore(attributeIndex, $use)
+        attributeIndex += 1
+    }
+    const defaultValue = applicationAttributeString(
+        &program, &field.attributes, "foundation.bind.Default", 0)
+    discard plan.fields.add(applicationBindingField {
+        field = fieldIndex
+        key = key
+        jsonKey = jsonKey
+        kind = kind
+        sources = sources
+        defaultValue = defaultValue
+    })
+}
+
+fn applicationPlanBindings(
+    &program firProgram,
+    &model applicationModel,
+    &diagnostics diagnostics
+) void {
+    var typeIndex u64 = 0
+    while typeIndex < program.structs.len() {
+        var type = match program.structs.take(typeIndex) {
+            None: panic("struct slot is empty")
+            Some(type): type
+        }
+        const local = applicationPackageName(type.name) == model.rootPackage
+        const bindable = applicationHasAttribute(
+            &program, &type.attributes, "foundation.bind.Bindable")
+        const metadata = applicationStructBindingMetadata(&program, &type)
+        if local && !bindable && metadata {
+            diagnostics.reportError(
+                "FDN2371",
+                "binding field metadata requires @bind.Bindable on " + type.name,
+                type.sourceSpan
+            )
+        }
+        if local && bindable {
+            if type.typeParameterCount != 0 {
+                diagnostics.reportError(
+                    "FDN2370", "generated binding requires a concrete struct",
+                    type.sourceSpan)
+            } else {
+                var collision = false
+                var names = newArena<String>()
+                discard names.add("Bind")
+                discard names.add("BindSources")
+                discard names.add("BindJSON")
+                var nameIndex u64 = 0
+                while nameIndex < names.len() {
+                    const name = match names.take(nameIndex) {
+                        None: panic("binding method name slot is empty")
+                        Some(name): name
+                    }
+                    match applicationGeneratedMethodCollision(
+                        &program, type.name, name) {
+                        None: {}
+                        Some(function): {
+                            collision = true
+                            diagnostics.reportError(
+                                "FDN2375",
+                                "generated binding method already exists for " + type.name,
+                                applicationFunctionSpan(&program, function)
+                            )
+                        }
+                    }
+                    names.restore(nameIndex, $name)
+                    nameIndex += 1
+                }
+                if !collision {
+                    var plan = applicationBindingPlan {
+                        type = typeIndex
+                        fields = newArena<applicationBindingField>()
+                        jsonBodyField = .None
+                    }
+                    var keys = newArena<String>()
+                    var jsonKeys = newArena<String>()
+                    var fieldIndex u64 = 0
+                    while fieldIndex < type.fields.len() {
+                        var field = match type.fields.take(fieldIndex) {
+                            None: panic("struct field slot is empty")
+                            Some(field): field
+                        }
+                        applicationPlanBindingField(
+                            &program,
+                            &model,
+                            &type,
+                            fieldIndex,
+                            &field,
+                            &keys,
+                            &jsonKeys,
+                            &plan,
+                            &diagnostics
+                        )
+                        type.fields.restore(fieldIndex, $field)
+                        fieldIndex += 1
+                    }
+                    discard model.bindings.add($plan)
+                }
+            }
+        }
+        program.structs.restore(typeIndex, $type)
+        typeIndex += 1
+    }
+    if model.bindings.len() == 0 return
+    applicationAddImport(&model, "foundation.bind")
+    applicationAddImport(&model, "std.json")
+    applicationAddImport(&model, "std.parse")
+    var bindingIndex u64 = 0
+    while bindingIndex < model.bindings.len() {
+        var binding = match model.bindings.take(bindingIndex) {
+            None: panic("application binding plan slot is empty")
+            Some(binding): binding
+        }
+        var type = match program.structs.take(binding.type) {
+            None: panic("binding struct slot is empty")
+            Some(type): type
+        }
+        var fieldIndex u64 = 0
+        while fieldIndex < type.fields.len() {
+            var field = match type.fields.take(fieldIndex) {
+                None: panic("struct field slot is empty")
+                Some(field): field
+            }
+            applicationCollectTypeImports(&program, &model, &field.type)
+            type.fields.restore(fieldIndex, $field)
+            fieldIndex += 1
+        }
+        var plannedIndex u64 = 0
+        while plannedIndex < binding.fields.len() {
+            var field = match binding.fields.take(plannedIndex) {
+                None: panic("binding field slot is empty")
+                Some(field): field
+            }
+            if field.kind.Matches("Duration") {
+                applicationAddImport(&model, "std.time")
+            }
+            binding.fields.restore(plannedIndex, $field)
+            plannedIndex += 1
+        }
+        program.structs.restore(binding.type, $type)
+        model.bindings.restore(bindingIndex, $binding)
+        bindingIndex += 1
+    }
+}
+
+fn applicationBindingHasSources(&binding applicationBindingPlan) bool {
+    var index u64 = 0
+    while index < binding.fields.len() {
+        var field = match binding.fields.take(index) {
+            None: panic("binding field slot is empty")
+            Some(field): field
+        }
+        const selected = replace field.defaultValue with .None
+        var hasDefault = false
+        match selected {
+            None: {}
+            Some(value): {
+                hasDefault = true
+                field.defaultValue = .Some(value)
+            }
+        }
+        const found = field.sources.len() != 0 || hasDefault
+        binding.fields.restore(index, $field)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn applicationEmitBindingAssignment(
+    &program firProgram,
+    &model applicationModel,
+    &field firStructField,
+    &plan applicationBindingField,
+    index u64,
+    &output String
+) void {
+    const suffix = format.U64(index)
+    if plan.kind.Matches("StringValue") {
+        applicationAppend(&output, "            self." + field.name + " = value\n")
+        return
+    }
+    if plan.kind.Matches("StringList") {
+        applicationAppend(
+            &output,
+            "            " + applicationQualifiedName(
+                &model, "foundation.bind.Append") + "(&self." + field.name +
+            ", $value)\n"
+        )
+        return
+    }
+    var parser = ""
+    if plan.kind.Matches("Duration") {
+        parser = applicationSourceTypeName(&program, &model, &field.type) + ".Parse"
+    } else {
+        parser = applicationQualifiedName(
+            &model, "std.parse." + applicationBindingParser(&field.type))
+    }
+    const bindError = applicationQualifiedName(&model, "foundation.bind.Error")
+    const bindErrorKind = applicationQualifiedName(
+        &model, "foundation.bind.ErrorKind")
+    applicationAppend(
+        &output,
+        "            const bindingParsed" + suffix + " = " + parser +
+        "(value) else error {\n" +
+        "                const bindingKind" + suffix + " " + bindErrorKind +
+        " = match error {\n" +
+        "                    Empty: .Empty\n" +
+        "                    Invalid: .Invalid\n"
+    )
+    if plan.kind.Matches("Integer") {
+        applicationAppend(&output, "                    Overflow: .OutOfRange\n")
+    } else {
+        if !plan.kind.Matches("Boolean") {
+            applicationAppend(&output, "                    OutOfRange: .OutOfRange\n")
+        }
+    }
+    applicationAppend(
+        &output,
+        "                }\n" +
+        "                return .Err(" + bindError + " {\n" +
+        "                    Kind = bindingKind" + suffix + "\n" +
+        "                    Field = " + applicationStringLiteral(field.name) + "\n" +
+        "                    Key = " + applicationStringLiteral(plan.key) + "\n" +
+        "                    Value = value\n" +
+        "                })\n" +
+        "            }\n" +
+        "            self." + field.name + " = bindingParsed" + suffix + "\n"
+    )
+}
+
+fn applicationEmitBindingSources(
+    &model applicationModel,
+    &binding applicationBindingPlan,
+    &output String
+) void {
+    if !applicationBindingHasSources(&binding) return
+    const bindSources = applicationQualifiedName(&model, "foundation.bind.Sources")
+    const bindError = applicationQualifiedName(&model, "foundation.bind.Error")
+    const newValues = applicationQualifiedName(&model, "foundation.bind.NewValues")
+    applicationAppend(
+        &output,
+        "\n    fn BindSources(\n" +
+        "        &self,\n" +
+        "        &sources " + bindSources + "\n" +
+        "    ) Result<void, " + bindError + "> {\n" +
+        "        var bindingValues = " + newValues + "()\n"
+    )
+    var index u64 = 0
+    while index < binding.fields.len() {
+        var field = match binding.fields.take(index) {
+            None: panic("binding field slot is empty")
+            Some(field): field
+        }
+        var hasDefault = false
+        var defaultValue = ""
+        const selectedDefault = replace field.defaultValue with .None
+        match selectedDefault {
+            None: {}
+            Some(value): {
+                hasDefault = true
+                defaultValue = text.Copy(value)
+                field.defaultValue = .Some(value)
+            }
+        }
+        if field.sources.len() != 0 || hasDefault {
+            const suffix = format.U64(index)
+            applicationAppend(
+                &output,
+                "        var bindingSourceFound" + suffix + " = false\n"
+            )
+            var sourceIndex u64 = 0
+            while sourceIndex < field.sources.len() {
+                var source = match field.sources.take(sourceIndex) {
+                    None: panic("binding source slot is empty")
+                    Some(source): source
+                }
+                applicationAppend(
+                    &output,
+                    "        if !bindingSourceFound" + suffix + " {\n" +
+                    "            bindingSourceFound" + suffix +
+                    " = sources.CopyInto(\n" +
+                    "                &bindingValues,\n" +
+                    "                " + applicationStringLiteral(source.source) + ",\n" +
+                    "                " + applicationStringLiteral(source.key) + ",\n" +
+                    "                " + applicationStringLiteral(field.key) + "\n" +
+                    "            )\n" +
+                    "        }\n"
+                )
+                field.sources.restore(sourceIndex, $source)
+                sourceIndex += 1
+            }
+            if hasDefault {
+                applicationAppend(
+                    &output,
+                    "        if !bindingSourceFound" + suffix + " {\n" +
+                    "            bindingValues.Set(" +
+                    applicationStringLiteral(field.key) + ", " +
+                    applicationStringLiteral(defaultValue) + ")\n" +
+                    "        }\n"
+                )
+            }
+        }
+        binding.fields.restore(index, $field)
+        index += 1
+    }
+    applicationAppend(&output, "        self.Bind(&bindingValues)\n    }\n")
+}
+
+fn applicationEmitBindingJSON(
+    &program firProgram,
+    &model applicationModel,
+    &type firStruct,
+    &binding applicationBindingPlan,
+    &output String
+) void {
+    const bindError = applicationQualifiedName(&model, "foundation.bind.Error")
+    applicationAppend(
+        &output,
+        "\n    fn BindJSON(\n" +
+        "        &self,\n" +
+        "        source String\n" +
+        "    ) Result<void, " + bindError + "> {\n"
+    )
+    const selectedBody = replace binding.jsonBodyField with .None
+    match selectedBody {
+        Some(fieldIndex): {
+            var field = match type.fields.take(fieldIndex) {
+                None: panic("struct field slot is empty")
+                Some(field): field
+            }
+            applicationAppend(
+                &output, "        self." + field.name + ".BindJSON(source)\n")
+            type.fields.restore(fieldIndex, $field)
+            binding.jsonBodyField = .Some(fieldIndex)
+        }
+        None: {
+            applicationAppend(
+                &output,
+                "        const bindingJsonRoot = " +
+                applicationQualifiedName(&model, "std.json.Parse") +
+                "(source) else error {\n" +
+                "            return .Err(" + applicationQualifiedName(
+                    &model, "foundation.bind.JsonSyntaxError") + "(error))\n" +
+                "        }\n" +
+                "        const bindingJsonSelected = " + applicationQualifiedName(
+                    &model, "foundation.bind.JsonObject") +
+                "($bindingJsonRoot) else error {\n" +
+                "            return .Err(error)\n" +
+                "        }\n" +
+                "        var bindingJsonObject = bindingJsonSelected\n" +
+                "        var bindingJsonValues = " + applicationQualifiedName(
+                    &model, "foundation.bind.NewValues") + "()\n"
+            )
+            var index u64 = 0
+            while index < binding.fields.len() {
+                var plan = match binding.fields.take(index) {
+                    None: panic("binding field slot is empty")
+                    Some(plan): plan
+                }
+                var field = match type.fields.take(plan.field) {
+                    None: panic("struct field slot is empty")
+                    Some(field): field
+                }
+                var helper = "foundation.bind.CopyJsonText"
+                if plan.kind.Matches("Boolean") {
+                    helper = "foundation.bind.CopyJsonBool"
+                } else {
+                    if plan.kind.Matches("Integer") || plan.kind.Matches("F32") ||
+                        plan.kind.Matches("F64") {
+                        helper = "foundation.bind.CopyJsonNumber"
+                    } else {
+                        if plan.kind.Matches("StringList") {
+                            helper = "foundation.bind.CopyJsonTextList"
+                        }
+                    }
+                }
+                const suffix = format.U64(index)
+                applicationAppend(
+                    &output,
+                    "        const bindingJsonField" + suffix + " = " +
+                    applicationQualifiedName(&model, helper) + "(\n" +
+                    "            &bindingJsonObject,\n"
+                )
+                if plan.kind.Matches("StringList") {
+                    applicationAppend(
+                        &output, "            &self." + field.name + ",\n")
+                } else {
+                    applicationAppend(&output, "            &bindingJsonValues,\n")
+                }
+                applicationAppend(
+                    &output,
+                    "            " + applicationStringLiteral(plan.jsonKey) + ",\n"
+                )
+                if !plan.kind.Matches("StringList") {
+                    applicationAppend(
+                        &output,
+                        "            " + applicationStringLiteral(plan.key) + ",\n"
+                    )
+                }
+                applicationAppend(
+                    &output,
+                    "            " + applicationStringLiteral(field.name) + "\n" +
+                    "        ) else error {\n" +
+                    "            return .Err(error)\n" +
+                    "        }\n" +
+                    "        discard bindingJsonField" + suffix + "\n"
+                )
+                type.fields.restore(plan.field, $field)
+                binding.fields.restore(index, $plan)
+                index += 1
+            }
+            applicationAppend(
+                &output,
+                "        if bindingJsonObject.Len() != 0 {\n" +
+                "            return .Err(" + applicationQualifiedName(
+                    &model, "foundation.bind.JsonUnknownField") +
+                "(&bindingJsonObject))\n" +
+                "        }\n" +
+                "        self.Bind(&bindingJsonValues)\n"
+            )
+        }
+    }
+    applicationAppend(&output, "    }\n")
+}
+
+fn applicationEmitBindings(
+    &program firProgram,
+    &model applicationModel,
+    &output String
+) void {
+    var bindingIndex u64 = 0
+    while bindingIndex < model.bindings.len() {
+        var binding = match model.bindings.take(bindingIndex) {
+            None: panic("application binding plan slot is empty")
+            Some(binding): binding
+        }
+        var type = match program.structs.take(binding.type) {
+            None: panic("binding struct slot is empty")
+            Some(type): type
+        }
+        applicationAppend(
+            &output,
+            "methods " + applicationQualifiedName(&model, type.name) + " {\n" +
+            "    fn Bind(\n" +
+            "        &self,\n" +
+            "        &source " + applicationQualifiedName(
+                &model, "foundation.bind.Values") + "\n" +
+            "    ) Result<void, " + applicationQualifiedName(
+                &model, "foundation.bind.Error") + "> {\n"
+        )
+        var fieldIndex u64 = 0
+        while fieldIndex < binding.fields.len() {
+            var plan = match binding.fields.take(fieldIndex) {
+                None: panic("binding field slot is empty")
+                Some(plan): plan
+            }
+            var field = match type.fields.take(plan.field) {
+                None: panic("struct field slot is empty")
+                Some(field): field
+            }
+            applicationAppend(
+                &output,
+                "        if source.Contains(" + applicationStringLiteral(plan.key) +
+                ") {\n" +
+                "            const value = source.Required(" +
+                applicationStringLiteral(plan.key) + ")\n"
+            )
+            applicationEmitBindingAssignment(
+                &program, &model, &field, &plan, fieldIndex, &output)
+            applicationAppend(&output, "        }\n")
+            type.fields.restore(plan.field, $field)
+            binding.fields.restore(fieldIndex, $plan)
+            fieldIndex += 1
+        }
+        applicationAppend(&output, "        .Ok\n    }\n")
+        applicationEmitBindingSources(&model, &binding, &output)
+        applicationEmitBindingJSON(&program, &model, &type, &binding, &output)
+        applicationAppend(&output, "}\n\n")
+        program.structs.restore(binding.type, $type)
+        model.bindings.restore(bindingIndex, $binding)
+        bindingIndex += 1
+    }
+}

@@ -1,0 +1,488 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn applicationAppend(&value String, part String) void {
+    value += part
+}
+
+fn applicationJoin(&values arena<String>) String {
+    var result = ""
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("application text slot is empty")
+            Some(value): value
+        }
+        const copied = text.Copy(value)
+        values.restore(index, $value)
+        if index != 0 {
+            result = result + ", "
+        }
+        result = result + copied
+        index += 1
+    }
+    result
+}
+
+fn applicationStringLiteral(value String) String {
+    cStringLiteral(value)
+}
+
+fn applicationU64ArenaContains(
+    &values arena<u64>,
+    expected u64
+) bool {
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("application id slot is empty")
+            Some(value): value
+        }
+        values.restore(index, value)
+        if value == expected return true
+        index += 1
+    }
+    false
+}
+
+fn applicationCollectActivationError(
+    &program firProgram,
+    &model applicationModel,
+    serviceID u64,
+    &visited arena<u64>,
+    &state applicationActivationState,
+    &diagnostics diagnostics
+) void {
+    if applicationU64ArenaContains(&visited, serviceID) return
+    discard visited.add(serviceID)
+    const planIndex = match applicationServicePlanIndex(&model, serviceID) {
+        None: {
+            return
+        }
+        Some(value): value
+    }
+    var plan = match model.services.take(planIndex) {
+        None: panic("application service plan slot is empty")
+        Some(value): value
+    }
+    if !plan.lifetime.Matches("Transient") {
+        model.services.restore(planIndex, $plan)
+        return
+    }
+    const constructor = plan.constructor
+    const fallible = plan.fallible
+    const dependencyCount = plan.dependencies.len()
+    model.services.restore(planIndex, $plan)
+    if fallible {
+        var function = match program.functions.take(constructor) {
+            None: panic("constructor function slot is empty")
+            Some(value): value
+        }
+        var candidate = semanticTypeArgument(&function.returnType, 1)
+        const current = replace state.selected with .None
+        match current {
+            None: {
+                state.selected = .Some(copySemanticType(&candidate))
+            }
+            Some(value): {
+                var active = value
+                if !sameSemanticType(&active, &candidate) {
+                    diagnostics.reportError(
+                        "FDN2340",
+                        "fallible constructors in one action activation must use the same error type",
+                        function.sourceSpan
+                    )
+                }
+                state.selected = .Some(active)
+            }
+        }
+        program.functions.restore(constructor, $function)
+    }
+    var dependencyIndex u64 = 0
+    while dependencyIndex < dependencyCount {
+        var activePlan = match model.services.take(planIndex) {
+            None: panic("application service plan slot is empty")
+            Some(value): value
+        }
+        var dependency = match activePlan.dependencies.take(dependencyIndex) {
+            None: panic("application dependency slot is empty")
+            Some(value): value
+        }
+        const provider = dependency.provider
+        activePlan.dependencies.restore(dependencyIndex, $dependency)
+        model.services.restore(planIndex, $activePlan)
+        match provider {
+            None: {}
+            Some(value): applicationCollectActivationError(
+                &program,
+                &model,
+                value,
+                &visited,
+                &state,
+                &diagnostics
+            )
+        }
+        dependencyIndex += 1
+    }
+}
+
+fn applicationActivationError(
+    &program firProgram,
+    &model applicationModel,
+    serviceID u64,
+    &diagnostics diagnostics
+) Option<semanticType> {
+    var visited = newArena<u64>()
+    var state = applicationActivationState { selected = .None }
+    applicationCollectActivationError(
+        &program,
+        &model,
+        serviceID,
+        &visited,
+        &state,
+        &diagnostics
+    )
+    replace state.selected with .None
+}
+
+fn applicationDispatchHasActivation(
+    &actionPlan applicationDispatchAction
+) bool {
+    const selected = replace actionPlan.activationError with .None
+    match selected {
+        None: false
+        Some(value): {
+            actionPlan.activationError = .Some(value)
+            true
+        }
+    }
+}
+
+fn applicationDispatchErrorsMatch(
+    &actionPlan applicationDispatchAction
+) bool {
+    var activationPresent = false
+    var executionPresent = false
+    var activationType = invalidSemanticType()
+    var executionType = invalidSemanticType()
+    const activation = replace actionPlan.activationError with .None
+    match activation {
+        None: {}
+        Some(value): {
+            var restored = value
+            activationPresent = true
+            activationType = copySemanticType(&restored)
+            actionPlan.activationError = .Some(restored)
+        }
+    }
+    const execution = replace actionPlan.executionError with .None
+    match execution {
+        None: {}
+        Some(value): {
+            var restored = value
+            executionPresent = true
+            executionType = copySemanticType(&restored)
+            actionPlan.executionError = .Some(restored)
+        }
+    }
+    activationPresent && executionPresent &&
+        sameSemanticType(&activationType, &executionType)
+}
+
+fn applicationServiceLifetimeAt(
+    &model applicationModel,
+    serviceID u64
+) applicationLifetime {
+    const selected = applicationServicePlanIndex(&model, serviceID)
+    const index = match selected {
+        None: panic("application serviceID has no plan")
+        Some(value): value
+    }
+    var plan = match model.services.take(index) {
+        None: panic("application serviceID plan slot is empty")
+        Some(value): value
+    }
+    const result = plan.lifetime
+    model.services.restore(index, $plan)
+    result
+}
+
+fn applicationServiceConstructorAt(
+    &model applicationModel,
+    serviceID u64
+) u64 {
+    const selected = applicationServicePlanIndex(&model, serviceID)
+    const index = match selected {
+        None: panic("application serviceID has no plan")
+        Some(value): value
+    }
+    var plan = match model.services.take(index) {
+        None: panic("application serviceID plan slot is empty")
+        Some(value): value
+    }
+    const result = plan.constructor
+    model.services.restore(index, $plan)
+    result
+}
+
+fn applicationServiceFallibleAt(
+    &model applicationModel,
+    serviceID u64
+) bool {
+    const selected = applicationServicePlanIndex(&model, serviceID)
+    const index = match selected {
+        None: panic("application serviceID has no plan")
+        Some(value): value
+    }
+    var plan = match model.services.take(index) {
+        None: panic("application serviceID plan slot is empty")
+        Some(value): value
+    }
+    const result = plan.fallible
+    model.services.restore(index, $plan)
+    result
+}
+
+fn applicationStoredFieldName(
+    &program firProgram,
+    &model applicationModel,
+    serviceID u64,
+    lifetime applicationLifetime
+) String {
+    const base = applicationServiceFieldName(&program, serviceID)
+    var occurrence u64 = 0
+    var index u64 = 0
+    while index < model.order.len() {
+        const current = match model.order.take(index) {
+            None: panic("application order slot is empty")
+            Some(value): value
+        }
+        model.order.restore(index, current)
+        if applicationServiceLifetimeAt(&model, current).Matches(lifetime.Name()) &&
+            applicationServiceFieldName(&program, current) == base {
+            occurrence += 1
+        }
+        if current == serviceID break
+        index += 1
+    }
+    base if occurrence <= 1 else base + format.U64(occurrence)
+}
+
+fn applicationIdentifierUsed(
+    &context applicationConstruction,
+    value String
+) bool {
+    applicationStringArenaContains(&context.identifiers, value)
+}
+
+fn applicationUniqueIdentifier(
+    &context applicationConstruction,
+    base String
+) String {
+    var candidate = text.Copy(base)
+    var suffix u64 = 2
+    while applicationIdentifierUsed(&context, candidate) {
+        candidate = base + format.U64(suffix)
+        suffix += 1
+    }
+    discard context.identifiers.add(text.Copy(candidate))
+    candidate
+}
+
+fn applicationConstructionInput(
+    &context applicationConstruction,
+    &program firProgram,
+    serviceID u64,
+    parameter String,
+    &type semanticType,
+    mode applicationParameterMode
+) String {
+    const name = applicationUniqueIdentifier(
+        &context,
+        applicationInputName(&program, serviceID, parameter)
+    )
+    discard context.inputs.add(applicationHostInput {
+        name = text.Copy(name)
+        type = copySemanticType(&type)
+        mode = mode
+    })
+    name
+}
+
+fn applicationEmitConstruction(
+    &program firProgram,
+    &model applicationModel,
+    serviceID u64,
+    &context applicationConstruction,
+    requestedName Option<String>,
+    mutableBinding bool
+) String {
+    const planIndex = match applicationServicePlanIndex(&model, serviceID) {
+        None: panic("application serviceID has no plan")
+        Some(value): value
+    }
+    var plan = match model.services.take(planIndex) {
+        None: panic("application serviceID plan slot is empty")
+        Some(value): value
+    }
+    const dependencyCount = plan.dependencies.len()
+    const constructor = plan.constructor
+    const fallible = plan.fallible
+    model.services.restore(planIndex, $plan)
+    var arguments = newArena<String>()
+    var dependencyIndex u64 = 0
+    while dependencyIndex < dependencyCount {
+        var activePlan = match model.services.take(planIndex) {
+            None: panic("application serviceID plan slot is empty")
+            Some(value): value
+        }
+        var dependency = match activePlan.dependencies.take(dependencyIndex) {
+            None: panic("application dependency slot is empty")
+            Some(value): value
+        }
+        const parameter = text.Copy(dependency.parameter)
+        var dependencyType = copySemanticType(&dependency.type)
+        const mode = dependency.mode
+        const provider = dependency.provider
+        const input = dependency.input
+        activePlan.dependencies.restore(dependencyIndex, $dependency)
+        model.services.restore(planIndex, $activePlan)
+        var value = ""
+        if input {
+            value = applicationConstructionInput(
+                &context,
+                &program,
+                serviceID,
+                parameter,
+                &dependencyType,
+                mode
+            )
+        } else {
+            const providerID = match provider {
+                None: panic("application dependency has no provider")
+                Some(value): value
+            }
+            const providerLifetime = applicationServiceLifetimeAt(&model, providerID)
+            if providerLifetime.Matches("Singleton") {
+                value = ("self." if context.applicationReceiver else "") +
+                    applicationStoredFieldName(
+                    &program, &model, providerID, .Singleton)
+            } else {
+                if providerLifetime.Matches("Scoped") {
+                    value = (context.scopeName + "." if context.scopeReceiver else "") +
+                        applicationStoredFieldName(
+                        &program, &model, providerID, .Scoped)
+                } else {
+                    value = applicationEmitConstruction(
+                        &program,
+                        &model,
+                        providerID,
+                        &context,
+                        .None,
+                        false
+                    )
+                }
+            }
+        }
+        discard arguments.add(applicationParameterMarker(mode) + value)
+        dependencyIndex += 1
+    }
+    var local = ""
+    match requestedName {
+        None: {
+            local = applicationUniqueIdentifier(
+                &context, applicationServiceFieldName(&program, serviceID))
+        }
+        Some(value): {
+            local = text.Copy(value)
+            if !applicationIdentifierUsed(&context, local) {
+                discard context.identifiers.add(text.Copy(local))
+            }
+        }
+    }
+    var function = match program.functions.take(constructor) {
+        None: panic("constructor function slot is empty")
+        Some(value): value
+    }
+    const indent = text.Copy(context.indent)
+    applicationAppend(
+        &context.body,
+        indent + ("var " if mutableBinding else "const ") + local +
+        " = " + applicationFunctionName(&model, &function) + "(" +
+        applicationJoin(&arguments) + ")"
+    )
+    program.functions.restore(constructor, $function)
+    if fallible {
+        const errorIndent = text.Copy(context.indent)
+        applicationAppend(
+            &context.body,
+            " else error {\n" + errorIndent +
+            "    return .Err(error)\n" + errorIndent + "}"
+        )
+    }
+    applicationAppend(&context.body, "\n")
+    local
+}
+
+fn applicationHostParameters(
+    &program firProgram,
+    &model applicationModel,
+    &inputs arena<applicationHostInput>,
+    includeSelf bool
+) String {
+    var values = newArena<String>()
+    if includeSelf {
+        discard values.add("self")
+    }
+    var index u64 = 0
+    while index < inputs.len() {
+        var input = match inputs.take(index) {
+            None: panic("application input slot is empty")
+            Some(value): value
+        }
+        var base = applicationBaseType(&input.type)
+        discard values.add(
+            applicationParameterMarker(input.mode) + input.name + " " +
+            applicationSourceTypeName(&program, &model, &base)
+        )
+        inputs.restore(index, $input)
+        index += 1
+    }
+    applicationJoin(&values)
+}
+
+fn applicationReceiver(
+    &function firFunction
+) firReceiverKind {
+    match function.receiver {
+        None: .View
+        Some(value): value
+    }
+}
+
+fn applicationIsResult(
+    &program firProgram,
+    &type semanticType
+) bool {
+    if !type.kind.Matches("EnumValue") || type.arguments.len() != 2 ||
+        type.declaration >= program.enums.len() {
+        return false
+    }
+    var declaration = match program.enums.take(type.declaration) {
+        None: panic("enum slot is empty")
+        Some(value): value
+    }
+    const result = declaration.builtin && declaration.name == "Result"
+    program.enums.restore(type.declaration, $declaration)
+    result
+}
+
+fn applicationTypeIsVoid(&value semanticType) bool {
+    value.kind.Matches("Void")
+}
+
+fn applicationTypeIsNever(&value semanticType) bool {
+    value.kind.Matches("Never")
+}

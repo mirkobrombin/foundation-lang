@@ -1,0 +1,774 @@
+package foundation.compiler
+
+import std.format
+import std.parse
+import std.text
+
+struct applicationNumericAttribute {
+    literal String
+    value f64
+    integer bool
+    magnitude u64
+    negative bool
+}
+
+fn applicationUseNumeric(
+    &use firAttributeUse,
+    argument u64
+) Option<applicationNumericAttribute> {
+    if argument >= use.arguments.len() return .None
+    var argumentValue = match use.arguments.take(argument) {
+        None: panic("attribute argument slot is empty")
+        Some(value): value
+    }
+    var result Option<applicationNumericAttribute> = .None
+    if argumentValue.value.kind.Matches("Integer") {
+        var literal = format.U64(argumentValue.value.magnitude)
+        if argumentValue.value.negative {
+            literal = "-" + literal
+        }
+        const parsed = parse.F64(literal) else error {
+            discard error
+            use.arguments.restore(argument, $argumentValue)
+            return .None
+        }
+        result = .Some(applicationNumericAttribute {
+            literal = literal
+            value = parsed
+            integer = true
+            magnitude = argumentValue.value.magnitude
+            negative = argumentValue.value.negative
+        })
+    } else {
+        if argumentValue.value.kind.Matches("Floating") {
+            const parsed = parse.F64(argumentValue.value.text) else error {
+                discard error
+                use.arguments.restore(argument, $argumentValue)
+                return .None
+            }
+            result = .Some(applicationNumericAttribute {
+                literal = text.Copy(argumentValue.value.text)
+                value = parsed
+                integer = false
+                magnitude = 0
+                negative = false
+            })
+        }
+    }
+    use.arguments.restore(argument, $argumentValue)
+    result
+}
+
+fn applicationNumericGreater(
+    left applicationNumericAttribute,
+    right applicationNumericAttribute
+) bool {
+    if left.integer && right.integer {
+        if left.negative != right.negative return !left.negative
+        if left.negative return left.magnitude < right.magnitude
+        return left.magnitude > right.magnitude
+    }
+    left.value > right.value
+}
+
+fn applicationEscapedPatternByte(pattern String, index u64) bool {
+    var cursor = index
+    var escapes u64 = 0
+    while cursor > 0 && applicationByteAt(pattern, cursor - 1) == 92 {
+        cursor -= 1
+        escapes += 1
+    }
+    escapes % 2 != 0
+}
+
+fn applicationValidValidationPattern(pattern String) bool {
+    if text.ByteLen(pattern) > 1024 return false
+    var cursor u64 = 0
+    var end = text.ByteLen(pattern)
+    if cursor < end && applicationByteAt(pattern, cursor) == 94 {
+        cursor += 1
+    }
+    if end > cursor && applicationByteAt(pattern, end - 1) == 36 &&
+        !applicationEscapedPatternByte(pattern, end - 1) {
+        end -= 1
+    }
+    while cursor < end {
+        const current = applicationByteAt(pattern, cursor)
+        if current == 42 || current == 43 || current == 63 || current == 36 ||
+            current == 94 || current == 40 || current == 41 || current == 124 ||
+            current == 123 || current == 125 {
+            return false
+        }
+        if current == 92 {
+            cursor += 2
+            if cursor > end return false
+        } else {
+            if current == 91 {
+                cursor += 1
+                if cursor < end && applicationByteAt(pattern, cursor) == 94 {
+                    cursor += 1
+                }
+                const contents = cursor
+                var closed = false
+                while cursor < end {
+                    if applicationByteAt(pattern, cursor) == 92 {
+                        cursor += 2
+                        if cursor > end return false
+                        continue
+                    }
+                    if applicationByteAt(pattern, cursor) == 93 {
+                        closed = true
+                        break
+                    }
+                    cursor += 1
+                }
+                if !closed || cursor == contents return false
+                cursor += 1
+            } else {
+                cursor += 1
+            }
+        }
+        if cursor < end {
+            const quantifier = applicationByteAt(pattern, cursor)
+            if quantifier == 42 || quantifier == 43 || quantifier == 63 {
+                cursor += 1
+                if cursor < end {
+                    const repeated = applicationByteAt(pattern, cursor)
+                    if repeated == 42 || repeated == 43 || repeated == 63 {
+                        return false
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+fn applicationValidationFieldMetadata(
+    &program firProgram,
+    &field firStructField
+) bool {
+    applicationHasAttribute(
+        &program, &field.attributes, "foundation.validation.Required") ||
+        applicationHasAttribute(
+        &program, &field.attributes, "foundation.validation.Min") ||
+        applicationHasAttribute(
+        &program, &field.attributes, "foundation.validation.Max") ||
+        applicationHasAttribute(
+        &program, &field.attributes, "foundation.validation.Email") ||
+        applicationHasAttribute(
+        &program, &field.attributes, "foundation.validation.Pattern") ||
+        applicationHasAttribute(
+        &program, &field.attributes, "foundation.validation.Nested")
+}
+
+fn applicationStructValidationMetadata(
+    &program firProgram,
+    &type firStruct
+) bool {
+    var index u64 = 0
+    while index < type.fields.len() {
+        var field = match type.fields.take(index) {
+            None: panic("struct field slot is empty")
+            Some(field): field
+        }
+        const found = applicationValidationFieldMetadata(&program, &field)
+        type.fields.restore(index, $field)
+        if found return true
+        index += 1
+    }
+    index = 0
+    while index < program.functions.len() {
+        var function = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(function): function
+        }
+        const found = applicationOwnerName(&function) == type.name &&
+            applicationHasAttribute(
+            &program, &function.attributes, "foundation.validation.Rule")
+        program.functions.restore(index, $function)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn applicationValidationRuleMethod(
+    &program firProgram,
+    &function firFunction
+) bool {
+    var viewReceiver = false
+    const selectedReceiver = replace function.receiver with .None
+    match selectedReceiver {
+        None: {}
+        Some(receiver): {
+            viewReceiver = receiver.Matches("View")
+            function.receiver = .Some(receiver)
+        }
+    }
+    if !viewReceiver || function.generic || function.taskFunction || function.blocking ||
+        function.callback || function.actionFunction ||
+        !function.returnType.kind.Matches("Void") || function.parameters.len() != 2 {
+        return false
+    }
+    const local = match function.parameters.take(1) {
+        None: panic("function parameter slot is empty")
+        Some(local): local
+    }
+    function.parameters.restore(1, local)
+    if local >= function.locals.len() return false
+    var parameter = match function.locals.take(local) {
+        None: panic("function local slot is empty")
+        Some(parameter): parameter
+    }
+    const valid = parameter.type.kind.Matches("Edit") &&
+        applicationNamedStruct(
+        &program, &parameter.type, "foundation.validation.Errors")
+    function.locals.restore(local, $parameter)
+    valid
+}
+
+fn applicationValidationTarget(
+    &program firProgram,
+    currentID u64,
+    &current firStruct,
+    &field firStructField
+) bool {
+    var nested = applicationBaseType(&field.type)
+    if !nested.kind.Matches("StructValue") ||
+        nested.declaration >= program.structs.len() {
+        return false
+    }
+    if nested.declaration == currentID {
+        return applicationHasAttribute(
+            &program, &current.attributes, "foundation.validation.Validatable")
+    }
+    var declaration = match program.structs.take(nested.declaration) {
+        None: panic("struct slot is empty")
+        Some(declaration): declaration
+    }
+    const valid = applicationHasAttribute(
+        &program, &declaration.attributes, "foundation.validation.Validatable")
+    program.structs.restore(nested.declaration, $declaration)
+    valid
+}
+
+fn applicationPlanValidationField(
+    &program firProgram,
+    typeID u64,
+    &type firStruct,
+    fieldIndex u64,
+    &field firStructField,
+    &plan applicationValidationPlan,
+    &diagnostics diagnostics
+) void {
+    var minimum Option<applicationNumericAttribute> = .None
+    var maximum Option<applicationNumericAttribute> = .None
+    var attributeIndex u64 = 0
+    while attributeIndex < field.attributes.len() {
+        var use = match field.attributes.take(attributeIndex) {
+            None: panic("attribute use slot is empty")
+            Some(use): use
+        }
+        const name = applicationAttributeUseName(&program, &use)
+        if name == "foundation.validation.Required" {
+            var base = applicationBaseType(&field.type)
+            if !base.kind.Matches("StringValue") &&
+                !applicationNamedStruct(&program, &base, "std.collections.List") {
+                diagnostics.reportError(
+                    "FDN2387",
+                    "@validation.Required requires String or List field: " + field.name,
+                    type.sourceSpan
+                )
+            } else {
+                discard plan.rules.add(applicationValidationRule {
+                    field = fieldIndex
+                    kind = .Required
+                    argument = .None
+                    numericLimit = 0.0
+                })
+            }
+        } else {
+            if name == "foundation.validation.Email" {
+                var base = applicationBaseType(&field.type)
+                if !base.kind.Matches("StringValue") {
+                    diagnostics.reportError(
+                        "FDN2387", "@validation.Email requires String field: " +
+                        field.name, type.sourceSpan)
+                } else {
+                    discard plan.rules.add(applicationValidationRule {
+                        field = fieldIndex
+                        kind = .Email
+                        argument = .None
+                        numericLimit = 0.0
+                    })
+                }
+            } else {
+                if name == "foundation.validation.Pattern" {
+                    var base = applicationBaseType(&field.type)
+                    var expression = ""
+                    match applicationUseString(&use, 0) {
+                        None: {}
+                        Some(value): { expression = value }
+                    }
+                    if !base.kind.Matches("StringValue") {
+                        diagnostics.reportError(
+                            "FDN2387", "@validation.Pattern requires String field: " +
+                            field.name, type.sourceSpan)
+                    } else {
+                        if !applicationValidValidationPattern(expression) {
+                            diagnostics.reportError(
+                                "FDN2391",
+                                "validation pattern uses invalid or unsupported syntax: " +
+                                field.name,
+                                type.sourceSpan
+                            )
+                        } else {
+                            discard plan.rules.add(applicationValidationRule {
+                                field = fieldIndex
+                                kind = .Pattern
+                                argument = .Some(expression)
+                                numericLimit = 0.0
+                            })
+                        }
+                    }
+                } else {
+                    if name == "foundation.validation.Nested" {
+                        if !applicationValidationTarget(
+                            &program, typeID, &type, &field) {
+                            diagnostics.reportError(
+                                "FDN2387",
+                                "@validation.Nested requires a concrete " +
+                                "@validation.Validatable struct field: " + field.name,
+                                type.sourceSpan
+                            )
+                        } else {
+                            discard plan.rules.add(applicationValidationRule {
+                                field = fieldIndex
+                                kind = .Nested
+                                argument = .None
+                                numericLimit = 0.0
+                            })
+                        }
+                    } else {
+                        if name == "foundation.validation.Min" ||
+                            name == "foundation.validation.Max" {
+                            var base = applicationBaseType(&field.type)
+                            const selected = applicationUseNumeric(&use, 0)
+                            var valid = isSemanticInteger(&base) ||
+                                base.kind.Matches("F32") || base.kind.Matches("F64")
+                            var value = applicationNumericAttribute {
+                                literal = ""
+                                value = 0.0
+                                integer = false
+                                magnitude = 0
+                                negative = false
+                            }
+                            match selected {
+                                None: { valid = false }
+                                Some(found): { value = found }
+                            }
+                            if valid && isSemanticInteger(&base) {
+                                valid = semanticIntegerLiteralFits(
+                                    &base, value.magnitude, value.negative)
+                            }
+                            if valid && base.kind.Matches("F32") {
+                                valid = value.value >= -3.402823466e38 &&
+                                    value.value <= 3.402823466e38
+                            }
+                            if !valid {
+                                diagnostics.reportError(
+                                    "FDN2387",
+                                    "numeric validation limit requires a numeric field: " +
+                                    field.name,
+                                    type.sourceSpan
+                                )
+                            } else {
+                                const kind applicationValidationRuleKind = .Min if
+                                name == "foundation.validation.Min" else .Max
+                                const stored = applicationNumericAttribute {
+                                    literal = text.Copy(value.literal)
+                                    value = value.value
+                                    integer = value.integer
+                                    magnitude = value.magnitude
+                                    negative = value.negative
+                                }
+                                if kind.Matches("Min") {
+                                    minimum = .Some(stored)
+                                } else {
+                                    maximum = .Some(stored)
+                                }
+                                discard plan.rules.add(applicationValidationRule {
+                                    field = fieldIndex
+                                    kind = kind
+                                    argument = .Some(text.Copy(value.literal))
+                                    numericLimit = value.value
+                                })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        field.attributes.restore(attributeIndex, $use)
+        attributeIndex += 1
+    }
+    const selectedMinimum = replace minimum with .None
+    const selectedMaximum = replace maximum with .None
+    match selectedMinimum {
+        None: {}
+        Some(minimumValue): match selectedMaximum {
+            None: {}
+            Some(maximumValue): {
+                if applicationNumericGreater(minimumValue, maximumValue) {
+                    diagnostics.reportError(
+                        "FDN2388", "validation minimum exceeds maximum: " +
+                        field.name, type.sourceSpan)
+                }
+            }
+        }
+    }
+}
+
+fn applicationValidationPlanIndex(
+    &model applicationModel,
+    type u64
+) Option<u64> {
+    var index u64 = 0
+    while index < model.validations.len() {
+        var plan = match model.validations.take(index) {
+            None: panic("application validation plan slot is empty")
+            Some(plan): plan
+        }
+        const found = plan.type == type
+        model.validations.restore(index, $plan)
+        if found return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn applicationVisitValidation(
+    &program firProgram,
+    &model applicationModel,
+    index u64,
+    &states arena<u64>,
+    &diagnostics diagnostics
+) void {
+    const previousState = match states.take(index) {
+        None: panic("validation state slot is empty")
+        Some(value): value
+    }
+    discard previousState
+    states.restore(index, 1)
+    var plan = match model.validations.take(index) {
+        None: panic("application validation plan slot is empty")
+        Some(plan): plan
+    }
+    const typeID = plan.type
+    const ruleCount = plan.rules.len()
+    model.validations.restore(index, $plan)
+    var type = match program.structs.take(typeID) {
+        None: panic("validation struct slot is empty")
+        Some(type): type
+    }
+    const typeName = text.Copy(type.name)
+    const typeSpan = type.sourceSpan
+    program.structs.restore(typeID, $type)
+    var ruleIndex u64 = 0
+    while ruleIndex < ruleCount {
+        plan = match model.validations.take(index) {
+            None: panic("application validation plan slot is empty")
+            Some(value): value
+        }
+        var rule = match plan.rules.take(ruleIndex) {
+            None: panic("validation rule slot is empty")
+            Some(rule): rule
+        }
+        if rule.kind.Matches("Nested") {
+            type = match program.structs.take(typeID) {
+                None: panic("validation struct slot is empty")
+                Some(value): value
+            }
+            var field = match type.fields.take(rule.field) {
+                None: panic("struct field slot is empty")
+                Some(field): field
+            }
+            var nested = applicationBaseType(&field.type)
+            type.fields.restore(rule.field, $field)
+            program.structs.restore(typeID, $type)
+            plan.rules.restore(ruleIndex, $rule)
+            model.validations.restore(index, $plan)
+            match applicationValidationPlanIndex(&model, nested.declaration) {
+                None: {}
+                Some(target): {
+                    const state = match states.take(target) {
+                        None: panic("validation state slot is empty")
+                        Some(state): state
+                    }
+                    states.restore(target, state)
+                    if state == 1 {
+                        diagnostics.reportError(
+                            "FDN2390", "nested validation cycle through " + typeName,
+                            typeSpan)
+                    }
+                    if state == 0 {
+                        applicationVisitValidation(
+                            &program, &model, target, &states, &diagnostics)
+                    }
+                }
+            }
+        } else {
+            plan.rules.restore(ruleIndex, $rule)
+            model.validations.restore(index, $plan)
+        }
+        ruleIndex += 1
+    }
+    const activeState = match states.take(index) {
+        None: panic("validation state slot is empty")
+        Some(value): value
+    }
+    discard activeState
+    states.restore(index, 2)
+}
+
+fn applicationPlanValidations(
+    &program firProgram,
+    &model applicationModel,
+    &diagnostics diagnostics
+) void {
+    var typeIndex u64 = 0
+    while typeIndex < program.structs.len() {
+        var type = match program.structs.take(typeIndex) {
+            None: panic("struct slot is empty")
+            Some(type): type
+        }
+        const local = applicationPackageName(type.name) == model.rootPackage
+        const validatable = applicationHasAttribute(
+            &program, &type.attributes, "foundation.validation.Validatable")
+        const metadata = applicationStructValidationMetadata(&program, &type)
+        if local && !validatable && metadata {
+            diagnostics.reportError(
+                "FDN2385",
+                "validation metadata requires @validation.Validatable on " + type.name,
+                type.sourceSpan
+            )
+        }
+        if local && validatable {
+            if type.typeParameterCount != 0 {
+                diagnostics.reportError(
+                    "FDN2384", "generated validation requires a concrete struct",
+                    type.sourceSpan)
+            } else {
+                const collision = applicationGeneratedMethodCollision(
+                    &program, type.name, "Validate")
+                match collision {
+                    Some(function): diagnostics.reportError(
+                        "FDN2386",
+                        "generated validation method already exists for " + type.name,
+                        applicationFunctionSpan(&program, function)
+                    )
+                    None: {
+                        var plan = applicationValidationPlan {
+                            type = typeIndex
+                            rules = newArena<applicationValidationRule>()
+                            customRules = newArena<u64>()
+                        }
+                        var fieldIndex u64 = 0
+                        while fieldIndex < type.fields.len() {
+                            var field = match type.fields.take(fieldIndex) {
+                                None: panic("struct field slot is empty")
+                                Some(field): field
+                            }
+                            applicationPlanValidationField(
+                                &program,
+                                typeIndex,
+                                &type,
+                                fieldIndex,
+                                &field,
+                                &plan,
+                                &diagnostics
+                            )
+                            type.fields.restore(fieldIndex, $field)
+                            fieldIndex += 1
+                        }
+                        var functionIndex u64 = 0
+                        while functionIndex < program.functions.len() {
+                            var function = match program.functions.take(functionIndex) {
+                                None: panic("function slot is empty")
+                                Some(function): function
+                            }
+                            if applicationOwnerName(&function) == type.name &&
+                                applicationHasAttribute(
+                                &program,
+                                &function.attributes,
+                                "foundation.validation.Rule") {
+                                if !applicationValidationRuleMethod(&program, &function) {
+                                    diagnostics.reportError(
+                                        "FDN2392",
+                                        "@validation.Rule requires fn name(self, &errors " +
+                                        "validation.Errors) void",
+                                        function.sourceSpan
+                                    )
+                                } else {
+                                    discard plan.customRules.add(functionIndex)
+                                }
+                            }
+                            program.functions.restore(functionIndex, $function)
+                            functionIndex += 1
+                        }
+                        discard model.validations.add($plan)
+                    }
+                }
+            }
+        }
+        program.structs.restore(typeIndex, $type)
+        typeIndex += 1
+    }
+    if model.validations.len() == 0 return
+    applicationAddImport(&model, "foundation.validation")
+    var states = newArena<u64>()
+    var index u64 = 0
+    while index < model.validations.len() {
+        discard states.add(0)
+        index += 1
+    }
+    index = 0
+    while index < model.validations.len() {
+        const state = match states.take(index) {
+            None: panic("validation state slot is empty")
+            Some(state): state
+        }
+        states.restore(index, state)
+        if state == 0 {
+            applicationVisitValidation(
+                &program, &model, index, &states, &diagnostics)
+        }
+        index += 1
+    }
+}
+
+fn applicationValidationArgument(&rule applicationValidationRule) String {
+    const selected = replace rule.argument with .None
+    match selected {
+        None: ""
+        Some(value): {
+            const result = text.Copy(value)
+            rule.argument = .Some(value)
+            result
+        }
+    }
+}
+
+fn applicationEmitValidations(
+    &program firProgram,
+    &model applicationModel,
+    &output String
+) void {
+    if model.validations.len() == 0 return
+    const errorsType = applicationQualifiedName(
+        &model, "foundation.validation.Errors")
+    const newErrors = applicationQualifiedName(
+        &model, "foundation.validation.NewErrors")
+    const emailFunction = applicationQualifiedName(
+        &model, "foundation.validation.IsEmail")
+    const patternFunction = applicationQualifiedName(
+        &model, "foundation.validation.IsPattern")
+    var index u64 = 0
+    while index < model.validations.len() {
+        var plan = match model.validations.take(index) {
+            None: panic("application validation plan slot is empty")
+            Some(plan): plan
+        }
+        var type = match program.structs.take(plan.type) {
+            None: panic("validation struct slot is empty")
+            Some(type): type
+        }
+        applicationAppend(
+            &output,
+            "methods " + applicationQualifiedName(&model, type.name) + " {\n" +
+            "    fn Validate(self) own " + errorsType + " {\n" +
+            "        var errors = " + newErrors + "()\n"
+        )
+        var ruleIndex u64 = 0
+        while ruleIndex < plan.rules.len() {
+            var rule = match plan.rules.take(ruleIndex) {
+                None: panic("validation rule slot is empty")
+                Some(rule): rule
+            }
+            var field = match type.fields.take(rule.field) {
+                None: panic("struct field slot is empty")
+                Some(field): field
+            }
+            const argument = applicationValidationArgument(&rule)
+            if rule.kind.Matches("Nested") {
+                applicationAppend(
+                    &output,
+                    "        errors.AddNested(\n" +
+                    "            " + applicationStringLiteral(field.name) + ",\n" +
+                    "            $self." + field.name + ".Validate()\n" +
+                    "        )\n"
+                )
+            } else {
+                var condition = ""
+                var message = ""
+                if rule.kind.Matches("Required") {
+                    condition = "!self." + field.name
+                    message = "required"
+                }
+                if rule.kind.Matches("Min") {
+                    condition = "self." + field.name + " < " + argument
+                    message = "min " + argument
+                }
+                if rule.kind.Matches("Max") {
+                    condition = "self." + field.name + " > " + argument
+                    message = "max " + argument
+                }
+                if rule.kind.Matches("Email") {
+                    condition = "!" + emailFunction + "(self." + field.name + ")"
+                    message = "invalid email"
+                }
+                if rule.kind.Matches("Pattern") {
+                    condition = "!" + patternFunction + "(self." + field.name + ", " +
+                        applicationStringLiteral(argument) + ")"
+                    message = "pattern " + argument
+                }
+                applicationAppend(
+                    &output,
+                    "        if " + condition + " {\n" +
+                    "            errors.Add(\n" +
+                    "                ." + rule.kind.Name() + ",\n" +
+                    "                " + applicationStringLiteral(field.name) + ",\n" +
+                    "                " + applicationStringLiteral(message) + "\n" +
+                    "            )\n" +
+                    "        }\n"
+                )
+            }
+            type.fields.restore(rule.field, $field)
+            plan.rules.restore(ruleIndex, $rule)
+            ruleIndex += 1
+        }
+        var customIndex u64 = 0
+        while customIndex < plan.customRules.len() {
+            const functionIndex = match plan.customRules.take(customIndex) {
+                None: panic("validation custom rule slot is empty")
+                Some(functionIndex): functionIndex
+            }
+            plan.customRules.restore(customIndex, functionIndex)
+            var function = match program.functions.take(functionIndex) {
+                None: panic("function slot is empty")
+                Some(function): function
+            }
+            applicationAppend(
+                &output,
+                "        self." + applicationShortName(function.name) + "(&errors)\n"
+            )
+            program.functions.restore(functionIndex, $function)
+            customIndex += 1
+        }
+        applicationAppend(&output, "        errors\n    }\n}\n\n")
+        program.structs.restore(plan.type, $type)
+        model.validations.restore(index, $plan)
+        index += 1
+    }
+}

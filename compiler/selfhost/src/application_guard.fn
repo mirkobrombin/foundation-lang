@@ -1,0 +1,452 @@
+package foundation.compiler
+
+import std.format
+
+fn applicationStructGuardMetadata(
+    &program firProgram,
+    &type firStruct
+) bool {
+    if applicationHasAttribute(
+        &program, &type.attributes, "foundation.guard.Allow") {
+        return true
+    }
+    var index u64 = 0
+    while index < type.fields.len() {
+        var field = match type.fields.take(index) {
+            None: panic("struct field slot is empty")
+            Some(field): field
+        }
+        const found = applicationHasAttribute(
+            &program, &field.attributes, "foundation.guard.Dynamic")
+        type.fields.restore(index, $field)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn applicationPlanGuardStaticRules(
+    &program firProgram,
+    &type firStruct,
+    &plan applicationGuardPlan,
+    &diagnostics diagnostics
+) void {
+    var seen = newArena<String>()
+    var index u64 = 0
+    while index < type.attributes.len() {
+        var use = match type.attributes.take(index) {
+            None: panic("attribute use slot is empty")
+            Some(use): use
+        }
+        if applicationAttributeUseName(&program, &use) == "foundation.guard.Allow" {
+            var role = ""
+            var operation = ""
+            match applicationUseString(&use, 0) {
+                None: {}
+                Some(value): { role = value }
+            }
+            match applicationUseString(&use, 1) {
+                None: {}
+                Some(value): { operation = value }
+            }
+            if !role || !operation {
+                diagnostics.reportError(
+                    "FDN2433", "guard role and operation cannot be empty",
+                    type.sourceSpan)
+            } else {
+                const key = role + ":" + operation
+                if applicationStringContains(&seen, key) {
+                    diagnostics.reportError(
+                        "FDN2434", "duplicate guard rule " + key,
+                        type.sourceSpan)
+                } else {
+                    discard seen.add($key)
+                    discard plan.staticRules.add(applicationGuardStaticRule {
+                        role = role
+                        operation = operation
+                    })
+                }
+            }
+        }
+        type.attributes.restore(index, $use)
+        index += 1
+    }
+}
+
+fn applicationPlanGuardDynamicRules(
+    &program firProgram,
+    &type firStruct,
+    &plan applicationGuardPlan,
+    &diagnostics diagnostics
+) void {
+    var seen = newArena<String>()
+    var fieldIndex u64 = 0
+    while fieldIndex < type.fields.len() {
+        var field = match type.fields.take(fieldIndex) {
+            None: panic("struct field slot is empty")
+            Some(field): field
+        }
+        var attributeIndex u64 = 0
+        while attributeIndex < field.attributes.len() {
+            var use = match field.attributes.take(attributeIndex) {
+                None: panic("attribute use slot is empty")
+                Some(use): use
+            }
+            if applicationAttributeUseName(&program, &use) ==
+                "foundation.guard.Dynamic" {
+                var operation = ""
+                match applicationUseString(&use, 0) {
+                    None: {}
+                    Some(value): { operation = value }
+                }
+                if !operation {
+                    diagnostics.reportError(
+                        "FDN2433", "guard operation cannot be empty: " + field.name,
+                        type.sourceSpan)
+                } else {
+                    var base = applicationBaseType(&field.type)
+                    var valid = true
+                    var kind = applicationGuardDynamicKind.Role
+                    if base.kind.Matches("StringValue") {
+                        kind = .Role
+                    } else {
+                        if applicationNamedStruct(
+                            &program, &base, "foundation.guard.Relationships") {
+                            kind = .Relationships
+                        } else {
+                            valid = false
+                            diagnostics.reportError(
+                                "FDN2435",
+                                "@guard.Dynamic requires String or " +
+                                "guard.Relationships field: " + field.name,
+                                type.sourceSpan
+                            )
+                        }
+                    }
+                    const key = format.U64(fieldIndex) + ":" + operation
+                    if valid && applicationStringContains(&seen, key) {
+                        diagnostics.reportError(
+                            "FDN2434", "duplicate dynamic guard rule " + field.name +
+                            ":" + operation, type.sourceSpan)
+                    } else {
+                        if valid {
+                            discard seen.add($key)
+                            discard plan.dynamicRules.add(applicationGuardDynamicRule {
+                                field = fieldIndex
+                                operation = operation
+                                kind = kind
+                            })
+                        }
+                    }
+                }
+            }
+            field.attributes.restore(attributeIndex, $use)
+            attributeIndex += 1
+        }
+        type.fields.restore(fieldIndex, $field)
+        fieldIndex += 1
+    }
+}
+
+fn applicationPlanGuards(
+    &program firProgram,
+    &model applicationModel,
+    &diagnostics diagnostics
+) void {
+    var typeIndex u64 = 0
+    while typeIndex < program.structs.len() {
+        var type = match program.structs.take(typeIndex) {
+            None: panic("struct slot is empty")
+            Some(type): type
+        }
+        const local = applicationPackageName(type.name) == model.rootPackage
+        const guarded = applicationHasAttribute(
+            &program, &type.attributes, "foundation.guard.Policy")
+        const metadata = applicationStructGuardMetadata(&program, &type)
+        if local && !guarded && metadata {
+            diagnostics.reportError(
+                "FDN2430", "guard metadata requires @guard.Policy on " + type.name,
+                type.sourceSpan)
+        }
+        if local && guarded {
+            if type.typeParameterCount != 0 {
+                diagnostics.reportError(
+                    "FDN2431", "generated guard requires a concrete struct",
+                    type.sourceSpan)
+            } else {
+                var collision = false
+                var names = newArena<String>()
+                discard names.add("Can")
+                discard names.add("GetRoles")
+                var nameIndex u64 = 0
+                while nameIndex < names.len() {
+                    const name = match names.take(nameIndex) {
+                        None: panic("guard method name slot is empty")
+                        Some(name): name
+                    }
+                    match applicationGeneratedMethodCollision(&program, type.name, name) {
+                        None: {}
+                        Some(function): {
+                            collision = true
+                            diagnostics.reportError(
+                                "FDN2432",
+                                "generated guard method already exists for " + type.name +
+                                ": " + name,
+                                applicationFunctionSpan(&program, function)
+                            )
+                        }
+                    }
+                    names.restore(nameIndex, $name)
+                    nameIndex += 1
+                }
+                if !collision {
+                    var plan = applicationGuardPlan {
+                        type = typeIndex
+                        staticRules = newArena<applicationGuardStaticRule>()
+                        dynamicRules = newArena<applicationGuardDynamicRule>()
+                    }
+                    applicationPlanGuardStaticRules(
+                        &program, &type, &plan, &diagnostics)
+                    applicationPlanGuardDynamicRules(
+                        &program, &type, &plan, &diagnostics)
+                    if plan.staticRules.len() + plan.dynamicRules.len() > 65536 {
+                        diagnostics.reportError(
+                            "FDN2436", "guard policy exceeds 65536 rules",
+                            type.sourceSpan)
+                    }
+                    discard model.guards.add($plan)
+                }
+            }
+        }
+        program.structs.restore(typeIndex, $type)
+        typeIndex += 1
+    }
+    if model.guards.len() != 0 {
+        applicationAddImport(&model, "foundation.guard")
+        applicationAddImport(&model, "std.text")
+    }
+}
+
+fn applicationGuardOperationCondition(operation String) String {
+    "true" if operation == "*" else
+    "operation == " + applicationStringLiteral(operation)
+}
+
+fn applicationEmitGuardCan(
+    &program firProgram,
+    &model applicationModel,
+    &type firStruct,
+    &guard applicationGuardPlan,
+    &output String
+) void {
+    const isRole = applicationQualifiedName(&model, "foundation.guard.IsRole")
+    const roleSourceError = applicationQualifiedName(
+        &model, "foundation.guard.RoleSourceError")
+    const copy = applicationQualifiedName(&model, "std.text.Copy")
+    var index u64 = 0
+    while index < guard.staticRules.len() {
+        var rule = match guard.staticRules.take(index) {
+            None: panic("static guard rule slot is empty")
+            Some(rule): rule
+        }
+        applicationAppend(
+            &output,
+            "        if " + applicationGuardOperationCondition(rule.operation) + " {\n" +
+            "            guardRuleFound = true\n"
+        )
+        if rule.role == "*" {
+            applicationAppend(&output, "            return .Ok\n")
+        } else {
+            applicationAppend(
+                &output,
+                "            if identity.HasRole(" +
+                applicationStringLiteral(rule.role) + ") return .Ok\n"
+            )
+        }
+        applicationAppend(&output, "        }\n")
+        guard.staticRules.restore(index, $rule)
+        index += 1
+    }
+    index = 0
+    while index < guard.dynamicRules.len() {
+        var rule = match guard.dynamicRules.take(index) {
+            None: panic("dynamic guard rule slot is empty")
+            Some(rule): rule
+        }
+        var field = match type.fields.take(rule.field) {
+            None: panic("struct field slot is empty")
+            Some(field): field
+        }
+        applicationAppend(
+            &output,
+            "        if " + applicationGuardOperationCondition(rule.operation) + " {\n" +
+            "            guardRuleFound = true\n"
+        )
+        if rule.kind.Matches("Role") {
+            applicationAppend(
+                &output,
+                "            if " + isRole + "(self." + field.name +
+                ") && identity.HasRole(self." + field.name + ") return .Ok\n"
+            )
+        } else {
+            const suffix = format.U64(rule.field)
+            applicationAppend(
+                &output,
+                "            const guardAllowed" + suffix + " = self." + field.name +
+                ".Allows(identity) else sourceError {\n" +
+                "                return .Err(.RoleSource(" + roleSourceError + " {\n" +
+                "                    Field = " + applicationStringLiteral(field.name) +
+                "\n                    Error = sourceError\n" +
+                "                }))\n" +
+                "            }\n" +
+                "            if guardAllowed" + suffix + " return .Ok\n"
+            )
+        }
+        applicationAppend(&output, "        }\n")
+        type.fields.restore(rule.field, $field)
+        guard.dynamicRules.restore(index, $rule)
+        index += 1
+    }
+    applicationAppend(
+        &output,
+        "        if !guardRuleFound return .Err(.NoPolicy(" + copy +
+        "(operation)))\n" +
+        "        .Err(.PermissionDenied(" + copy + "(operation)))\n" +
+        "    }\n"
+    )
+}
+
+fn applicationEmitGuardRoles(
+    &program firProgram,
+    &model applicationModel,
+    &type firStruct,
+    &guard applicationGuardPlan,
+    &output String
+) void {
+    const isRole = applicationQualifiedName(&model, "foundation.guard.IsRole")
+    const roleSourceError = applicationQualifiedName(
+        &model, "foundation.guard.RoleSourceError")
+    var roleIndex u64 = 0
+    var index u64 = 0
+    while index < guard.staticRules.len() {
+        var rule = match guard.staticRules.take(index) {
+            None: panic("static guard rule slot is empty")
+            Some(rule): rule
+        }
+        if rule.role != "*" {
+            const suffix = format.U64(roleIndex)
+            applicationAppend(
+                &output,
+                "        if identity.HasRole(" + applicationStringLiteral(rule.role) +
+                ") {\n" +
+                "            const guardAdded" + suffix + " = guardRoles.Add(" +
+                applicationStringLiteral(rule.role) + ") else roleError {\n" +
+                "                discard guardRoles\n" +
+                "                discard roleError\n" +
+                "                return .Err(.TooManyRoles)\n" +
+                "            }\n" +
+                "            discard guardAdded" + suffix + "\n" +
+                "        }\n"
+            )
+            roleIndex += 1
+        }
+        guard.staticRules.restore(index, $rule)
+        index += 1
+    }
+    index = 0
+    while index < guard.dynamicRules.len() {
+        var rule = match guard.dynamicRules.take(index) {
+            None: panic("dynamic guard rule slot is empty")
+            Some(rule): rule
+        }
+        var field = match type.fields.take(rule.field) {
+            None: panic("struct field slot is empty")
+            Some(field): field
+        }
+        const suffix = format.U64(roleIndex)
+        if rule.kind.Matches("Role") {
+            applicationAppend(
+                &output,
+                "        if " + isRole + "(self." + field.name + ") {\n" +
+                "            const guardAdded" + suffix +
+                " = guardRoles.Add(self." + field.name + ") else roleError {\n" +
+                "                discard guardRoles\n" +
+                "                discard roleError\n" +
+                "                return .Err(.TooManyRoles)\n" +
+                "            }\n" +
+                "            discard guardAdded" + suffix + "\n" +
+                "        }\n"
+            )
+        } else {
+            applicationAppend(
+                &output,
+                "        const guardDerived" + suffix + " = self." + field.name +
+                ".Roles(identity.ID()) else sourceError {\n" +
+                "            discard guardRoles\n" +
+                "            return .Err(.RoleSource(" + roleSourceError + " {\n" +
+                "                Field = " + applicationStringLiteral(field.name) + "\n" +
+                "                Error = sourceError\n" +
+                "            }))\n" +
+                "        }\n" +
+                "        guardRoles.Merge($guardDerived" + suffix +
+                ") else roleError {\n" +
+                "            discard guardRoles\n" +
+                "            discard roleError\n" +
+                "            return .Err(.TooManyRoles)\n" +
+                "        }\n"
+            )
+        }
+        roleIndex += 1
+        type.fields.restore(rule.field, $field)
+        guard.dynamicRules.restore(index, $rule)
+        index += 1
+    }
+    applicationAppend(&output, "        .Ok(guardRoles)\n    }\n")
+}
+
+fn applicationEmitGuards(
+    &program firProgram,
+    &model applicationModel,
+    &output String
+) void {
+    const identityType = applicationQualifiedName(
+        &model, "foundation.guard.Identity")
+    const errorType = applicationQualifiedName(&model, "foundation.guard.Error")
+    const rolesType = applicationQualifiedName(&model, "foundation.guard.Roles")
+    const newRoles = applicationQualifiedName(&model, "foundation.guard.NewRoles")
+    var index u64 = 0
+    while index < model.guards.len() {
+        var guard = match model.guards.take(index) {
+            None: panic("application guard plan slot is empty")
+            Some(guard): guard
+        }
+        var type = match program.structs.take(guard.type) {
+            None: panic("guard struct slot is empty")
+            Some(type): type
+        }
+        applicationAppend(
+            &output,
+            "methods " + applicationQualifiedName(&model, type.name) + " {\n" +
+            "    fn Can(\n" +
+            "        self,\n" +
+            "        identity " + identityType + ",\n" +
+            "        operation String\n" +
+            "    ) Result<void, " + errorType + "> {\n" +
+            "        var guardRuleFound = false\n"
+        )
+        applicationEmitGuardCan(&program, &model, &type, &guard, &output)
+        applicationAppend(
+            &output,
+            "\n    fn GetRoles(\n" +
+            "        self,\n" +
+            "        identity " + identityType + "\n" +
+            "    ) Result<own " + rolesType + ", " + errorType + "> {\n" +
+            "        var guardRoles = " + newRoles + "()\n"
+        )
+        applicationEmitGuardRoles(&program, &model, &type, &guard, &output)
+        applicationAppend(&output, "}\n\n")
+        program.structs.restore(guard.type, $type)
+        model.guards.restore(index, $guard)
+        index += 1
+    }
+}

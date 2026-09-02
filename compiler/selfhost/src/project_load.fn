@@ -64,7 +64,26 @@ fn addProjectInputFile(
     if arenaContainsString(&seen, identity) return
     discard seen.add(text.Copy(identity))
     discard inputs.add(projectInputFile {
-        identity = identity displayPath = text.Copy(displayPath)
+        identity = identity
+        displayPath = text.Copy(displayPath)
+        contents = .None
+    })
+}
+
+fn addProjectInputOverlay(
+    &inputs arena<projectInputFile>,
+    &seen arena<String>,
+    pathValue String,
+    displayPath String,
+    contents String
+) void {
+    const identity = projectSourceIdentity(pathValue)
+    if arenaContainsString(&seen, identity) return
+    discard seen.add(text.Copy(identity))
+    discard inputs.add(projectInputFile {
+        identity = identity
+        displayPath = text.Copy(displayPath)
+        contents = .Some(text.Copy(contents))
     })
 }
 
@@ -164,7 +183,7 @@ fn findProjectSdkRoot(input String) Option<String> {
     .None
 }
 
-fn appendProjectSdkSources(
+fn appendProjectSdkPrelude(
     &inputs arena<projectInputFile>,
     &seen arena<String>,
     input String,
@@ -175,17 +194,131 @@ fn appendProjectSdkSources(
         None: true
         Some(value): {
             const standard = path.Join(value, "std")
-            if !appendProjectSourceRoot(
-                &inputs, &seen, standard, standard, "std", "standard library",
-                &diagnostics) {
-                return false
-            }
-            const framework = path.Join(value, "foundation")
             appendProjectSourceRoot(
-                &inputs, &seen, framework, framework, "foundation",
-                "Foundation framework", &diagnostics)
+                &inputs,
+                &seen,
+                path.Join(standard, "prelude"),
+                standard,
+                "std",
+                "standard library",
+                &diagnostics
+            )
         }
     }
+}
+
+fn projectSdkPackagePath(
+    sdkRoot String,
+    prefix String,
+    packageName String
+) String {
+    var result = path.Join(sdkRoot, prefix)
+    var start = text.ByteLen(prefix) + 1
+    const length = text.ByteLen(packageName)
+    while start <= length {
+        var end = length
+        var index = start
+        while index < length {
+            const value = text.ByteAt(packageName, index) else error {
+                discard error
+                panic("package name boundary is invalid")
+            }
+            if value == 46 {
+                end = index
+                break
+            }
+            index += 1
+        }
+        result = path.Join(result, projectSlice(packageName, start, end))
+        if end == length break
+        start = end + 1
+    }
+    result
+}
+
+fn appendProjectSdkPackage(
+    &inputs arena<projectInputFile>,
+    &seen arena<String>,
+    sdkRoot String,
+    packageName String,
+    &diagnostics diagnostics
+) bool {
+    var prefix = ""
+    if text.StartsWith(packageName, "std.") {
+        prefix = "std"
+    } else {
+        if text.StartsWith(packageName, "foundation.") {
+            prefix = "foundation"
+        } else {
+            return true
+        }
+    }
+    const packageRoot = path.Join(sdkRoot, prefix)
+    const candidate = projectSdkPackagePath(sdkRoot, prefix, packageName)
+    const description = "standard library" if prefix == "std" else
+    "Foundation framework"
+    match fs.Kind(candidate) {
+        Ok(kind): {
+            if projectEntryIsDirectory(kind) {
+                return appendProjectSourceRoot(
+                    &inputs,
+                    &seen,
+                    candidate,
+                    packageRoot,
+                    prefix,
+                    description,
+                    &diagnostics
+                )
+            }
+        }
+        Err(error): {
+            discard error
+        }
+    }
+    const source = candidate + ".fn"
+    match fs.Kind(source) {
+        Err(error): {
+            discard error
+        }
+        Ok(kind): {
+            if projectEntryIsFile(kind) {
+                const display = path.Join(
+                    prefix,
+                    projectRelativePath(packageRoot, source)
+                )
+                addProjectInputFile(&inputs, &seen, source, display)
+            }
+        }
+    }
+    true
+}
+
+fn appendProjectSdkImports(
+    &inputs arena<projectInputFile>,
+    &seen arena<String>,
+    sdkRoot String,
+    &imports arena<importDeclaration>,
+    &diagnostics diagnostics
+) bool {
+    if text.IsEmpty(sdkRoot) return true
+    var index u64 = 0
+    while index < imports.len() {
+        const declaration = match imports.take(index) {
+            None: panic("import slot is empty")
+            Some(value): value
+        }
+        const appended = appendProjectSdkPackage(
+            &inputs,
+            &seen,
+            sdkRoot,
+            declaration.packageName,
+            &diagnostics
+        )
+        imports.restore(index, $declaration)
+        if !appended return false
+        index += 1
+    }
+    true
 }
 
 fn reportProjectPackageErrors(
@@ -361,7 +494,7 @@ fn collectProjectInputs(
         }
     }
     discard collected
-    if !appendProjectSdkSources(&inputs, &seen, input, &diagnostics) {
+    if !appendProjectSdkPrelude(&inputs, &seen, input, &diagnostics) {
         return .None
     }
     .Some(inputs)
@@ -387,6 +520,8 @@ fn mergeProjectDiagnostics(
 
 fn parseProjectInputs(
     &inputs arena<projectInputFile>,
+    &seen arena<String>,
+    sdkRoot String,
     directoryOrPackage bool,
     target targetPlatform,
     &loaded loadedProject,
@@ -399,25 +534,40 @@ fn parseProjectInputs(
             None: panic("project input slot is empty")
             Some(value): value
         }
-        const contentsResult = fs.ReadTextSync(input.identity, 67108864)
-        var contents = match contentsResult {
-            Err(error): {
-                discard error
-                discard loaded.sources.add(projectSource {
-                    path = text.Copy(input.displayPath)
-                    contents = ""
-                    identity = text.Copy(input.identity)
-                    packageName = ""
-                })
-                diagnostics.reportError(
-                    "FDN3001", "cannot read source file",
-                    sourceSpan {
-                    offset = 0 length = 0 line = 1 column = 1 source = index
-                })
-                index += 1
-                continue
+        const projectInputFile { identity displayPath contents as provided } = input
+        var contents = ""
+        var readable = true
+        match provided {
+            Some(value): {
+                contents = value
             }
-            Ok(value): value
+            None: {
+                const contentsResult = fs.ReadTextSync(identity, 67108864)
+                match contentsResult {
+                    Err(error): {
+                        discard error
+                        readable = false
+                    }
+                    Ok(value): {
+                        contents = value
+                    }
+                }
+            }
+        }
+        if !readable {
+            discard loaded.sources.add(projectSource {
+                path = text.Copy(displayPath)
+                contents = ""
+                identity = text.Copy(identity)
+                packageName = ""
+            })
+            diagnostics.reportError(
+                "FDN3001", "cannot read source file",
+                sourceSpan {
+                offset = 0 length = 0 line = 1 column = 1 source = index
+            })
+            index += 1
+            continue
         }
         const sourceText = text.Copy(contents)
         const scanResult { tokens diagnostics as scanDiagnostics } = scan(
@@ -437,14 +587,23 @@ fn parseProjectInputs(
         if !source.hasPackageDeclaration {
             source.packageName = "main" if directoryOrPackage else ""
         }
+        if !appendProjectSdkImports(
+            &inputs,
+            &seen,
+            sdkRoot,
+            &source.imports,
+            &diagnostics
+        ) {
+            return
+        }
         discard loaded.sources.add(projectSource {
-            path = text.Copy(input.displayPath)
+            path = text.Copy(displayPath)
             contents = sourceText
-            identity = text.Copy(input.identity)
+            identity = text.Copy(identity)
             packageName = text.Copy(source.packageName)
         })
         discard files.add(own parsedProjectFile {
-            program = source sourcePath = text.Copy(input.displayPath)
+            program = source sourcePath = text.Copy(displayPath)
         })
         index += 1
     }
@@ -468,11 +627,12 @@ fn projectInputIsDirectoryOrPackage(input String) bool {
     }
 }
 
-fn loadProject(
+fn loadProjectInternal(
     input String,
     &diagnostics diagnostics,
     mode projectMode,
-    target targetPlatform
+    target targetPlatform,
+    generated Option<String>
 ) Option<own loadedProject> {
     var loaded = own loadedProject {
         program = newProgram()
@@ -486,8 +646,52 @@ fn loadProject(
         Some(value): value
     }
     var files = newArena<own parsedProjectFile>()
+    var seen = newArena<String>()
+    var index u64 = 0
+    while index < inputs.len() {
+        const value = match inputs.take(index) {
+            None: panic("project input slot is empty")
+            Some(value): value
+        }
+        discard seen.add(text.Copy(value.identity))
+        inputs.restore(index, $value)
+        index += 1
+    }
+    match generated {
+        None: {}
+        Some(contents): {
+            if inputs.len() != 0 {
+                const first = match inputs.take(0) {
+                    None: panic("project input slot is empty")
+                    Some(value): value
+                }
+                const generatedPath = path.Join(
+                    path.Parent(first.identity),
+                    ".foundation.generated.fn"
+                )
+                const generatedDisplayPath = path.Join(
+                    path.Parent(first.displayPath),
+                    ".foundation.generated.fn"
+                )
+                inputs.restore(0, $first)
+                addProjectInputOverlay(
+                    &inputs,
+                    &seen,
+                    generatedPath,
+                    generatedDisplayPath,
+                    contents
+                )
+            }
+        }
+    }
+    const sdkRoot = match findProjectSdkRoot(input) {
+        None: ""
+        Some(value): value
+    }
     parseProjectInputs(
         &inputs,
+        &seen,
+        sdkRoot,
         projectInputIsDirectoryOrPackage(input),
         target,
         &loaded,
@@ -499,7 +703,7 @@ fn loadProject(
     var symbols = collectProjectSymbols(&files)
     rejectProjectCycles(&files, &diagnostics)
     var foundMain = false
-    var index u64 = 0
+    index = 0
     while index < files.len() {
         var file = match files.take(index) {
             None: panic("project file slot is empty")
@@ -513,4 +717,29 @@ fn loadProject(
         index += 1
     }
     .Some(loaded)
+}
+
+fn loadProject(
+    input String,
+    &diagnostics diagnostics,
+    mode projectMode,
+    target targetPlatform
+) Option<own loadedProject> {
+    loadProjectInternal(input, &diagnostics, mode, target, .None)
+}
+
+fn loadProjectWithGenerated(
+    input String,
+    &diagnostics diagnostics,
+    mode projectMode,
+    target targetPlatform,
+    generated String
+) Option<own loadedProject> {
+    loadProjectInternal(
+        input,
+        &diagnostics,
+        mode,
+        target,
+        .Some(text.Copy(generated))
+    )
 }
