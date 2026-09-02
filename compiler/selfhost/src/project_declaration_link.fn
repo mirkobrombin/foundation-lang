@@ -1,0 +1,583 @@
+package foundation.compiler
+
+import std.collections
+import std.format
+import std.text
+
+fn linkProjectAttributeArguments(
+    &source program,
+    &arguments collections.List<attributeArgument>,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    var pending = collections.NewList<attributeArgument>()
+    while !arguments.IsEmpty() {
+        const argument = match arguments.PopFront() {
+            None: panic("attribute argument list invariant failed")
+            Some(value): value
+        }
+        linkProjectExpression(
+            &source, argument.value, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        pending.PushFront($argument)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("attribute argument restore invariant failed")
+            Some(value): value
+        }
+        arguments.PushFront($value)
+    }
+}
+
+fn linkProjectAttributes(
+    &source program,
+    &attributes collections.List<attributeApplication>,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    var pending = collections.NewList<attributeApplication>()
+    while !attributes.IsEmpty() {
+        var application = match attributes.PopFront() {
+            None: panic("attribute list invariant failed")
+            Some(value): value
+        }
+        if application.name != "blocking" {
+            const resolved = match text.Find(application.name, ".") {
+                None: {
+                    const declaration = findProjectDeclaration(
+                        &symbols, currentPackage, application.name, false, true)
+                    if declaration.found {
+                        application.name = text.Copy(declaration.internalName)
+                    }
+                    true
+                }
+                Some(separator): {
+                    const aliasName = projectSlice(application.name, 0, separator)
+                    const member = projectSlice(
+                        application.name, separator + 1,
+                        text.ByteLen(application.name))
+                    const imported = findProjectAlias(&aliases, aliasName)
+                    if !imported.found {
+                        diagnostics.reportError(
+                            "FDN3009", "unknown import alias " + aliasName,
+                            application.span)
+                    } else {
+                        const declaration = findProjectDeclaration(
+                            &symbols, imported.packageName, member, false, true)
+                        if !declaration.found {
+                            diagnostics.reportError(
+                                "FDN3009",
+                                "unknown attribute " + imported.packageName + "." +
+                                member,
+                                application.span
+                            )
+                        } else {
+                            if !declaration.exported {
+                                reportProjectPrivate(
+                                    &diagnostics, imported.packageName, member,
+                                    application.span)
+                            }
+                            application.name = text.Copy(declaration.internalName)
+                        }
+                    }
+                    true
+                }
+            }
+            discard resolved
+        }
+        linkProjectAttributeArguments(
+            &source, &application.arguments, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        pending.PushFront($application)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("attribute restore invariant failed")
+            Some(value): value
+        }
+        attributes.PushFront($value)
+    }
+}
+
+fn linkProjectWorkflowFunction(
+    name String,
+    span sourceSpan,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &diagnostics diagnostics
+) String {
+    match text.Find(name, ".") {
+        None: {
+            const local = findProjectDeclaration(
+                &symbols, currentPackage, name, true, false)
+            if local.found return text.Copy(local.internalName)
+            const prelude = findProjectDeclaration(
+                &symbols, "std.prelude", name, true, false)
+            if prelude.found && prelude.exported {
+                return text.Copy(prelude.internalName)
+            }
+            diagnostics.reportError(
+                "FDN3009", "unknown workflow function " + name, span)
+            text.Copy(name)
+        }
+        Some(separator): {
+            const aliasName = projectSlice(name, 0, separator)
+            const member = projectSlice(name, separator + 1, text.ByteLen(name))
+            const imported = findProjectAlias(&aliases, aliasName)
+            if !imported.found {
+                diagnostics.reportError(
+                    "FDN3009", "unknown import alias " + aliasName, span)
+                return text.Copy(name)
+            }
+            const declaration = findProjectDeclaration(
+                &symbols, imported.packageName, member, true, false)
+            if !declaration.found {
+                diagnostics.reportError(
+                    "FDN3009",
+                    "unknown function " + imported.packageName + "." + member,
+                    span
+                )
+                return text.Copy(name)
+            }
+            if !declaration.exported {
+                reportProjectPrivate(
+                    &diagnostics, imported.packageName, member, span)
+            }
+            text.Copy(declaration.internalName)
+        }
+    }
+}
+
+fn linkProjectParameters(
+    &source program,
+    &parameters collections.List<parameter>,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    var pending = collections.NewList<parameter>()
+    while !parameters.IsEmpty() {
+        var value = match parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(value): value
+        }
+        linkProjectType(
+            &value.type, currentPackage, &aliases, &symbols, &typeParameters,
+            &diagnostics)
+        linkProjectAttributes(
+            &source, &value.attributes, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(value): value
+        }
+        parameters.PushFront($value)
+    }
+}
+
+fn rejectProjectParameterShadows(
+    &parameters collections.List<parameter>,
+    &aliases arena<projectImportAlias>,
+    &diagnostics diagnostics
+) void {
+    var pending = collections.NewList<parameter>()
+    while !parameters.IsEmpty() {
+        const value = match parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(value): value
+        }
+        reportProjectAliasShadow(
+            &aliases, value.name, "parameter", value.span, &diagnostics)
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(value): value
+        }
+        parameters.PushFront($value)
+    }
+}
+
+fn linkProjectConstraints(
+    &constraints collections.List<Option<typeSyntax>>,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    var pending = collections.NewList<Option<typeSyntax>>()
+    while !constraints.IsEmpty() {
+        const constraint = match constraints.PopFront() {
+            None: panic("constraint list invariant failed")
+            Some(value): value
+        }
+        match constraint {
+            None: pending.PushFront(.None)
+            Some(syntax): {
+                var linked = syntax
+                linkProjectType(
+                    &linked, currentPackage, &aliases, &symbols, &typeParameters,
+                    &diagnostics)
+                pending.PushFront(.Some(linked))
+            }
+        }
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("constraint restore invariant failed")
+            Some(value): value
+        }
+        constraints.PushFront($value)
+    }
+}
+
+fn linkProjectWorkflow(
+    &workflow workflowFunction,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    linkProjectType(
+        &workflow.successType, currentPackage, &aliases, &symbols, &typeParameters,
+        &diagnostics)
+    linkProjectType(
+        &workflow.errorType, currentPackage, &aliases, &symbols, &typeParameters,
+        &diagnostics)
+    var steps = collections.NewList<workflowStep>()
+    while !workflow.steps.IsEmpty() {
+        var step = match workflow.steps.PopFront() {
+            None: panic("workflow step list invariant failed")
+            Some(value): value
+        }
+        step.function = linkProjectWorkflowFunction(
+            step.function, step.functionSpan, currentPackage, &aliases, &symbols,
+            &diagnostics)
+        match replace step.compensation with .None {
+            None: {}
+            Some(name): {
+                const span = match step.compensationSpan {
+                    None: step.span
+                    Some(value): value
+                }
+                step.compensation = .Some(linkProjectWorkflowFunction(
+                        name, span, currentPackage, &aliases, &symbols, &diagnostics))
+            }
+        }
+        steps.PushFront($step)
+    }
+    workflow.steps = reverseList($steps)
+    match replace workflow.failureStruct with .None {
+        None: {}
+        Some(name): {
+            workflow.failureStruct = .Some(projectInternalName(
+                    currentPackage, name))
+        }
+    }
+    match replace workflow.failureEnum with .None {
+        None: {}
+        Some(name): {
+            workflow.failureEnum = .Some(projectInternalName(
+                    currentPackage, name))
+        }
+    }
+}
+
+fn linkProjectAttributeDeclarations(
+    &source program,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &diagnostics diagnostics
+) void {
+    var index u64 = 0
+    while index < source.attributeDeclarations.len() {
+        var declaration = match source.attributeDeclarations.take(index) {
+            None: panic("attribute declaration slot is empty")
+            Some(value): value
+        }
+        declaration.packageName = text.Copy(currentPackage)
+        var typeParameters = collections.NewList<String>()
+        linkProjectParameters(
+            &source, &declaration.parameters, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        declaration.name = projectInternalName(currentPackage, declaration.name)
+        source.attributeDeclarations.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn linkProjectStructs(
+    &source program,
+    currentPackage String,
+    sourcePath String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &diagnostics diagnostics
+) void {
+    var index u64 = 0
+    while index < source.structs.len() {
+        var declaration = match source.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(value): value
+        }
+        declaration.packageName = text.Copy(currentPackage)
+        declaration.sourcePath = text.Copy(sourcePath)
+        var typeParameters = copyStringList(&declaration.typeParameters)
+        var fields = collections.NewList<structField>()
+        while !declaration.fields.IsEmpty() {
+            var field = match declaration.fields.PopFront() {
+                None: panic("struct field list invariant failed")
+                Some(value): value
+            }
+            linkProjectType(
+                &field.type, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectAttributes(
+                &source, &field.attributes, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            fields.PushFront($field)
+        }
+        declaration.fields = reverseList($fields)
+        var implementations = collections.NewList<structImplementation>()
+        while !declaration.implementations.IsEmpty() {
+            var implementation = match declaration.implementations.PopFront() {
+                None: panic("struct implementation list invariant failed")
+                Some(value): value
+            }
+            linkProjectType(
+                &implementation.contractType, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            implementations.PushFront($implementation)
+        }
+        declaration.implementations = reverseList($implementations)
+        linkProjectAttributes(
+            &source, &declaration.attributes, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        declaration.name = projectInternalName(currentPackage, declaration.name)
+        source.structs.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn linkProjectEnums(
+    &source program,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &diagnostics diagnostics
+) void {
+    var index u64 = 0
+    while index < source.enums.len() {
+        var declaration = match source.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(value): value
+        }
+        if declaration.builtin.Matches("None") {
+            declaration.packageName = text.Copy(currentPackage)
+            var typeParameters = copyStringList(&declaration.typeParameters)
+            var variants = collections.NewList<enumVariant>()
+            while !declaration.variants.IsEmpty() {
+                var variant = match declaration.variants.PopFront() {
+                    None: panic("enum variant list invariant failed")
+                    Some(value): value
+                }
+                match replace variant.payloadType with .None {
+                    None: {}
+                    Some(syntax): {
+                        var linked = syntax
+                        linkProjectType(
+                            &linked, currentPackage, &aliases, &symbols,
+                            &typeParameters, &diagnostics)
+                        variant.payloadType = .Some(linked)
+                    }
+                }
+                linkProjectAttributes(
+                    &source, &variant.attributes, currentPackage, &aliases,
+                    &symbols, &typeParameters, &diagnostics)
+                variants.PushFront($variant)
+            }
+            declaration.variants = reverseList($variants)
+            linkProjectAttributes(
+                &source, &declaration.attributes, currentPackage, &aliases,
+                &symbols, &typeParameters, &diagnostics)
+            declaration.name = projectInternalName(currentPackage, declaration.name)
+        }
+        source.enums.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn linkProjectContracts(
+    &source program,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &diagnostics diagnostics
+) void {
+    var index u64 = 0
+    while index < source.contracts.len() {
+        var declaration = match source.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(value): value
+        }
+        declaration.packageName = text.Copy(currentPackage)
+        var typeParameters = copyStringList(&declaration.typeParameters)
+        linkProjectTypeList(
+            &declaration.parents, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        var methodList = collections.NewList<contractMethod>()
+        while !declaration.methodList.IsEmpty() {
+            var method = match declaration.methodList.PopFront() {
+                None: panic("contract method list invariant failed")
+                Some(value): value
+            }
+            linkProjectParameters(
+                &source, &method.parameters, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectType(
+                &method.returnType, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectAttributes(
+                &source, &method.attributes, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            methodList.PushFront($method)
+        }
+        declaration.methodList = reverseList($methodList)
+        linkProjectAttributes(
+            &source, &declaration.attributes, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        declaration.name = projectInternalName(currentPackage, declaration.name)
+        source.contracts.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn linkProjectFunctions(
+    &source program,
+    currentPackage String,
+    sourcePath String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &diagnostics diagnostics,
+    foundMain bool
+) bool {
+    var mainDeclared = foundMain
+    var index u64 = 0
+    while index < source.functions.len() {
+        var declaration = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(value): value
+        }
+        declaration.packageName = text.Copy(currentPackage)
+        declaration.sourcePath = text.Copy(sourcePath)
+        var typeParameters = copyStringList(&declaration.typeParameters)
+        rejectProjectParameterShadows(
+            &declaration.parameters, &aliases, &diagnostics)
+        linkProjectConstraints(
+            &declaration.typeParameterConstraints, currentPackage, &aliases,
+            &symbols, &typeParameters, &diagnostics)
+        linkProjectParameters(
+            &source, &declaration.parameters, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        linkProjectType(
+            &declaration.returnType, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        match replace declaration.workflow with .None {
+            None: {}
+            Some(workflow): {
+                var linked = workflow
+                linkProjectWorkflow(
+                    &linked, currentPackage, &aliases, &symbols,
+                    &typeParameters, &diagnostics)
+                declaration.workflow = .Some(linked)
+            }
+        }
+        linkProjectAttributes(
+            &source, &declaration.attributes, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        linkProjectBlock(
+            &source, declaration.body, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+
+        if optionStringPresent(declaration.testName) {
+            declaration.name = projectInternalName(
+                currentPackage,
+                "$test." + format.U64(declaration.span.source) + "." +
+                format.U64(declaration.span.offset)
+            )
+        } else {
+            if declaration.closure {
+                declaration.name = projectInternalName(
+                    currentPackage, declaration.name)
+            } else {
+                if !text.IsEmpty(declaration.ownerType) {
+                    declaration.ownerType = projectInternalName(
+                        currentPackage, declaration.ownerType)
+                    declaration.name = declaration.ownerType + "." + declaration.name
+                } else {
+                    if declaration.name == "main" {
+                        if mainDeclared {
+                            diagnostics.reportError(
+                                "FDN3010",
+                                "project declares more than one main function",
+                                declaration.span)
+                        }
+                        mainDeclared = true
+                    } else {
+                        if declaration.name == "print" ||
+                            declaration.name == "panic" {
+                            diagnostics.reportError(
+                                "FDN2018",
+                                declaration.name + " is a reserved builtin",
+                                declaration.span)
+                        }
+                        declaration.name = projectInternalName(
+                            currentPackage, declaration.name)
+                    }
+                }
+            }
+        }
+        source.functions.restore(index, $declaration)
+        index += 1
+    }
+    mainDeclared
+}
+
+fn linkProjectFile(
+    &file parsedProjectFile,
+    &symbols arena<projectDeclaration>,
+    &diagnostics diagnostics,
+    foundMain bool
+) bool {
+    var aliases = validateProjectImports(&file.program, &symbols, &diagnostics)
+    const packageName = text.Copy(file.program.packageName)
+    const sourcePath = text.Copy(file.sourcePath)
+    linkProjectAttributeDeclarations(
+        &file.program, packageName, &aliases, &symbols, &diagnostics)
+    linkProjectStructs(
+        &file.program, packageName, sourcePath, &aliases, &symbols, &diagnostics)
+    linkProjectEnums(
+        &file.program, packageName, &aliases, &symbols, &diagnostics)
+    linkProjectContracts(
+        &file.program, packageName, &aliases, &symbols, &diagnostics)
+    linkProjectFunctions(
+        &file.program, packageName, sourcePath, &aliases, &symbols, &diagnostics,
+        foundMain)
+}

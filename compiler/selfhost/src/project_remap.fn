@@ -1,0 +1,470 @@
+package foundation.compiler
+
+import std.collections
+
+fn remapProjectIDList(&values collections.List<u64>, offset u64) void {
+    var pending = collections.NewList<u64>()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("project ID list invariant failed")
+            Some(value): value
+        }
+        pending.PushFront(value + offset)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("project ID list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront(value)
+    }
+}
+
+fn remapProjectOptionalID(value Option<u64>, offset u64) Option<u64> {
+    match value {
+        None: .None
+        Some(id): .Some(id + offset)
+    }
+}
+
+fn remapProjectAttributes(
+    &attributes collections.List<attributeApplication>,
+    expressionOffset u64
+) void {
+    var pending = collections.NewList<attributeApplication>()
+    while !attributes.IsEmpty() {
+        var application = match attributes.PopFront() {
+            None: panic("attribute list invariant failed")
+            Some(value): value
+        }
+        var arguments = collections.NewList<attributeArgument>()
+        while !application.arguments.IsEmpty() {
+            var argument = match application.arguments.PopFront() {
+                None: panic("attribute argument list invariant failed")
+                Some(value): value
+            }
+            argument.value += expressionOffset
+            arguments.PushFront($argument)
+        }
+        application.arguments = reverseList($arguments)
+        pending.PushFront($application)
+    }
+    while !pending.IsEmpty() {
+        const application = match pending.PopFront() {
+            None: panic("attribute list restore invariant failed")
+            Some(value): value
+        }
+        attributes.PushFront($application)
+    }
+}
+
+fn remapProjectExpression(
+    $node expressionNode,
+    expressionOffset u64,
+    blockOffset u64,
+    functionOffset u64
+) expressionNode {
+    const expressionNode { value span } = node
+    const remapped = match value {
+        Array(payload): {
+            var value = payload
+            remapProjectIDList(&value.elements, expressionOffset)
+            expressionValue.Array(value)
+        }
+        Unary(payload): {
+            var value = payload
+            value.operand += expressionOffset
+            expressionValue.Unary(value)
+        }
+        Ownership(payload): {
+            var value = payload
+            value.operand += expressionOffset
+            expressionValue.Ownership(value)
+        }
+        Binary(payload): {
+            var value = payload
+            value.left += expressionOffset
+            value.right += expressionOffset
+            expressionValue.Binary(value)
+        }
+        Call(payload): {
+            var value = payload
+            remapProjectIDList(&value.arguments, expressionOffset)
+            expressionValue.Call(value)
+        }
+        StructValue(payload): {
+            var value = payload
+            var fields = collections.NewList<structFieldInitializer>()
+            while !value.fields.IsEmpty() {
+                var field = match value.fields.PopFront() {
+                    None: panic("struct field initializer list invariant failed")
+                    Some(value): value
+                }
+                field.value += expressionOffset
+                fields.PushFront($field)
+            }
+            value.fields = reverseList($fields)
+            expressionValue.StructValue(value)
+        }
+        Member(payload): {
+            var value = payload
+            value.base = remapProjectOptionalID(value.base, expressionOffset)
+            remapProjectIDList(&value.arguments, expressionOffset)
+            expressionValue.Member(value)
+        }
+        Index(payload): {
+            var value = payload
+            value.base += expressionOffset
+            value.index += expressionOffset
+            expressionValue.Index(value)
+        }
+        Replace(payload): {
+            var value = payload
+            value.target += expressionOffset
+            value.value += expressionOffset
+            expressionValue.Replace(value)
+        }
+        Spawn(payload): {
+            var value = payload
+            value.call += expressionOffset
+            expressionValue.Spawn(value)
+        }
+        MatchValue(payload): {
+            var value = payload
+            value.value += expressionOffset
+            var arms = collections.NewList<matchArm>()
+            while !value.arms.IsEmpty() {
+                var arm = match value.arms.PopFront() {
+                    None: panic("match arm list invariant failed")
+                    Some(value): value
+                }
+                arm.pattern = remapProjectOptionalID(arm.pattern, expressionOffset)
+                arm.guard = remapProjectOptionalID(arm.guard, expressionOffset)
+                arm.block += blockOffset
+                arm.expression = remapProjectOptionalID(
+                    arm.expression, expressionOffset)
+                arms.PushFront($arm)
+            }
+            value.arms = reverseList($arms)
+            expressionValue.MatchValue(value)
+        }
+        Conditional(payload): {
+            var value = payload
+            value.condition += expressionOffset
+            value.thenBlock += blockOffset
+            value.thenValue += expressionOffset
+            value.elseBlock += blockOffset
+            value.elseValue += expressionOffset
+            expressionValue.Conditional(value)
+        }
+        FunctionValue(payload): expressionValue.FunctionValue(functionExpression {
+            function = payload.function + functionOffset
+        })
+        Integer(payload): expressionValue.Integer(payload)
+        Floating(payload): expressionValue.Floating(payload)
+        Boolean(payload): expressionValue.Boolean(payload)
+        StringValue(payload): expressionValue.StringValue(payload)
+        Name(payload): expressionValue.Name(payload)
+    }
+    expressionNode { value = remapped span = span }
+}
+
+fn remapProjectStatement(
+    $node statementNode,
+    expressionOffset u64,
+    blockOffset u64
+) statementNode {
+    const statementNode { value span } = node
+    const remapped = match value {
+        Variable(payload): {
+            var value = payload
+            value.initializer += expressionOffset
+            value.elseBlock = remapProjectOptionalID(value.elseBlock, blockOffset)
+            statementValue.Variable(value)
+        }
+        StructDestructure(payload): {
+            var value = payload
+            value.initializer += expressionOffset
+            statementValue.StructDestructure(value)
+        }
+        Assignment(payload): {
+            var value = payload
+            value.target += expressionOffset
+            value.value += expressionOffset
+            statementValue.Assignment(value)
+        }
+        Expression(payload): statementValue.Expression(expressionStatement {
+            expression = payload.expression + expressionOffset
+        })
+        ResultElse(payload): {
+            var value = payload
+            value.expression += expressionOffset
+            value.elseBlock += blockOffset
+            statementValue.ResultElse(value)
+        }
+        ReturnValue(payload): {
+            var value = payload
+            value.value = remapProjectOptionalID(value.value, expressionOffset)
+            statementValue.ReturnValue(value)
+        }
+        DiscardValue(payload): statementValue.DiscardValue(discardStatement {
+            value = payload.value + expressionOffset
+        })
+        IfValue(payload): {
+            var value = payload
+            value.condition += expressionOffset
+            value.thenBlock += blockOffset
+            value.elseBlock = remapProjectOptionalID(value.elseBlock, blockOffset)
+            statementValue.IfValue(value)
+        }
+        WhileValue(payload): statementValue.WhileValue(whileStatement {
+            condition = payload.condition + expressionOffset
+            body = payload.body + blockOffset
+        })
+        ForValue(payload): {
+            var value = payload
+            value.sequence += expressionOffset
+            value.body += blockOffset
+            statementValue.ForValue(value)
+        }
+        SelectValue(payload): {
+            var value = payload
+            var operations = collections.NewList<selectOperationArm>()
+            while !value.operations.IsEmpty() {
+                var operation = match value.operations.PopFront() {
+                    None: panic("select operation list invariant failed")
+                    Some(value): value
+                }
+                operation.operation += expressionOffset
+                operation.body += blockOffset
+                operations.PushFront($operation)
+            }
+            value.operations = reverseList($operations)
+            const selectedTimeout = replace value.timeoutArm with .None
+            match selectedTimeout {
+                None: {}
+                Some(rule): {
+                    var remappedRule = rule
+                    remappedRule.duration = remapProjectOptionalID(
+                        remappedRule.duration, expressionOffset)
+                    remappedRule.body += blockOffset
+                    value.timeoutArm = .Some(remappedRule)
+                }
+            }
+            value.errorBlock += blockOffset
+            statementValue.SelectValue(value)
+        }
+        UnsafeValue(payload): statementValue.UnsafeValue(unsafeStatement {
+            body = payload.body + blockOffset
+            safetyProof = payload.safetyProof
+        })
+        BreakValue: statementValue.BreakValue
+        ContinueValue: statementValue.ContinueValue
+    }
+    statementNode { value = remapped span = span }
+}
+
+fn appendProjectProgram(&target program, $source own program) void {
+    var input = source
+    const expressionOffset = target.expressions.len()
+    const statementOffset = target.statements.len()
+    const blockOffset = target.blocks.len()
+    const functionOffset = target.functions.len()
+
+    var index u64 = 0
+    while index < input.expressions.len() {
+        const node = match input.expressions.take(index) {
+            None: panic("expression slot is empty")
+            Some(value): value
+        }
+        discard target.expressions.add($remapProjectExpression(
+                $node, expressionOffset, blockOffset, functionOffset))
+        index += 1
+    }
+    index = 0
+    while index < input.statements.len() {
+        const node = match input.statements.take(index) {
+            None: panic("statement slot is empty")
+            Some(value): value
+        }
+        discard target.statements.add($remapProjectStatement(
+                $node, expressionOffset, blockOffset))
+        index += 1
+    }
+    index = 0
+    while index < input.blocks.len() {
+        var block = match input.blocks.take(index) {
+            None: panic("block slot is empty")
+            Some(value): value
+        }
+        remapProjectIDList(&block.statements, statementOffset)
+        discard target.blocks.add($block)
+        index += 1
+    }
+    moveProjectImports(&target.imports, &input.imports)
+    moveProjectStructs(
+        &target.structs, &input.structs, expressionOffset, functionOffset)
+    moveProjectEnums(&target.enums, &input.enums, expressionOffset)
+    moveProjectContracts(
+        &target.contracts, &input.contracts, expressionOffset, functionOffset)
+    moveProjectAttributeDeclarations(
+        &target.attributeDeclarations, &input.attributeDeclarations)
+    moveProjectFunctions(
+        &target.functions, &input.functions, expressionOffset, blockOffset)
+}
+
+fn moveProjectImports(
+    &target arena<importDeclaration>,
+    &source arena<importDeclaration>
+) void {
+    var index u64 = 0
+    while index < source.len() {
+        const declaration = match source.take(index) {
+            None: panic("import slot is empty")
+            Some(value): value
+        }
+        discard target.add($declaration)
+        index += 1
+    }
+}
+
+fn moveProjectStructs(
+    &target arena<structDeclaration>,
+    &source arena<structDeclaration>,
+    expressionOffset u64,
+    functionOffset u64
+) void {
+    var index u64 = 0
+    while index < source.len() {
+        var declaration = match source.take(index) {
+            None: panic("struct slot is empty")
+            Some(value): value
+        }
+        remapProjectAttributes(&declaration.attributes, expressionOffset)
+        var fields = collections.NewList<structField>()
+        while !declaration.fields.IsEmpty() {
+            var field = match declaration.fields.PopFront() {
+                None: panic("struct field list invariant failed")
+                Some(value): value
+            }
+            remapProjectAttributes(&field.attributes, expressionOffset)
+            field.defaultFunction = remapProjectOptionalID(
+                field.defaultFunction, functionOffset)
+            fields.PushFront($field)
+        }
+        declaration.fields = reverseList($fields)
+        discard target.add($declaration)
+        index += 1
+    }
+}
+
+fn moveProjectEnums(
+    &target arena<enumDeclaration>,
+    &source arena<enumDeclaration>,
+    expressionOffset u64
+) void {
+    var index u64 = 0
+    while index < source.len() {
+        var declaration = match source.take(index) {
+            None: panic("enum slot is empty")
+            Some(value): value
+        }
+        remapProjectAttributes(&declaration.attributes, expressionOffset)
+        var variants = collections.NewList<enumVariant>()
+        while !declaration.variants.IsEmpty() {
+            var variant = match declaration.variants.PopFront() {
+                None: panic("enum variant list invariant failed")
+                Some(value): value
+            }
+            remapProjectAttributes(&variant.attributes, expressionOffset)
+            variants.PushFront($variant)
+        }
+        declaration.variants = reverseList($variants)
+        discard target.add($declaration)
+        index += 1
+    }
+}
+
+fn moveProjectContracts(
+    &target arena<contractDeclaration>,
+    &source arena<contractDeclaration>,
+    expressionOffset u64,
+    functionOffset u64
+) void {
+    var index u64 = 0
+    while index < source.len() {
+        var declaration = match source.take(index) {
+            None: panic("contract slot is empty")
+            Some(value): value
+        }
+        remapProjectAttributes(&declaration.attributes, expressionOffset)
+        var methodValues = collections.NewList<contractMethod>()
+        while !declaration.methodList.IsEmpty() {
+            var method = match declaration.methodList.PopFront() {
+                None: panic("contract method list invariant failed")
+                Some(value): value
+            }
+            remapProjectAttributes(&method.attributes, expressionOffset)
+            var parameters = collections.NewList<parameter>()
+            while !method.parameters.IsEmpty() {
+                var parameter = match method.parameters.PopFront() {
+                    None: panic("contract parameter list invariant failed")
+                    Some(value): value
+                }
+                remapProjectAttributes(&parameter.attributes, expressionOffset)
+                parameters.PushFront($parameter)
+            }
+            method.parameters = reverseList($parameters)
+            method.defaultFunction = remapProjectOptionalID(
+                method.defaultFunction, functionOffset)
+            methodValues.PushFront($method)
+        }
+        declaration.methodList = reverseList($methodValues)
+        discard target.add($declaration)
+        index += 1
+    }
+}
+
+fn moveProjectAttributeDeclarations(
+    &target arena<attributeDeclaration>,
+    &source arena<attributeDeclaration>
+) void {
+    var index u64 = 0
+    while index < source.len() {
+        const declaration = match source.take(index) {
+            None: panic("attribute declaration slot is empty")
+            Some(value): value
+        }
+        discard target.add($declaration)
+        index += 1
+    }
+}
+
+fn moveProjectFunctions(
+    &target arena<functionDeclaration>,
+    &source arena<functionDeclaration>,
+    expressionOffset u64,
+    blockOffset u64
+) void {
+    var index u64 = 0
+    while index < source.len() {
+        var declaration = match source.take(index) {
+            None: panic("function slot is empty")
+            Some(value): value
+        }
+        declaration.body += blockOffset
+        remapProjectAttributes(&declaration.attributes, expressionOffset)
+        var parameters = collections.NewList<parameter>()
+        while !declaration.parameters.IsEmpty() {
+            var parameter = match declaration.parameters.PopFront() {
+                None: panic("function parameter list invariant failed")
+                Some(value): value
+            }
+            remapProjectAttributes(&parameter.attributes, expressionOffset)
+            parameters.PushFront($parameter)
+        }
+        declaration.parameters = reverseList($parameters)
+        discard target.add($declaration)
+        index += 1
+    }
+}

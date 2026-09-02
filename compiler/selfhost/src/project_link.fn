@@ -1,0 +1,1052 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+fn projectSlice(value String, start u64, end u64) String {
+    const result = text.Slice(value, start, end) else error {
+        discard error
+        panic("project text boundary is invalid")
+    }
+    result
+}
+
+fn projectLastDot(value String) Option<u64> {
+    var found Option<u64> = .None
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        const byte = text.ByteAt(value, index) else error {
+            discard error
+            panic("project text boundary is invalid")
+        }
+        if byte == 46 {
+            found = .Some(index)
+        }
+        index += 1
+    }
+    found
+}
+
+fn projectDefaultAlias(packageName String) String {
+    match projectLastDot(packageName) {
+        None: text.Copy(packageName)
+        Some(separator): projectSlice(
+            packageName, separator + 1, text.ByteLen(packageName))
+    }
+}
+
+fn projectInternalName(packageName String, name String) String {
+    if text.IsEmpty(packageName) return text.Copy(name)
+    packageName + "." + name
+}
+
+fn projectIntrinsicType(name String) bool {
+    name == "void" || name == "never" || name == "i8" || name == "i16" ||
+        name == "i32" || name == "i64" || name == "u8" || name == "u16" ||
+        name == "u32" || name == "u64" || name == "isize" || name == "usize" ||
+        name == "f32" || name == "f64" || name == "bool" || name == "String" ||
+        name == "Option" || name == "Result" || name == "ChannelError" ||
+        name == "NumberError" || name == "Task" || name == "Channel" ||
+        name == "Sender" || name == "Receiver" || name == "[array]" ||
+        name == "[slice]" || name == "[function]" ||
+        name == "[transferable-function]" || name == "[c-function]" ||
+        name == "[raw]" || name == "[raw-const]" || name == "own" ||
+        name == "view" || name == "edit"
+}
+
+fn projectListContains(
+    &values collections.List<String>,
+    expected String
+) bool {
+    var pending = collections.NewList<String>()
+    var found = false
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("string list invariant failed")
+            Some(value): value
+        }
+        if value == expected {
+            found = true
+        }
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("string list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront($value)
+    }
+    found
+}
+
+fn projectPackageKnown(
+    &symbols arena<projectDeclaration>,
+    packageName String
+) bool {
+    var index u64 = 0
+    while index < symbols.len() {
+        const value = match symbols.take(index) {
+            None: panic("project symbol slot is empty")
+            Some(value): value
+        }
+        const found = value.packageName == packageName
+        symbols.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn findProjectDeclaration(
+    &symbols arena<projectDeclaration>,
+    packageName String,
+    name String,
+    function bool,
+    attributeDeclaration bool
+) projectDeclarationLookup {
+    var index u64 = 0
+    while index < symbols.len() {
+        const value = match symbols.take(index) {
+            None: panic("project symbol slot is empty")
+            Some(value): value
+        }
+        const found = value.packageName == packageName && value.name == name &&
+            value.function == function &&
+            value.attributeDeclaration == attributeDeclaration
+        var result = projectDeclarationLookup {
+            found = found
+            internalName = text.Copy(value.internalName)
+            packageName = text.Copy(value.packageName)
+            exported = value.exported
+        }
+        symbols.restore(index, $value)
+        if found return result
+        discard result
+        index += 1
+    }
+    projectDeclarationLookup {
+        found = false internalName = "" packageName = "" exported = false
+    }
+}
+
+fn findProjectAlias(
+    &aliases arena<projectImportAlias>,
+    name String
+) projectAliasLookup {
+    var index u64 = 0
+    while index < aliases.len() {
+        const value = match aliases.take(index) {
+            None: panic("project alias slot is empty")
+            Some(value): value
+        }
+        const found = value.alias == name
+        const result = projectAliasLookup {
+            found = found packageName = text.Copy(value.packageName)
+        }
+        aliases.restore(index, $value)
+        if found return result
+        index += 1
+    }
+    projectAliasLookup { found = false packageName = "" }
+}
+
+fn addProjectSymbol(
+    &symbols arena<projectDeclaration>,
+    packageName String,
+    name String,
+    exported bool,
+    function bool,
+    attributeDeclaration bool
+) void {
+    const existing = findProjectDeclaration(
+        &symbols, packageName, name, function, attributeDeclaration)
+    if existing.found return
+    discard symbols.add(projectDeclaration {
+        packageName = text.Copy(packageName)
+        name = text.Copy(name)
+        internalName = "main" if function && name == "main" else
+        projectInternalName(packageName, name)
+        exported = exported
+        function = function
+        attributeDeclaration = attributeDeclaration
+    })
+}
+
+fn collectProjectSymbols(
+    &files arena<own parsedProjectFile>
+) own arena<projectDeclaration> {
+    var result = newArena<projectDeclaration>()
+    var fileIndex u64 = 0
+    while fileIndex < files.len() {
+        var file = match files.take(fileIndex) {
+            None: panic("project file slot is empty")
+            Some(value): value
+        }
+        const packageName = text.Copy(file.program.packageName)
+        addProjectSymbol(&result, packageName, "", false, false, false)
+        var index u64 = 0
+        while index < file.program.structs.len() {
+            const declaration = match file.program.structs.take(index) {
+                None: panic("struct slot is empty")
+                Some(value): value
+            }
+            addProjectSymbol(&result, packageName, declaration.name,
+                declaration.exported, false, false)
+            file.program.structs.restore(index, $declaration)
+            index += 1
+        }
+        index = 0
+        while index < file.program.enums.len() {
+            const declaration = match file.program.enums.take(index) {
+                None: panic("enum slot is empty")
+                Some(value): value
+            }
+            if declaration.builtin.Matches("None") {
+                addProjectSymbol(&result, packageName, declaration.name,
+                    declaration.exported, false, false)
+            }
+            file.program.enums.restore(index, $declaration)
+            index += 1
+        }
+        index = 0
+        while index < file.program.contracts.len() {
+            const declaration = match file.program.contracts.take(index) {
+                None: panic("contract slot is empty")
+                Some(value): value
+            }
+            addProjectSymbol(&result, packageName, declaration.name,
+                declaration.exported, false, false)
+            file.program.contracts.restore(index, $declaration)
+            index += 1
+        }
+        index = 0
+        while index < file.program.attributeDeclarations.len() {
+            const declaration = match file.program.attributeDeclarations.take(index) {
+                None: panic("attribute declaration slot is empty")
+                Some(value): value
+            }
+            addProjectSymbol(&result, packageName, declaration.name,
+                declaration.exported, false, true)
+            file.program.attributeDeclarations.restore(index, $declaration)
+            index += 1
+        }
+        index = 0
+        while index < file.program.functions.len() {
+            const declaration = match file.program.functions.take(index) {
+                None: panic("function slot is empty")
+                Some(value): value
+            }
+            const regular = text.IsEmpty(declaration.ownerType) && !declaration.closure &&
+                !text.StartsWith(declaration.name, "$field_default.") &&
+                !optionStringPresent(declaration.testName)
+            if regular {
+                addProjectSymbol(&result, packageName, declaration.name,
+                    declaration.exported, true, false)
+            }
+            file.program.functions.restore(index, $declaration)
+            index += 1
+        }
+        files.restore(fileIndex, $file)
+        fileIndex += 1
+    }
+    result
+}
+
+fn optionStringPresent(value Option<String>) bool {
+    match value {
+        None: false
+        Some(found): {
+            discard found
+            true
+        }
+    }
+}
+
+fn reportProjectPrivate(
+    &diagnostics diagnostics,
+    packageName String,
+    name String,
+    span sourceSpan
+) void {
+    diagnostics.reportError(
+        "FDN3008", packageName + "." + name + " is not exported", span)
+}
+
+fn reportProjectAliasShadow(
+    &aliases arena<projectImportAlias>,
+    name String,
+    kind String,
+    span sourceSpan,
+    &diagnostics diagnostics
+) void {
+    if findProjectAlias(&aliases, name).found {
+        diagnostics.reportError(
+            "FDN3004", kind + " shadows import alias " + name, span)
+    }
+}
+
+fn linkProjectType(
+    &syntax typeSyntax,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    var arguments = collections.NewList<typeSyntax>()
+    while !syntax.arguments.IsEmpty() {
+        var argument = match syntax.arguments.PopFront() {
+            None: panic("type argument list invariant failed")
+            Some(value): value
+        }
+        linkProjectType(
+            &argument, currentPackage, &aliases, &symbols, &typeParameters, &diagnostics)
+        arguments.PushFront($argument)
+    }
+    syntax.arguments = reverseList($arguments)
+    if projectIntrinsicType(syntax.name) ||
+        projectListContains(&typeParameters, syntax.name) {
+        return
+    }
+    const separator = text.Find(syntax.name, ".")
+    match separator {
+        None: {
+            const local = findProjectDeclaration(
+                &symbols, currentPackage, syntax.name, false, false)
+            if local.found {
+                syntax.name = text.Copy(local.internalName)
+                return
+            }
+            const prelude = findProjectDeclaration(
+                &symbols, "std.prelude", syntax.name, false, false)
+            if prelude.found && prelude.exported {
+                syntax.name = text.Copy(prelude.internalName)
+            }
+        }
+        Some(offset): {
+            const aliasName = projectSlice(syntax.name, 0, offset)
+            const member = projectSlice(
+                syntax.name, offset + 1, text.ByteLen(syntax.name))
+            const imported = findProjectAlias(&aliases, aliasName)
+            if !imported.found {
+                diagnostics.reportError(
+                    "FDN3009", "unknown import alias " + aliasName, syntax.span)
+                return
+            }
+            const declaration = findProjectDeclaration(
+                &symbols, imported.packageName, member, false, false)
+            if !declaration.found {
+                diagnostics.reportError(
+                    "FDN3009",
+                    "unknown type " + imported.packageName + "." + member,
+                    syntax.span
+                )
+                return
+            }
+            if !declaration.exported {
+                reportProjectPrivate(
+                    &diagnostics, imported.packageName, member, syntax.span)
+            }
+            syntax.name = text.Copy(declaration.internalName)
+        }
+    }
+}
+
+fn validateProjectImports(
+    &source program,
+    &symbols arena<projectDeclaration>,
+    &diagnostics diagnostics
+) own arena<projectImportAlias> {
+    var aliases = newArena<projectImportAlias>()
+    var packages = newArena<String>()
+    var index u64 = 0
+    while index < source.imports.len() {
+        const declaration = match source.imports.take(index) {
+            None: panic("import slot is empty")
+            Some(value): value
+        }
+        const alias = projectDefaultAlias(declaration.packageName) if
+        text.IsEmpty(declaration.alias) else text.Copy(declaration.alias)
+        if !projectPackageKnown(&symbols, declaration.packageName) {
+            diagnostics.reportError(
+                "FDN3005", "package not found: " + declaration.packageName,
+                declaration.span)
+        }
+        if arenaContainsString(&packages, declaration.packageName) {
+            diagnostics.reportError(
+                "FDN3004", "package imported more than once: " +
+                declaration.packageName, declaration.span)
+        } else {
+            discard packages.add(text.Copy(declaration.packageName))
+        }
+        if findProjectAlias(&aliases, alias).found {
+            diagnostics.reportError(
+                "FDN3004", "duplicate import alias " + alias, declaration.span)
+        } else {
+            discard aliases.add(projectImportAlias {
+                alias = alias packageName = text.Copy(declaration.packageName)
+            })
+        }
+        source.imports.restore(index, $declaration)
+        index += 1
+    }
+    aliases
+}
+
+fn linkProjectTypeList(
+    &values collections.List<typeSyntax>,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    var pending = collections.NewList<typeSyntax>()
+    while !values.IsEmpty() {
+        var value = match values.PopFront() {
+            None: panic("type list invariant failed")
+            Some(value): value
+        }
+        linkProjectType(
+            &value, currentPackage, &aliases, &symbols, &typeParameters, &diagnostics)
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("type list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront($value)
+    }
+}
+
+fn linkProjectExpressionList(
+    &source program,
+    &values collections.List<u64>,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    var pending = collections.NewList<u64>()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("expression ID list invariant failed")
+            Some(value): value
+        }
+        linkProjectExpression(
+            &source, value, currentPackage, &aliases, &symbols, &typeParameters,
+            &diagnostics)
+        pending.PushFront(value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("expression ID list restore invariant failed")
+            Some(value): value
+        }
+        values.PushFront(value)
+    }
+}
+
+fn projectExpressionName(
+    &source program,
+    expression u64
+) Option<String> {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(value): value
+    }
+    const expressionNode { value span } = node
+    match value {
+        Name(payload): {
+            const result = text.Copy(payload.name)
+            source.expressions.restore(expression, $expressionNode {
+                value = .Name(payload) span = span
+            })
+            .Some(result)
+        }
+        Integer(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Integer(payload), span)
+        Floating(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Floating(payload), span)
+        Boolean(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Boolean(payload), span)
+        StringValue(payload): restoreUnnamedProjectExpression(
+            &source, expression, .StringValue(payload), span)
+        Array(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Array(payload), span)
+        Unary(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Unary(payload), span)
+        Ownership(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Ownership(payload), span)
+        Binary(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Binary(payload), span)
+        Call(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Call(payload), span)
+        StructValue(payload): restoreUnnamedProjectExpression(
+            &source, expression, .StructValue(payload), span)
+        Member(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Member(payload), span)
+        Index(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Index(payload), span)
+        Replace(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Replace(payload), span)
+        Spawn(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Spawn(payload), span)
+        MatchValue(payload): restoreUnnamedProjectExpression(
+            &source, expression, .MatchValue(payload), span)
+        Conditional(payload): restoreUnnamedProjectExpression(
+            &source, expression, .Conditional(payload), span)
+        FunctionValue(payload): restoreUnnamedProjectExpression(
+            &source, expression, .FunctionValue(payload), span)
+    }
+}
+
+fn restoreUnnamedProjectExpression(
+    &source program,
+    expression u64,
+    $value expressionValue,
+    span sourceSpan
+) Option<String> {
+    source.expressions.restore(expression, $expressionNode {
+        value = value span = span
+    })
+    .None
+}
+
+fn replaceProjectNameExpression(
+    &source program,
+    expression u64,
+    name String
+) void {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(value): value
+    }
+    const expressionNode { value span } = node
+    match value {
+        Name(payload): {
+            var updated = payload
+            updated.name = text.Copy(name)
+            source.expressions.restore(expression, $expressionNode {
+                value = .Name(updated) span = span
+            })
+        }
+        _: panic("name expression invariant failed")
+    }
+}
+
+fn linkProjectExpression(
+    &source program,
+    expression u64,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(value): value
+    }
+    const expressionNode { value span } = node
+    const linked = match value {
+        Array(payload): {
+            var updated = payload
+            linkProjectExpressionList(
+                &source, &updated.elements, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            expressionValue.Array(updated)
+        }
+        Name(payload): {
+            var updated = payload
+            linkProjectTypeList(
+                &updated.typeArguments, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            expressionValue.Name(updated)
+        }
+        Unary(payload): {
+            linkProjectExpression(
+                &source, payload.operand, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            expressionValue.Unary(payload)
+        }
+        Ownership(payload): {
+            linkProjectExpression(
+                &source, payload.operand, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            expressionValue.Ownership(payload)
+        }
+        Binary(payload): {
+            linkProjectExpression(
+                &source, payload.left, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectExpression(
+                &source, payload.right, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            expressionValue.Binary(payload)
+        }
+        Call(payload): {
+            var updated = payload
+            linkProjectTypeList(
+                &updated.typeArguments, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectExpressionList(
+                &source, &updated.arguments, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            expressionValue.Call(updated)
+        }
+        StructValue(payload): {
+            var updated = payload
+            linkProjectType(
+                &updated.type, currentPackage, &aliases, &symbols, &typeParameters,
+                &diagnostics)
+            var fields = collections.NewList<structFieldInitializer>()
+            while !updated.fields.IsEmpty() {
+                const field = match updated.fields.PopFront() {
+                    None: panic("struct initializer field list invariant failed")
+                    Some(value): value
+                }
+                linkProjectExpression(
+                    &source, field.value, currentPackage, &aliases, &symbols,
+                    &typeParameters, &diagnostics)
+                fields.PushFront($field)
+            }
+            updated.fields = reverseList($fields)
+            expressionValue.StructValue(updated)
+        }
+        Member(payload): linkProjectMemberExpression(
+            &source, $payload, span, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        Index(payload): {
+            linkProjectExpression(
+                &source, payload.base, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectExpression(
+                &source, payload.index, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            expressionValue.Index(payload)
+        }
+        Replace(payload): {
+            linkProjectExpression(
+                &source, payload.target, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectExpression(
+                &source, payload.value, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            expressionValue.Replace(payload)
+        }
+        Spawn(payload): {
+            linkProjectExpression(
+                &source, payload.call, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            expressionValue.Spawn(payload)
+        }
+        MatchValue(payload): {
+            var updated = payload
+            linkProjectExpression(
+                &source, updated.value, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            var arms = collections.NewList<matchArm>()
+            while !updated.arms.IsEmpty() {
+                var arm = match updated.arms.PopFront() {
+                    None: panic("match arm list invariant failed")
+                    Some(value): value
+                }
+                match replace arm.binding with .None {
+                    None: {}
+                    Some(name): {
+                        reportProjectAliasShadow(
+                            &aliases, name, "binding", arm.span, &diagnostics)
+                        arm.binding = .Some(name)
+                    }
+                }
+                linkProjectOptionalExpression(
+                    &source, arm.pattern, currentPackage, &aliases, &symbols,
+                    &typeParameters, &diagnostics)
+                linkProjectOptionalExpression(
+                    &source, arm.guard, currentPackage, &aliases, &symbols,
+                    &typeParameters, &diagnostics)
+                linkProjectBlock(
+                    &source, arm.block, currentPackage, &aliases, &symbols,
+                    &typeParameters, &diagnostics)
+                linkProjectOptionalExpression(
+                    &source, arm.expression, currentPackage, &aliases, &symbols,
+                    &typeParameters, &diagnostics)
+                arms.PushFront($arm)
+            }
+            updated.arms = reverseList($arms)
+            expressionValue.MatchValue(updated)
+        }
+        Conditional(payload): {
+            linkProjectExpression(
+                &source, payload.condition, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectBlock(
+                &source, payload.thenBlock, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectExpression(
+                &source, payload.thenValue, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectBlock(
+                &source, payload.elseBlock, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectExpression(
+                &source, payload.elseValue, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            expressionValue.Conditional(payload)
+        }
+        Integer(payload): expressionValue.Integer(payload)
+        Floating(payload): expressionValue.Floating(payload)
+        Boolean(payload): expressionValue.Boolean(payload)
+        StringValue(payload): expressionValue.StringValue(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = linked span = span
+    })
+}
+
+fn linkProjectOptionalExpression(
+    &source program,
+    expression Option<u64>,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    match expression {
+        None: {}
+        Some(value): linkProjectExpression(
+            &source, value, currentPackage, &aliases, &symbols, &typeParameters,
+            &diagnostics)
+    }
+}
+
+fn linkProjectMemberExpression(
+    &source program,
+    $payload memberExpression,
+    span sourceSpan,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) expressionValue {
+    var updated = payload
+    linkProjectTypeList(
+        &updated.typeArguments, currentPackage, &aliases, &symbols, &typeParameters,
+        &diagnostics)
+    linkProjectExpressionList(
+        &source, &updated.arguments, currentPackage, &aliases, &symbols,
+        &typeParameters, &diagnostics)
+    match updated.base {
+        None: {}
+        Some(base): {
+            linkProjectExpression(
+                &source, base, currentPackage, &aliases, &symbols, &typeParameters,
+                &diagnostics)
+            match projectExpressionName(&source, base) {
+                None: {}
+                Some(baseName): {
+                    const local = findProjectDeclaration(
+                        &symbols, currentPackage, baseName, false, false)
+                    if !local.found {
+                        const prelude = findProjectDeclaration(
+                            &symbols, "std.prelude", baseName, false, false)
+                        if prelude.found && prelude.exported {
+                            replaceProjectNameExpression(
+                                &source, base, prelude.internalName)
+                        }
+                    }
+                    const imported = findProjectAlias(&aliases, baseName)
+                    if imported.found {
+                        const function = findProjectDeclaration(
+                            &symbols, imported.packageName, updated.member, true, false)
+                        if function.found {
+                            if !function.exported {
+                                reportProjectPrivate(
+                                    &diagnostics, imported.packageName, updated.member, span)
+                            }
+                            if updated.invoked {
+                                return expressionValue.Call(callExpression {
+                                    callee = text.Copy(function.internalName)
+                                    typeArguments = replace updated.typeArguments with
+                                    collections.NewList<typeSyntax>()
+                                    arguments = replace updated.arguments with
+                                    collections.NewList<u64>()
+                                    argumentNames = replace updated.argumentNames with
+                                    collections.NewList<Option<String>>()
+                                    argumentNameSpans = replace updated.argumentNameSpans with
+                                    collections.NewList<Option<sourceSpan>>()
+                                })
+                            }
+                            return expressionValue.Name(nameExpression {
+                                name = text.Copy(function.internalName)
+                                typeArguments = replace updated.typeArguments with
+                                collections.NewList<typeSyntax>()
+                            })
+                        }
+                        const declaration = findProjectDeclaration(
+                            &symbols, imported.packageName, updated.member, false, false)
+                        if declaration.found && !updated.invoked {
+                            if !declaration.exported {
+                                reportProjectPrivate(
+                                    &diagnostics, imported.packageName, updated.member, span)
+                            }
+                            return expressionValue.Name(nameExpression {
+                                name = text.Copy(declaration.internalName)
+                                typeArguments = replace updated.typeArguments with
+                                collections.NewList<typeSyntax>()
+                            })
+                        }
+                        diagnostics.reportError(
+                            "FDN3009",
+                            "unknown declaration " + imported.packageName + "." +
+                            updated.member,
+                            span
+                        )
+                    }
+                }
+            }
+        }
+    }
+    expressionValue.Member(updated)
+}
+
+fn linkProjectBlock(
+    &source program,
+    block u64,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    const selected = source.blocks.take(block)
+    const node = match selected {
+        None: panic("block slot is empty")
+        Some(value): value
+    }
+    const blockNode { statements span } = node
+    var remaining = statements
+    var linked = collections.NewList<u64>()
+    while !remaining.IsEmpty() {
+        const statement = match remaining.PopFront() {
+            None: panic("block statement list invariant failed")
+            Some(value): value
+        }
+        linkProjectStatement(
+            &source, statement, currentPackage, &aliases, &symbols, &typeParameters,
+            &diagnostics)
+        linked.PushFront(statement)
+    }
+    source.blocks.restore(block, $blockNode {
+        statements = reverseList($linked) span = span
+    })
+}
+
+fn linkProjectStatement(
+    &source program,
+    statement u64,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) void {
+    const selected = source.statements.take(statement)
+    const node = match selected {
+        None: panic("statement slot is empty")
+        Some(value): value
+    }
+    const statementNode { value span } = node
+    const linked = match value {
+        Variable(payload): {
+            var updated = payload
+            reportProjectAliasShadow(
+                &aliases, updated.name, "binding", span, &diagnostics)
+            match replace updated.elseBinding with .None {
+                None: {}
+                Some(name): {
+                    reportProjectAliasShadow(
+                        &aliases, name, "binding", span, &diagnostics)
+                    updated.elseBinding = .Some(name)
+                }
+            }
+            match replace updated.type with .None {
+                None: {}
+                Some(syntax): {
+                    var linkedType = syntax
+                    linkProjectType(
+                        &linkedType, currentPackage, &aliases, &symbols,
+                        &typeParameters, &diagnostics)
+                    updated.type = .Some(linkedType)
+                }
+            }
+            linkProjectExpression(
+                &source, updated.initializer, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            match updated.elseBlock {
+                None: {}
+                Some(block): linkProjectBlock(
+                    &source, block, currentPackage, &aliases, &symbols,
+                    &typeParameters, &diagnostics)
+            }
+            statementValue.Variable(updated)
+        }
+        StructDestructure(payload): {
+            var updated = payload
+            var fields = collections.NewList<structPatternField>()
+            while !updated.fields.IsEmpty() {
+                const field = match updated.fields.PopFront() {
+                    None: panic("destructure field list invariant failed")
+                    Some(value): value
+                }
+                reportProjectAliasShadow(
+                    &aliases, field.binding, "binding", field.span, &diagnostics)
+                fields.PushFront($field)
+            }
+            updated.fields = reverseList($fields)
+            linkProjectType(
+                &updated.type, currentPackage, &aliases, &symbols, &typeParameters,
+                &diagnostics)
+            linkProjectExpression(
+                &source, updated.initializer, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            statementValue.StructDestructure(updated)
+        }
+        Assignment(payload): {
+            linkProjectExpression(
+                &source, payload.target, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectExpression(
+                &source, payload.value, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            statementValue.Assignment(payload)
+        }
+        Expression(payload): {
+            linkProjectExpression(
+                &source, payload.expression, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            statementValue.Expression(payload)
+        }
+        ResultElse(payload): {
+            linkProjectExpression(
+                &source, payload.expression, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectBlock(
+                &source, payload.elseBlock, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            statementValue.ResultElse(payload)
+        }
+        ReturnValue(payload): {
+            linkProjectOptionalExpression(
+                &source, payload.value, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            statementValue.ReturnValue(payload)
+        }
+        DiscardValue(payload): {
+            linkProjectExpression(
+                &source, payload.value, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            statementValue.DiscardValue(payload)
+        }
+        IfValue(payload): {
+            linkProjectExpression(
+                &source, payload.condition, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectBlock(
+                &source, payload.thenBlock, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            match payload.elseBlock {
+                None: {}
+                Some(block): linkProjectBlock(
+                    &source, block, currentPackage, &aliases, &symbols,
+                    &typeParameters, &diagnostics)
+            }
+            statementValue.IfValue(payload)
+        }
+        WhileValue(payload): {
+            linkProjectExpression(
+                &source, payload.condition, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectBlock(
+                &source, payload.body, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            statementValue.WhileValue(payload)
+        }
+        ForValue(payload): {
+            linkProjectExpression(
+                &source, payload.sequence, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectBlock(
+                &source, payload.body, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            statementValue.ForValue(payload)
+        }
+        BreakValue: statementValue.BreakValue
+        ContinueValue: statementValue.ContinueValue
+        SelectValue(payload): statementValue.SelectValue(linkProjectSelectStatement(
+                &source, $payload, currentPackage, &aliases, &symbols, &typeParameters,
+                &diagnostics))
+        UnsafeValue(payload): {
+            linkProjectBlock(
+                &source, payload.body, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            statementValue.UnsafeValue(payload)
+        }
+    }
+    source.statements.restore(statement, $statementNode {
+        value = linked span = span
+    })
+}
+
+fn linkProjectSelectStatement(
+    &source program,
+    $payload selectStatement,
+    currentPackage String,
+    &aliases arena<projectImportAlias>,
+    &symbols arena<projectDeclaration>,
+    &typeParameters collections.List<String>,
+    &diagnostics diagnostics
+) selectStatement {
+    var updated = payload
+    var operations = collections.NewList<selectOperationArm>()
+    while !updated.operations.IsEmpty() {
+        const operation = match updated.operations.PopFront() {
+            None: panic("select operation list invariant failed")
+            Some(value): value
+        }
+        linkProjectExpression(
+            &source, operation.operation, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        linkProjectBlock(
+            &source, operation.body, currentPackage, &aliases, &symbols,
+            &typeParameters, &diagnostics)
+        operations.PushFront($operation)
+    }
+    updated.operations = reverseList($operations)
+    match replace updated.timeoutArm with .None {
+        None: {}
+        Some(arm): {
+            linkProjectOptionalExpression(
+                &source, arm.duration, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            linkProjectBlock(
+                &source, arm.body, currentPackage, &aliases, &symbols,
+                &typeParameters, &diagnostics)
+            updated.timeoutArm = .Some(arm)
+        }
+    }
+    linkProjectBlock(
+        &source, updated.errorBlock, currentPackage, &aliases, &symbols,
+        &typeParameters, &diagnostics)
+    updated
+}

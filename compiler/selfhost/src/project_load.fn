@@ -1,0 +1,516 @@
+package foundation.compiler
+
+import std.fs
+import std.path
+import std.text
+
+fn projectModeIsTest(mode projectMode) bool {
+    match mode {
+        Production: false
+        Test: true
+    }
+}
+
+fn projectEntryIsFile(kind fs.EntryKind) bool {
+    match kind {
+        File: true
+        _: false
+    }
+}
+
+fn projectEntryIsDirectory(kind fs.EntryKind) bool {
+    match kind {
+        Directory: true
+        _: false
+    }
+}
+
+fn projectTreeEntryIsFile(kind fs.TreeKind) bool {
+    match kind {
+        File: true
+        _: false
+    }
+}
+
+fn projectSourceIdentity(value String) String {
+    const canonical = fs.Canonicalize(value)
+    match canonical {
+        Err(error): {
+            discard error
+            path.Normalize(value)
+        }
+        Ok(found): found
+    }
+}
+
+fn projectRelativePath(base String, target String) String {
+    const relative = path.Relative(base, target)
+    match relative {
+        Err(error): {
+            discard error
+            text.Copy(target)
+        }
+        Ok(found): found
+    }
+}
+
+fn addProjectInputFile(
+    &inputs arena<projectInputFile>,
+    &seen arena<String>,
+    pathValue String,
+    displayPath String
+) void {
+    const identity = projectSourceIdentity(pathValue)
+    if arenaContainsString(&seen, identity) return
+    discard seen.add(text.Copy(identity))
+    discard inputs.add(projectInputFile {
+        identity = identity displayPath = text.Copy(displayPath)
+    })
+}
+
+fn appendProjectSourceRoot(
+    &inputs arena<projectInputFile>,
+    &seen arena<String>,
+    sourceRoot String,
+    packageRoot String,
+    displayPrefix String,
+    description String,
+    &diagnostics diagnostics
+) bool {
+    const opened = fs.OpenTree(sourceRoot, 100000, 4096) else error {
+        discard error
+        diagnostics.reportError(
+            "FDN3001", "cannot discover " + description + " sources",
+            sourceSpan { offset = 0 length = 0 line = 1 column = 1 source = 0 })
+        return false
+    }
+    var reader = opened
+    var done = false
+    while !done {
+        const selected = reader.Next() else error {
+            discard error
+            diagnostics.reportError(
+                "FDN3001", "cannot discover " + description + " sources",
+                sourceSpan { offset = 0 length = 0 line = 1 column = 1 source = 0 })
+            return false
+        }
+        match selected {
+            None: {
+                done = true
+            }
+            Some(entry): {
+                if projectTreeEntryIsFile(entry.Kind) &&
+                    path.Extension(entry.Path) == ".fn" {
+                    const fullPath = path.Join(sourceRoot, entry.Path)
+                    const relative = projectRelativePath(packageRoot, fullPath)
+                    const display = relative if text.IsEmpty(displayPrefix) else
+                    path.Join(displayPrefix, relative)
+                    addProjectInputFile(&inputs, &seen, fullPath, display)
+                }
+            }
+        }
+    }
+    true
+}
+
+fn projectSdkRootValid(root String) bool {
+    const standard = fs.Kind(path.Join(root, "std"))
+    match standard {
+        Err(error): {
+            discard error
+            false
+        }
+        Ok(standardKind): {
+            if !projectEntryIsDirectory(standardKind) return false
+            const framework = fs.Kind(path.Join(root, "foundation"))
+            match framework {
+                Err(error): {
+                    discard error
+                    false
+                }
+                Ok(frameworkKind): projectEntryIsDirectory(frameworkKind)
+            }
+        }
+    }
+}
+
+fn findProjectSdkRoot(input String) Option<String> {
+    match packageEnvironment("FOUNDATION_SDK_ROOT") {
+        None: {}
+        Some(value): {
+            if !text.IsEmpty(value) && projectSdkRootValid(value) {
+                return .Some(path.Normalize(value))
+            }
+        }
+    }
+    var current = path.Normalize(input)
+    match fs.Kind(current) {
+        Ok(kind): {
+            if !projectEntryIsDirectory(kind) {
+                current = path.Parent(current)
+            }
+        }
+        Err(error): {
+            discard error
+            current = path.Parent(current)
+        }
+    }
+    while !text.IsEmpty(current) {
+        if projectSdkRootValid(current) return .Some(text.Copy(current))
+        const parent = path.Parent(current)
+        if parent == current break
+        current = parent
+    }
+    .None
+}
+
+fn appendProjectSdkSources(
+    &inputs arena<projectInputFile>,
+    &seen arena<String>,
+    input String,
+    &diagnostics diagnostics
+) bool {
+    const root = findProjectSdkRoot(input)
+    match root {
+        None: true
+        Some(value): {
+            const standard = path.Join(value, "std")
+            if !appendProjectSourceRoot(
+                &inputs, &seen, standard, standard, "std", "standard library",
+                &diagnostics) {
+                return false
+            }
+            const framework = path.Join(value, "foundation")
+            appendProjectSourceRoot(
+                &inputs, &seen, framework, framework, "foundation",
+                "Foundation framework", &diagnostics)
+        }
+    }
+}
+
+fn reportProjectPackageErrors(
+    &errors arena<packageError>,
+    &diagnostics diagnostics
+) void {
+    var index u64 = 0
+    while index < errors.len() {
+        const value = match errors.take(index) {
+            None: panic("package error slot is empty")
+            Some(value): value
+        }
+        const packageError {
+            path as errorPath
+            line
+            column
+            code
+            message
+        } = value
+        diagnostics.reportError(
+            $code,
+            $(errorPath + ": " + message),
+            sourceSpan {
+            offset = 0 length = 0 line = line column = column
+            source = 0
+        }
+        )
+        index += 1
+    }
+}
+
+fn collectLockedProjectInputs(
+    &inputs arena<projectInputFile>,
+    &seen arena<String>,
+    &project lockedPackageProject,
+    mode projectMode,
+    &diagnostics diagnostics
+) bool {
+    var sourceIndex u64 = 0
+    while sourceIndex < project.sources.len() {
+        const source = match project.sources.take(sourceIndex) {
+            None: panic("locked package source slot is empty")
+            Some(value): value
+        }
+        var include = true
+        if !projectModeIsTest(mode) && isTestScope(source.scope) {
+            include = false
+        }
+        if include {
+            const prefix = "" if sourceIndex == 0 else
+            path.Join("packages", source.name)
+            if !appendProjectSourceRoot(
+                &inputs,
+                &seen,
+                source.sourceRoot,
+                source.packageRoot,
+                prefix,
+                "locked package",
+                &diagnostics
+            ) {
+                project.sources.restore(sourceIndex, $source)
+                return false
+            }
+            if projectModeIsTest(mode) && sourceIndex == 0 {
+                match copyPackageStringOption(source.manifest.testSource) {
+                    None: {}
+                    Some(testSource): {
+                        const testRoot = path.Join(source.packageRoot, testSource)
+                        if !appendProjectSourceRoot(
+                            &inputs,
+                            &seen,
+                            testRoot,
+                            source.packageRoot,
+                            prefix,
+                            "locked package",
+                            &diagnostics
+                        ) {
+                            project.sources.restore(sourceIndex, $source)
+                            return false
+                        }
+                    }
+                }
+            }
+        }
+        project.sources.restore(sourceIndex, $source)
+        sourceIndex += 1
+    }
+    true
+}
+
+fn collectProjectInputs(
+    input String,
+    mode projectMode,
+    target targetPlatform,
+    &diagnostics diagnostics
+) Option<own arena<projectInputFile>> {
+    const kindResult = fs.Kind(input)
+    const kind = match kindResult {
+        Err(error): {
+            discard error
+            diagnostics.reportError(
+                "FDN3001", "cannot inspect source input",
+                sourceSpan { offset = 0 length = 0 line = 1 column = 1 source = 0 })
+            return .None
+        }
+        Ok(value): value
+    }
+    const regularInput = projectEntryIsFile(kind)
+    const directoryInput = projectEntryIsDirectory(kind)
+    if regularInput && path.Extension(input) != ".fn" {
+        diagnostics.reportError(
+            "FDN3007", "source file must use the .fn extension",
+            sourceSpan { offset = 0 length = 0 line = 1 column = 1 source = 0 })
+        return .None
+    }
+
+    var inputs = newArena<projectInputFile>()
+    var seen = newArena<String>()
+    const manifest = discoverPackageManifest(input)
+    const collected = match manifest {
+        Some(manifestPath): {
+            const sdk = match parsePackageVersion("0.1.0") {
+                None: panic("compiler SDK version invariant failed")
+                Some(value): value
+            }
+            var packageResult = loadLockedPackageProject(
+                manifestPath,
+                sdk,
+                target,
+                defaultPackageCachePath(),
+                projectModeIsTest(mode)
+            )
+            var project = match replace packageResult.value with .None {
+                None: {
+                    reportProjectPackageErrors(
+                        &packageResult.errors, &diagnostics)
+                    return .None
+                }
+                Some(value): value
+            }
+            if !collectLockedProjectInputs(
+                &inputs, &seen, &project, mode, &diagnostics) {
+                return .None
+            }
+            if inputs.len() == 0 {
+                diagnostics.reportError(
+                    "FDN3002", "package project contains no .fn source files",
+                    sourceSpan {
+                    offset = 0 length = 0 line = 1 column = 1 source = 0
+                })
+                return .None
+            }
+            true
+        }
+        None: {
+            if directoryInput {
+                if !appendProjectSourceRoot(
+                    &inputs, &seen, input, input, "", "project", &diagnostics) {
+                    return .None
+                }
+                if inputs.len() == 0 {
+                    diagnostics.reportError(
+                        "FDN3002", "project contains no .fn source files",
+                        sourceSpan {
+                        offset = 0 length = 0 line = 1 column = 1 source = 0
+                    })
+                    return .None
+                }
+            } else {
+                addProjectInputFile(&inputs, &seen, input, input)
+            }
+            true
+        }
+    }
+    discard collected
+    if !appendProjectSdkSources(&inputs, &seen, input, &diagnostics) {
+        return .None
+    }
+    .Some(inputs)
+}
+
+fn mergeProjectDiagnostics(
+    $source own diagnostics,
+    &target diagnostics
+) void {
+    var values = $source.takeAll()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("diagnostic list invariant failed")
+            Some(value): value
+        }
+        const diagnostic { code message span severity } = value
+        match severity {
+            Error: target.reportError($code, $message, span)
+            Warning: target.reportWarning($code, $message, span)
+        }
+    }
+}
+
+fn parseProjectInputs(
+    &inputs arena<projectInputFile>,
+    directoryOrPackage bool,
+    target targetPlatform,
+    &loaded loadedProject,
+    &files arena<own parsedProjectFile>,
+    &diagnostics diagnostics
+) void {
+    var index u64 = 0
+    while index < inputs.len() {
+        const input = match inputs.take(index) {
+            None: panic("project input slot is empty")
+            Some(value): value
+        }
+        const contentsResult = fs.ReadTextSync(input.identity, 67108864)
+        var contents = match contentsResult {
+            Err(error): {
+                discard error
+                discard loaded.sources.add(projectSource {
+                    path = text.Copy(input.displayPath)
+                    contents = ""
+                    identity = text.Copy(input.identity)
+                    packageName = ""
+                })
+                diagnostics.reportError(
+                    "FDN3001", "cannot read source file",
+                    sourceSpan {
+                    offset = 0 length = 0 line = 1 column = 1 source = index
+                })
+                index += 1
+                continue
+            }
+            Ok(value): value
+        }
+        const sourceText = text.Copy(contents)
+        const scanResult { tokens diagnostics as scanDiagnostics } = scan(
+            $contents, index)
+        var parsed = parse(
+            $tokens, $scanDiagnostics, index == 0, target)
+        const parsedDiagnostics = replace parsed.diagnostics with newDiagnostics()
+        mergeProjectDiagnostics($parsedDiagnostics, &diagnostics)
+        var source = replace parsed.program with newProgram()
+        if directoryOrPackage && !source.hasPackageDeclaration {
+            diagnostics.reportError(
+                "FDN3003", "project source must declare a package",
+                sourceSpan {
+                offset = 0 length = 0 line = 1 column = 1 source = index
+            })
+        }
+        if !source.hasPackageDeclaration {
+            source.packageName = "main" if directoryOrPackage else ""
+        }
+        discard loaded.sources.add(projectSource {
+            path = text.Copy(input.displayPath)
+            contents = sourceText
+            identity = text.Copy(input.identity)
+            packageName = text.Copy(source.packageName)
+        })
+        discard files.add(own parsedProjectFile {
+            program = source sourcePath = text.Copy(input.displayPath)
+        })
+        index += 1
+    }
+}
+
+fn projectInputIsDirectoryOrPackage(input String) bool {
+    match discoverPackageManifest(input) {
+        Some(value): {
+            discard value
+            true
+        }
+        None: {
+            match fs.Kind(input) {
+                Ok(kind): projectEntryIsDirectory(kind)
+                Err(error): {
+                    discard error
+                    false
+                }
+            }
+        }
+    }
+}
+
+fn loadProject(
+    input String,
+    &diagnostics diagnostics,
+    mode projectMode,
+    target targetPlatform
+) Option<own loadedProject> {
+    var loaded = own loadedProject {
+        program = newProgram()
+        sources = newArena<projectSource>()
+    }
+    const selected = collectProjectInputs(input, mode, target, &diagnostics)
+    var inputs = match selected {
+        None: {
+            return .None
+        }
+        Some(value): value
+    }
+    var files = newArena<own parsedProjectFile>()
+    parseProjectInputs(
+        &inputs,
+        projectInputIsDirectoryOrPackage(input),
+        target,
+        &loaded,
+        &files,
+        &diagnostics
+    )
+    if diagnostics.hasErrors() return .Some(loaded)
+
+    var symbols = collectProjectSymbols(&files)
+    rejectProjectCycles(&files, &diagnostics)
+    var foundMain = false
+    var index u64 = 0
+    while index < files.len() {
+        var file = match files.take(index) {
+            None: panic("project file slot is empty")
+            Some(value): value
+        }
+        foundMain = linkProjectFile(
+            &file, &symbols, &diagnostics, foundMain)
+        const parsedProjectFile { program sourcePath } = file
+        discard sourcePath
+        appendProjectProgram(&loaded.program, $program)
+        index += 1
+    }
+    .Some(loaded)
+}

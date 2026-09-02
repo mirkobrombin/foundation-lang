@@ -1,0 +1,274 @@
+package foundation.compiler
+
+import std.text
+
+struct projectPackageEdge {
+    packageName String
+    span sourceSpan
+}
+
+struct projectPackageNode {
+    packageName String
+    edges own arena<projectPackageEdge>
+}
+
+struct projectCycleFrame {
+    node u64
+    edge u64
+}
+
+fn findProjectPackageNode(
+    &graph arena<projectPackageNode>,
+    packageName String
+) Option<u64> {
+    var index u64 = 0
+    while index < graph.len() {
+        const node = match graph.take(index) {
+            None: panic("package graph slot is empty")
+            Some(value): value
+        }
+        const found = node.packageName == packageName
+        graph.restore(index, $node)
+        if found return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn ensureProjectPackageNode(
+    &graph arena<projectPackageNode>,
+    packageName String
+) u64 {
+    match findProjectPackageNode(&graph, packageName) {
+        Some(index): index
+        None: graph.add(projectPackageNode {
+            packageName = text.Copy(packageName)
+            edges = newArena<projectPackageEdge>()
+        })
+    }
+}
+
+fn compareProjectPackageNodes(
+    left projectPackageNode,
+    right projectPackageNode
+) i32 {
+    text.Compare(left.packageName, right.packageName)
+}
+
+fn compareProjectPackageEdges(
+    left projectPackageEdge,
+    right projectPackageEdge
+) i32 {
+    text.Compare(left.packageName, right.packageName)
+}
+
+fn buildProjectPackageGraph(
+    &files arena<own parsedProjectFile>
+) own arena<projectPackageNode> {
+    var graph = newArena<projectPackageNode>()
+    var fileIndex u64 = 0
+    while fileIndex < files.len() {
+        const file = match files.take(fileIndex) {
+            None: panic("project file slot is empty")
+            Some(value): value
+        }
+        discard ensureProjectPackageNode(&graph, file.program.packageName)
+        files.restore(fileIndex, $file)
+        fileIndex += 1
+    }
+    sortArena<projectPackageNode>(&graph, compareProjectPackageNodes)
+
+    fileIndex = 0
+    while fileIndex < files.len() {
+        var file = match files.take(fileIndex) {
+            None: panic("project file slot is empty")
+            Some(value): value
+        }
+        const sourceNode = match findProjectPackageNode(
+            &graph, file.program.packageName) {
+            None: panic("source package graph node is missing")
+            Some(value): value
+        }
+        var edges = newArena<projectPackageEdge>()
+        var importIndex u64 = 0
+        while importIndex < file.program.imports.len() {
+            const imported = match file.program.imports.take(importIndex) {
+                None: panic("import slot is empty")
+                Some(value): value
+            }
+            match findProjectPackageNode(&graph, imported.packageName) {
+                None: {}
+                Some(target): {
+                    discard target
+                    discard edges.add(projectPackageEdge {
+                        packageName = text.Copy(imported.packageName)
+                        span = imported.span
+                    })
+                }
+            }
+            file.program.imports.restore(importIndex, $imported)
+            importIndex += 1
+        }
+        var node = match graph.take(sourceNode) {
+            None: panic("package graph slot is empty")
+            Some(value): value
+        }
+        var edgeIndex u64 = 0
+        while edgeIndex < edges.len() {
+            const edge = match edges.take(edgeIndex) {
+                None: panic("package graph edge slot is empty")
+                Some(value): value
+            }
+            discard node.edges.add($edge)
+            edgeIndex += 1
+        }
+        sortArena<projectPackageEdge>(&node.edges, compareProjectPackageEdges)
+        graph.restore(sourceNode, $node)
+        files.restore(fileIndex, $file)
+        fileIndex += 1
+    }
+    graph
+}
+
+fn projectCycleState(&states arena<i32>, node u64) i32 {
+    const value = match states.take(node) {
+        None: panic("package cycle state slot is empty")
+        Some(value): value
+    }
+    states.restore(node, value)
+    value
+}
+
+fn setProjectCycleState(&states arena<i32>, node u64, value i32) void {
+    const previous = match states.take(node) {
+        None: panic("package cycle state slot is empty")
+        Some(value): value
+    }
+    discard previous
+    states.restore(node, value)
+}
+
+fn projectPackageName(
+    &graph arena<projectPackageNode>,
+    node u64
+) String {
+    const value = match graph.take(node) {
+        None: panic("package graph slot is empty")
+        Some(value): value
+    }
+    const result = text.Copy(value.packageName)
+    graph.restore(node, $value)
+    result
+}
+
+fn projectCycleDescription(
+    &graph arena<projectPackageNode>,
+    &stack arena<u64>,
+    target u64
+) String {
+    var start u64 = 0
+    var found = false
+    while start < stack.len() && !found {
+        const node = match stack.take(start) {
+            None: panic("package cycle stack slot is empty")
+            Some(value): value
+        }
+        stack.restore(start, node)
+        if node == target {
+            found = true
+        } else {
+            start += 1
+        }
+    }
+    var cycle = ""
+    var index = start
+    while index < stack.len() {
+        const node = match stack.take(index) {
+            None: panic("package cycle stack slot is empty")
+            Some(value): value
+        }
+        stack.restore(index, node)
+        if !text.IsEmpty(cycle) {
+            cycle = cycle + " -> "
+        }
+        cycle = cycle + projectPackageName(&graph, node)
+        index += 1
+    }
+    cycle + " -> " + projectPackageName(&graph, target)
+}
+
+fn rejectProjectCycles(
+    &files arena<own parsedProjectFile>,
+    &diagnostics diagnostics
+) void {
+    var graph = buildProjectPackageGraph(&files)
+    var states = newArena<i32>()
+    var node u64 = 0
+    while node < graph.len() {
+        discard states.add(0)
+        node += 1
+    }
+
+    node = 0
+    while node < graph.len() {
+        if projectCycleState(&states, node) != 0 {
+            node += 1
+            continue
+        }
+        var pending = newArena<projectCycleFrame>()
+        var stack = newArena<u64>()
+        discard pending.add(projectCycleFrame { node = node edge = 0 })
+        discard stack.add(node)
+        setProjectCycleState(&states, node, 1)
+
+        while pending.len() > 0 {
+            const frameIndex = pending.len() - 1
+            var frame = match pending.take(frameIndex) {
+                None: panic("package cycle frame slot is empty")
+                Some(value): value
+            }
+            var current = match graph.take(frame.node) {
+                None: panic("package graph slot is empty")
+                Some(value): value
+            }
+            if frame.edge == current.edges.len() {
+                graph.restore(frame.node, $current)
+                setProjectCycleState(&states, frame.node, 2)
+                pending.truncate(frameIndex)
+                stack.truncate(stack.len() - 1)
+                continue
+            }
+            const edge = match current.edges.take(frame.edge) {
+                None: panic("package graph edge slot is empty")
+                Some(value): value
+            }
+            const targetName = text.Copy(edge.packageName)
+            const edgeSpan = edge.span
+            frame.edge += 1
+            current.edges.restore(frame.edge - 1, $edge)
+            graph.restore(frame.node, $current)
+            pending.restore(frameIndex, $frame)
+            const target = match findProjectPackageNode(
+                &graph, targetName) {
+                None: panic("package graph target is missing")
+                Some(value): value
+            }
+            const state = projectCycleState(&states, target)
+            if state == 0 {
+                setProjectCycleState(&states, target, 1)
+                discard stack.add(target)
+                discard pending.add(projectCycleFrame { node = target edge = 0 })
+                continue
+            }
+            if state == 1 {
+                diagnostics.reportError(
+                    "FDN3006",
+                    "package import cycle: " + projectCycleDescription(
+                        &graph, &stack, target),
+                    edgeSpan
+                )
+            }
+        }
+        node += 1
+    }
+}

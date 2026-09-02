@@ -1,0 +1,161 @@
+package foundation.compiler
+
+test "project linking resolves declarations across packages" {
+    var application = parseSource(
+        "package app\n" +
+        "import dep\n" +
+        "fn main() i32 { dep.Answer() }\n",
+        81
+    )
+    var dependency = parseProjectTestSource(
+        "package dep\n" +
+        "fn Answer() i32 { 42 }\n",
+        82
+    )
+    expect(!application.diagnostics.hasErrors())
+    expect(!dependency.diagnostics.hasErrors())
+
+    var files = newArena<own parsedProjectFile>()
+    discard files.add(own parsedProjectFile {
+        program = replace application.program with newProgram()
+        sourcePath = "app/main.fn"
+    })
+    discard files.add(own parsedProjectFile {
+        program = replace dependency.program with newProgram()
+        sourcePath = "dep/value.fn"
+    })
+    var diagnostics = newDiagnostics()
+    var symbols = collectProjectSymbols(&files)
+    rejectProjectCycles(&files, &diagnostics)
+    var combined = newProgram()
+    var foundMain = false
+    var index u64 = 0
+    while index < files.len() {
+        var file = match files.take(index) {
+            None: panic("project test file slot is empty")
+            Some(value): value
+        }
+        foundMain = linkProjectFile(
+            &file, &symbols, &diagnostics, foundMain)
+        const parsedProjectFile { program sourcePath } = file
+        discard sourcePath
+        appendProjectProgram(&combined, $program)
+        index += 1
+    }
+    expect(!diagnostics.hasErrors())
+    expect(foundMain)
+    expect(projectTestHasFunction(&combined, "main"))
+    expect(projectTestHasFunction(&combined, "dep.Answer"))
+
+    var analysis = analyzeProgram(
+        &combined,
+        analyzeOptions { requireMain = true retainInvalidModel = false }
+    )
+    var model = requireSemanticModel($analysis)
+    var lowered = lowerProgram(&combined, &model)
+    expect(lowered.functions.len() == 2)
+}
+
+test "project linking rejects package cycles" {
+    var left = parseSource(
+        "package left\n" +
+        "import right\n" +
+        "fn Left() i32 { right.Right() }\n",
+        83
+    )
+    var right = parseProjectTestSource(
+        "package right\n" +
+        "import left\n" +
+        "fn Right() i32 { left.Left() }\n",
+        84
+    )
+    expect(!left.diagnostics.hasErrors())
+    expect(!right.diagnostics.hasErrors())
+    var files = newArena<own parsedProjectFile>()
+    discard files.add(own parsedProjectFile {
+        program = replace left.program with newProgram()
+        sourcePath = "left/main.fn"
+    })
+    discard files.add(own parsedProjectFile {
+        program = replace right.program with newProgram()
+        sourcePath = "right/main.fn"
+    })
+    var diagnostics = newDiagnostics()
+    rejectProjectCycles(&files, &diagnostics)
+    expect(projectTestHasDiagnostic($diagnostics, "FDN3006"))
+}
+
+test "project linking rejects bindings that shadow import aliases" {
+    var application = parseSource(
+        "package app\n" +
+        "import dep\n" +
+        "fn Value(dep i32) i32 { dep }\n",
+        85
+    )
+    var dependency = parseProjectTestSource(
+        "package dep\n" +
+        "fn Answer() i32 { 42 }\n",
+        86
+    )
+    expect(!application.diagnostics.hasErrors())
+    expect(!dependency.diagnostics.hasErrors())
+    var files = newArena<own parsedProjectFile>()
+    discard files.add(own parsedProjectFile {
+        program = replace application.program with newProgram()
+        sourcePath = "app/main.fn"
+    })
+    discard files.add(own parsedProjectFile {
+        program = replace dependency.program with newProgram()
+        sourcePath = "dep/main.fn"
+    })
+    var diagnostics = newDiagnostics()
+    var symbols = collectProjectSymbols(&files)
+    var file = match files.take(0) {
+        None: panic("project test file slot is empty")
+        Some(value): value
+    }
+    discard linkProjectFile(&file, &symbols, &diagnostics, false)
+    expect(projectTestHasDiagnostic($diagnostics, "FDN3004"))
+}
+
+fn parseProjectTestSource(
+    $source String,
+    sourceID u64
+) own parseResult {
+    const scanResult { tokens diagnostics } = scan($source, sourceID)
+    parse($tokens, $diagnostics, false, hostTargetPlatform())
+}
+
+fn projectTestHasFunction(
+    &source program,
+    expected String
+) bool {
+    var index u64 = 0
+    while index < source.functions.len() {
+        const declaration = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(value): value
+        }
+        const found = declaration.name == expected
+        source.functions.restore(index, $declaration)
+        if found return true
+        index += 1
+    }
+    false
+}
+
+fn projectTestHasDiagnostic(
+    $diagnostics own diagnostics,
+    code String
+) bool {
+    var values = $diagnostics.takeAll()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("diagnostic list invariant failed")
+            Some(value): value
+        }
+        if value.code == code return true
+        discard value
+    }
+    false
+}

@@ -1,0 +1,54 @@
+package foundation.compiler
+
+struct projectSource {
+    path String
+    contents String
+    identity String
+    packageName String
+}
+
+struct parsedProjectFile {
+    program own program
+    sourcePath String
+}
+
+struct loadedProject {
+    program own program
+    sources own arena<projectSource>
+}
+
+struct projectInputFile {
+    identity String
+    displayPath String
+}
+
+enum projectMode {
+    Production
+    Test
+}
+
+struct projectDeclaration {
+    packageName String
+    name String
+    internalName String
+    exported bool
+    function bool
+    attributeDeclaration bool
+}
+
+struct projectImportAlias {
+    alias String
+    packageName String
+}
+
+struct projectDeclarationLookup {
+    found bool
+    internalName String
+    packageName String
+    exported bool
+}
+
+struct projectAliasLookup {
+    found bool
+    packageName String
+}
