@@ -477,8 +477,12 @@ if(MSVC)
     target_compile_options(foundation_compiler PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(foundationc PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(foundation-ls PRIVATE /W4 /permissive- /EHsc)
-    target_compile_options(foundationc_selfhost_stage1 PRIVATE /O2 /W4)
-    target_compile_options(foundationc_selfhost PRIVATE /O2 /W4)
+    target_compile_options(foundationc_selfhost_stage1 PRIVATE
+        /W4 $<$<NOT:$<CONFIG:Debug>>:/O2>
+    )
+    target_compile_options(foundationc_selfhost PRIVATE
+        /W4 $<$<NOT:$<CONFIG:Debug>>:/O2>
+    )
     if(FOUNDATION_WARNINGS_AS_ERRORS)
         target_compile_options(foundation_runtime PRIVATE /WX)
         target_compile_options(foundation_compiler PRIVATE /WX)

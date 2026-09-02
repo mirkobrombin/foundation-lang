@@ -152,7 +152,7 @@ jobs:
 
       - name: Verify self-hosted compiler
         run: >-
-          cmake --build build/windows --config Debug
+          cmake --build build/windows --config Release
           --target foundation_selfhost_verify
 
       - name: Prepare package locks for host
