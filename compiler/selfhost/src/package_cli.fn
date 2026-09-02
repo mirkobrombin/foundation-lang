@@ -573,11 +573,20 @@ fn inspectPackageCommand(&options packageOptions) i32 {
     discard io.WriteStdoutText(renderPackageManifest(&manifest))
     const lockPath = packageLockPath(options.project)
     match fs.Kind(lockPath) {
-        Ok(Missing): {
+        Err(error): {
+            discard error
             discard io.WriteStdoutText("lock absent\n")
             return 0
         }
-        _: {}
+        Ok(kind): {
+            match kind {
+                Missing: {
+                    discard io.WriteStdoutText("lock absent\n")
+                    return 0
+                }
+                _: {}
+            }
+        }
     }
     var lockResult = readPackageLock(lockPath)
     var lock = match replace lockResult.value with .None {
