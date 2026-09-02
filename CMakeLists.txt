@@ -443,7 +443,7 @@ install(DIRECTORY examples/ DESTINATION examples
         PATTERN "CMakeLists.txt"
         PATTERN "foundation.package"
         PATTERN "foundation.lock")
-install(FILES LICENSE README.md DESTINATION .)
+install(FILES LICENSE-MIT LICENSE-APACHE README.md DESTINATION .)
 
 if(MSVC)
     target_compile_options(foundation_runtime PRIVATE /W4)
