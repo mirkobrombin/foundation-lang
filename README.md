@@ -123,6 +123,7 @@ provide it yet.
 | Area | State | Repository evidence |
 | --- | --- | --- |
 | Language and ownership model | Implemented | Compiler tests and accepted or rejected source fixtures |
+| Self-hosted compiler | Implemented | Three-stage bootstrap with a byte-identical stage2/stage3 fixed point |
 | Services, actions, state machines, pipelines, sagas | Implemented | Application-plan, host, compiler, and language-server tests |
 | LLVM and C11 native output | Implemented | Build, run, library, and backend test suites |
 | C ABI, Zig, Rust, and Go package export | Implemented | Generated consumer and deterministic-output tests |
@@ -140,6 +141,13 @@ cmake --preset dev
 cmake --build --preset dev
 ./build/dev/foundationc run examples/hello
 ctest --preset dev
+```
+
+The reproducible self-hosted bootstrap is a separate build target:
+
+```sh
+cmake --build --preset dev --target foundation_selfhost_bootstrap
+./build/dev/foundationc-selfhost version
 ```
 
 ## Documentation

@@ -320,13 +320,103 @@ target_link_libraries(foundationc PRIVATE foundation_compiler)
 
 add_executable(foundation-ls compiler/src/lsp_main.cpp)
 target_link_libraries(foundation-ls PRIVATE foundation_compiler)
+
+if(WIN32)
+    set(FOUNDATION_SELFHOST_TARGET windows)
+elseif(APPLE)
+    set(FOUNDATION_SELFHOST_TARGET macos)
+else()
+    set(FOUNDATION_SELFHOST_TARGET linux)
+endif()
+set(FOUNDATION_SELFHOST_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/selfhost")
+set(FOUNDATION_SELFHOST_PROJECT "${FOUNDATION_SELFHOST_DIRECTORY}/project")
+set(FOUNDATION_SELFHOST_STAGE1 "${FOUNDATION_SELFHOST_DIRECTORY}/stage1.c")
+set(FOUNDATION_SELFHOST_STAGE2 "${FOUNDATION_SELFHOST_DIRECTORY}/stage2.c")
+set(FOUNDATION_SELFHOST_STAGE3 "${FOUNDATION_SELFHOST_DIRECTORY}/stage3.c")
+set(FOUNDATION_SELFHOST_STAMP "${FOUNDATION_SELFHOST_DIRECTORY}/bootstrap.stamp")
+file(GLOB_RECURSE FOUNDATION_SELFHOST_INPUTS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/compiler/selfhost/*.fn"
+    "${CMAKE_CURRENT_SOURCE_DIR}/foundation/*.fn"
+    "${CMAKE_CURRENT_SOURCE_DIR}/std/*.fn"
+)
+list(APPEND FOUNDATION_SELFHOST_INPUTS
+    "${CMAKE_CURRENT_SOURCE_DIR}/compiler/selfhost/foundation.package"
+)
+add_custom_command(
+    OUTPUT "${FOUNDATION_SELFHOST_STAGE1}"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${FOUNDATION_SELFHOST_PROJECT}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FOUNDATION_SELFHOST_PROJECT}"
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_CURRENT_SOURCE_DIR}/compiler/selfhost/foundation.package"
+        "${FOUNDATION_SELFHOST_PROJECT}/foundation.package"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/compiler/selfhost/src"
+        "${FOUNDATION_SELFHOST_PROJECT}/src"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/compiler/selfhost/tests"
+        "${FOUNDATION_SELFHOST_PROJECT}/tests"
+    COMMAND ${CMAKE_COMMAND} -E env
+        "FOUNDATION_SDK_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        $<TARGET_FILE:foundationc> package resolve
+        "${FOUNDATION_SELFHOST_PROJECT}"
+        --target "${FOUNDATION_SELFHOST_TARGET}"
+    COMMAND ${CMAKE_COMMAND} -E env
+        "FOUNDATION_SDK_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        $<TARGET_FILE:foundationc> emit-c
+        "${FOUNDATION_SELFHOST_PROJECT}"
+        -o "${FOUNDATION_SELFHOST_STAGE1}"
+    DEPENDS foundationc ${FOUNDATION_SELFHOST_INPUTS}
+    VERBATIM
+)
+add_executable(foundationc_selfhost_stage1 EXCLUDE_FROM_ALL "${FOUNDATION_SELFHOST_STAGE1}")
+set_target_properties(foundationc_selfhost_stage1 PROPERTIES
+    OUTPUT_NAME foundationc-selfhost-stage1
+)
+target_include_directories(foundationc_selfhost_stage1 PRIVATE runtime/include)
+target_link_libraries(foundationc_selfhost_stage1 PRIVATE foundation_runtime)
+add_custom_command(
+    OUTPUT "${FOUNDATION_SELFHOST_STAGE2}"
+    COMMAND ${CMAKE_COMMAND} -E env
+        "FOUNDATION_SDK_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        $<TARGET_FILE:foundationc_selfhost_stage1> emit-c
+        "${FOUNDATION_SELFHOST_PROJECT}"
+        -o "${FOUNDATION_SELFHOST_STAGE2}"
+    DEPENDS foundationc_selfhost_stage1 "${FOUNDATION_SELFHOST_STAGE1}"
+    VERBATIM
+)
+add_executable(foundationc_selfhost EXCLUDE_FROM_ALL "${FOUNDATION_SELFHOST_STAGE2}")
+set_target_properties(foundationc_selfhost PROPERTIES OUTPUT_NAME foundationc-selfhost)
+target_include_directories(foundationc_selfhost PRIVATE runtime/include)
+target_link_libraries(foundationc_selfhost PRIVATE foundation_runtime)
+add_custom_command(
+    OUTPUT "${FOUNDATION_SELFHOST_STAMP}"
+    BYPRODUCTS "${FOUNDATION_SELFHOST_STAGE3}"
+    COMMAND ${CMAKE_COMMAND} -E env
+        "FOUNDATION_SDK_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        $<TARGET_FILE:foundationc_selfhost> emit-c
+        "${FOUNDATION_SELFHOST_PROJECT}"
+        -o "${FOUNDATION_SELFHOST_STAGE3}"
+    COMMAND ${CMAKE_COMMAND} -E compare_files
+        "${FOUNDATION_SELFHOST_STAGE2}"
+        "${FOUNDATION_SELFHOST_STAGE3}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${FOUNDATION_SELFHOST_STAMP}"
+    DEPENDS foundationc_selfhost "${FOUNDATION_SELFHOST_STAGE2}"
+    VERBATIM
+)
+add_custom_target(foundation_selfhost_bootstrap
+    DEPENDS "${FOUNDATION_SELFHOST_STAMP}"
+)
 if(MSVC)
     target_link_options(foundationc PRIVATE /STACK:8388608)
     target_link_options(foundation-ls PRIVATE /STACK:8388608)
+    target_link_options(foundationc_selfhost_stage1 PRIVATE /STACK:8388608)
+    target_link_options(foundationc_selfhost PRIVATE /STACK:8388608)
 endif()
 
 include(GNUInstallDirs)
 install(TARGETS foundationc foundation-ls RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS foundationc_selfhost
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
 if(TARGET foundation_openssl_provider)
     install(TARGETS foundation_openssl_provider ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
     install(FILES providers/openssl/foundation_openssl.h DESTINATION include/foundation)
@@ -360,22 +450,30 @@ if(MSVC)
     target_compile_options(foundation_compiler PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(foundationc PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(foundation-ls PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(foundationc_selfhost_stage1 PRIVATE /O2 /W4)
+    target_compile_options(foundationc_selfhost PRIVATE /O2 /W4)
     if(FOUNDATION_WARNINGS_AS_ERRORS)
         target_compile_options(foundation_runtime PRIVATE /WX)
         target_compile_options(foundation_compiler PRIVATE /WX)
         target_compile_options(foundationc PRIVATE /WX)
         target_compile_options(foundation-ls PRIVATE /WX)
+        target_compile_options(foundationc_selfhost_stage1 PRIVATE /WX)
+        target_compile_options(foundationc_selfhost PRIVATE /WX)
     endif()
 else()
     target_compile_options(foundation_runtime PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(foundation_compiler PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(foundationc PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(foundation-ls PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(foundationc_selfhost_stage1 PRIVATE -O2 -Wall -Wextra -Wpedantic)
+    target_compile_options(foundationc_selfhost PRIVATE -O2 -Wall -Wextra -Wpedantic)
     if(FOUNDATION_WARNINGS_AS_ERRORS)
         target_compile_options(foundation_runtime PRIVATE -Werror)
         target_compile_options(foundation_compiler PRIVATE -Werror)
         target_compile_options(foundationc PRIVATE -Werror)
         target_compile_options(foundation-ls PRIVATE -Werror)
+        target_compile_options(foundationc_selfhost_stage1 PRIVATE -Werror)
+        target_compile_options(foundationc_selfhost PRIVATE -Werror)
     endif()
 endif()
 
@@ -394,6 +492,10 @@ if(FOUNDATION_BUILD_FUZZERS)
     )
     target_link_options(foundationc PRIVATE -fsanitize=address,undefined)
     target_link_options(foundation-ls PRIVATE -fsanitize=address,undefined)
+    target_compile_options(foundationc_selfhost_stage1 PRIVATE -fsanitize=address,undefined)
+    target_link_options(foundationc_selfhost_stage1 PRIVATE -fsanitize=address,undefined)
+    target_compile_options(foundationc_selfhost PRIVATE -fsanitize=address,undefined)
+    target_link_options(foundationc_selfhost PRIVATE -fsanitize=address,undefined)
     add_executable(foundation_parser_fuzz compiler/fuzz/parser_fuzz.cpp)
     target_link_libraries(foundation_parser_fuzz PRIVATE foundation_compiler)
     target_compile_options(foundation_parser_fuzz PRIVATE

@@ -3,8 +3,27 @@
 Status: current repository implementation for the Foundation 1.0 target. Release state is
 maintained in the [README](../README.md#status).
 
-Foundation uses one C++20 compiler implementation for command-line builds, package operations,
-formatting services, documentation, linting, and the language server.
+The repository contains a Foundation compiler and its C++20 stage0. The Foundation implementation
+owns parsing, package resolution, semantic analysis, FIR, application derivation, C11 output,
+LLVM output, and native build, run, and test commands. Stage0 remains available for bootstrap and
+the existing formatting, documentation, linting, and language-server entry points.
+
+## Bootstrap
+
+Stage0 emits the stage1 C source. The resulting stage1 compiler emits stage2, then the stage2
+compiler emits stage3. A successful bootstrap requires stage2 and stage3 to be byte-identical.
+Stage1 is not part of that comparison because it was emitted by the independent stage0
+implementation.
+
+```sh
+cmake --build --preset dev --target foundation_selfhost_bootstrap
+./build/dev/foundationc-selfhost version
+```
+
+The target resolves the package for the host, compiles both Foundation generations with warnings
+as errors, compares their generated source, and leaves `foundationc-selfhost` as the final
+executable. An SDK install includes that executable after the bootstrap target has built it. CI
+runs the same bootstrap on Linux, macOS, and Windows.
 
 ## Build and output
 
