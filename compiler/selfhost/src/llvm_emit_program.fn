@@ -1,0 +1,230 @@
+package foundation.compiler
+
+import std.text
+
+fn llvmEmitHeader(&builder text.Builder) void {
+    llvmWrite(&builder, "; ModuleID = 'foundation.program'\n")
+    llvmWrite(&builder, "source_filename = \"foundation.program\"\n\n")
+}
+
+fn llvmEmitFunctionDeclarations(
+    &module llvmModuleEmission,
+    &program firProgram
+) void {
+    var function u64 = 0
+    while function < program.functions.len() {
+        var selected = cFunctionAt(&program, function)
+        if !selected.hasBody {
+            const symbol = match replace selected.cSymbol with .None {
+                None: llvmFunctionName(&program, function)
+                Some(value): {
+                    const result = "" + value
+                    selected.cSymbol = .Some(value)
+                    result
+                }
+            }
+            llvmRequireExternal(
+                &module,
+                symbol,
+                llvmNamedFunctionSignature(
+                    &program, &selected, true, symbol)
+            )
+        }
+        function += 1
+    }
+}
+
+fn llvmUsesExternalResultPointer(&function firFunction) bool {
+    !function.hasBody &&
+        optionStringPresent(copyFirStringOption(function.cSymbol)) &&
+        function.returnType.kind.Matches("StringValue")
+}
+
+fn llvmFunctionSignature(
+    &program firProgram,
+    &function firFunction,
+    native bool
+) String {
+    discard program
+    const indirect = llvmUsesExternalResultPointer(&function)
+    var builder = text.NewBuilder()
+    const result = if function.diverges || indirect {
+        "void"
+    } else {
+        llvmTypeName(&function.returnType)
+    }
+    llvmWrite(&builder, result + "(")
+    var wrote = false
+    if indirect {
+        llvmWrite(&builder, "ptr sret(" +
+            llvmTypeName(&function.returnType) + ")")
+        wrote = true
+    }
+    if function.closure && !native {
+        if wrote {
+            llvmWrite(&builder, ", ")
+        }
+        llvmWrite(&builder, "ptr")
+        wrote = true
+    }
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        const local = match function.parameters.take(parameter) {
+            None: panic("FIR parameter slot is empty")
+            Some(found): found
+        }
+        var declaration = match function.locals.take(local) {
+            None: panic("FIR parameter local slot is empty")
+            Some(found): found
+        }
+        if wrote {
+            llvmWrite(&builder, ", ")
+        }
+        llvmWrite(&builder, llvmTypeName(&declaration.type))
+        wrote = true
+        function.locals.restore(local, $declaration)
+        function.parameters.restore(parameter, local)
+        parameter += 1
+    }
+    if function.callback && native {
+        if wrote {
+            llvmWrite(&builder, ", ")
+        }
+        llvmWrite(&builder, "ptr")
+    }
+    llvmWrite(&builder, ")")
+    llvmFinish(&builder)
+}
+
+fn llvmNamedFunctionSignature(
+    &program firProgram,
+    &function firFunction,
+    native bool,
+    symbol String
+) String {
+    const indirect = llvmUsesExternalResultPointer(&function)
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, if function.diverges || indirect {
+        "void"
+    } else {
+        llvmTypeName(&function.returnType)
+    })
+    llvmWrite(&builder, " @" + symbol + "(")
+    var wrote = false
+    if indirect {
+        llvmWrite(&builder, "ptr sret(" +
+            llvmTypeName(&function.returnType) + ")")
+        wrote = true
+    }
+    if function.closure && !native {
+        if wrote {
+            llvmWrite(&builder, ", ")
+        }
+        llvmWrite(&builder, "ptr")
+        wrote = true
+    }
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        const local = match function.parameters.take(parameter) {
+            None: panic("FIR parameter slot is empty")
+            Some(found): found
+        }
+        var declaration = match function.locals.take(local) {
+            None: panic("FIR parameter local slot is empty")
+            Some(found): found
+        }
+        if wrote {
+            llvmWrite(&builder, ", ")
+        }
+        llvmWrite(&builder, llvmTypeName(&declaration.type))
+        wrote = true
+        function.locals.restore(local, $declaration)
+        function.parameters.restore(parameter, local)
+        parameter += 1
+    }
+    if function.callback && native {
+        if wrote {
+            llvmWrite(&builder, ", ")
+        }
+        llvmWrite(&builder, "ptr")
+    }
+    llvmWrite(&builder, ")")
+    discard program
+    llvmFinish(&builder)
+}
+
+fn llvmEmitFunctionPrototype(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if function.hasBody {
+        llvmWrite(&builder, "declare " + llvmFunctionSignature(
+                &program, &function, false) + " @" +
+            llvmFunctionName(&program, id) + "\n")
+    }
+}
+
+fn llvmEmitFunctionPrototypes(
+    &builder text.Builder,
+    &program firProgram
+) void {
+    var function u64 = 0
+    while function < program.functions.len() {
+        llvmEmitFunctionPrototype(&builder, &program, function)
+        function += 1
+    }
+    if program.functions.len() != 0 {
+        llvmWrite(&builder, "\n")
+    }
+}
+
+fn emitSelfHostedLlvmImpl(
+    &source firProgram,
+    sourcePath String,
+    testEntry Option<u64>
+) String {
+    var program = match testEntry {
+        None: monomorphizeProgram(&source)
+        Some(entry): monomorphizeProgramEntry(&source, entry)
+    }
+    var collected = cCollectTypes(&program)
+    var contractUses = cCollectContractUses(&program)
+    var module = newLlvmModuleEmission()
+    llvmEmitFunctionDeclarations(&module, &program)
+    llvmEmitOwnershipFunctions(&module, &program, &collected)
+    llvmEmitContractSupports(&module, &program, &contractUses)
+    llvmEmitFunctions(&module, &program, sourcePath)
+    match testEntry {
+        None: llvmEmitMainWrapper(&module, &program)
+        Some(entry): {
+            discard entry
+            llvmEmitTestMainWrapper(&module, &program)
+        }
+    }
+
+    var builder = text.NewBuilder()
+    llvmEmitHeader(&builder)
+    llvmEmitNamedTypes(&builder, &program, &collected)
+    llvmEmitStringConstants(&builder, &module)
+    llvmWrite(&builder, llvmFinish(&module.globals))
+    llvmWrite(&builder, llvmFinish(&module.functions))
+    llvmEmitExternalDeclarations(&builder, &module)
+    llvmFinish(&builder)
+}
+
+fn emitSelfHostedLlvm(
+    &source firProgram,
+    sourcePath String
+) String {
+    emitSelfHostedLlvmImpl(&source, sourcePath, .None)
+}
+
+fn emitSelfHostedTestLlvm(
+    &source firProgram,
+    test u64,
+    sourcePath String
+) String {
+    emitSelfHostedLlvmImpl(&source, sourcePath, .Some(test))
+}

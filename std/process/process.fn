@@ -34,6 +34,64 @@ struct Output {
     }
 }
 
+struct Command {
+    handle u64
+
+    fn AddArgument(&self, argument String) Result<void, Error> {
+        const status = addArgumentNative(self.handle, argument)
+        if status == 0 return .Ok
+        .Err(errorFor(status))
+    }
+
+    fn SetWorkingDirectory(&self, workingDirectory String) Result<void, Error> {
+        const status = setWorkingDirectoryNative(self.handle, workingDirectory)
+        if status == 0 return .Ok
+        .Err(errorFor(status))
+    }
+
+    fn AddEnvironment(&self, entry String) Result<void, Error> {
+        const status = addEnvironmentNative(self.handle, entry)
+        if status == 0 return .Ok
+        .Err(errorFor(status))
+    }
+
+    fn Capture(&self) Result<own Output, Error> {
+        var handle = replace self.handle with 0
+        if handle == 0 return .Err(.Closed)
+
+        var exitCode i32 = 0
+        var stdoutHandle u64 = 0
+        var stderrHandle u64 = 0
+        const status = runNative(
+            handle,
+            &exitCode,
+            &stdoutHandle,
+            &stderrHandle
+        )
+        closeNative(&handle)
+        if status != 0 return .Err(errorFor(status))
+
+        const stdout = bytes.ClaimRuntimeHandle(stdoutHandle) else error {
+            discard error
+            return .Err(.Io)
+        }
+        const stderr = bytes.ClaimRuntimeHandle(stderrHandle) else error {
+            discard error
+            discard stdout
+            return .Err(.Io)
+        }
+        .Ok(own Output {
+            ExitCode = exitCode
+            Stdout = stdout
+            Stderr = stderr
+        })
+    }
+
+    fn drop(&self) void {
+        closeNative(&self.handle)
+    }
+}
+
 extern c fn openNative(
     program String,
     outputLimit u64,
@@ -82,20 +140,17 @@ fn DefaultOptions() Options {
     }
 }
 
-// Runs one program directly with argv semantics and separate bounded output.
-fn Run(
+fn Open(
     program String,
-    arguments [String],
-    environment [String],
     $options Options
-) Result<own Output, Error> {
+) Result<own Command, Error> {
     const Options {
         WorkingDirectory
         InheritEnvironment
         OutputLimit
     } = options
     var handle u64 = 0
-    var status = openNative(
+    const status = openNative(
         program,
         OutputLimit,
         InheritEnvironment,
@@ -103,50 +158,38 @@ fn Run(
     )
     if status != 0 return .Err(errorFor(status))
 
-    for argument in arguments {
-        status = addArgumentNative(handle, argument)
-        if status != 0 {
-            closeNative(&handle)
-            return .Err(errorFor(status))
-        }
-    }
+    var command = own Command { handle = handle }
     match WorkingDirectory {
         None: {}
         Some(workingDirectory): {
-            status = setWorkingDirectoryNative(handle, workingDirectory)
-            if status != 0 {
-                closeNative(&handle)
-                return .Err(errorFor(status))
+            command.SetWorkingDirectory(workingDirectory) else error {
+                return .Err(error)
             }
         }
     }
-    for entry in environment {
-        status = addEnvironmentNative(handle, entry)
-        if status != 0 {
-            closeNative(&handle)
-            return .Err(errorFor(status))
+    .Ok(command)
+}
+
+// Runs one program directly with argv semantics and separate bounded output.
+fn Run(
+    program String,
+    arguments [String],
+    environment [String],
+    $options Options
+) Result<own Output, Error> {
+    const opened = Open(program, $options) else error {
+        return .Err(error)
+    }
+    var command = opened
+    for argument in arguments {
+        command.AddArgument(argument) else error {
+            return .Err(error)
         }
     }
-
-    var exitCode i32 = 0
-    var stdoutHandle u64 = 0
-    var stderrHandle u64 = 0
-    status = runNative(handle, &exitCode, &stdoutHandle, &stderrHandle)
-    closeNative(&handle)
-    if status != 0 return .Err(errorFor(status))
-
-    const stdout = bytes.ClaimRuntimeHandle(stdoutHandle) else error {
-        discard error
-        return .Err(.Io)
+    for entry in environment {
+        command.AddEnvironment(entry) else error {
+            return .Err(error)
+        }
     }
-    const stderr = bytes.ClaimRuntimeHandle(stderrHandle) else error {
-        discard error
-        discard stdout
-        return .Err(.Io)
-    }
-    .Ok(own Output {
-        ExitCode = exitCode
-        Stdout = stdout
-        Stderr = stderr
-    })
+    command.Capture()
 }

@@ -1,0 +1,262 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn llvmExpressionAt(&function firFunction, id u64) firExpression {
+    cExpressionAt(&function, id)
+}
+
+fn llvmExpressionTypeAt(
+    &function firFunction,
+    id u64
+) semanticType {
+    cExpressionTypeAt(&function, id)
+}
+
+fn llvmLocalTypeAt(&function firFunction, local u64) semanticType {
+    cLocalTypeAt(&function, local)
+}
+
+fn llvmLoad(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    &type semanticType,
+    address String
+) String {
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = load " +
+        llvmTypeName(&type) + ", ptr " + address)
+    result
+}
+
+fn llvmStore(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    &type semanticType,
+    value String,
+    address String
+) void {
+    llvmInstruction(&builder, &state, "store " + llvmTypeName(&type) +
+        " " + value + ", ptr " + address)
+}
+
+fn llvmEnsureValue(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    &emitted llvmEmittedValue
+) String {
+    if !emitted.address return "" + emitted.value
+    var valueType = copySemanticType(&emitted.type)
+    const address = "" + emitted.value
+    const result = llvmLoad(&builder, &state, &valueType, address)
+    emitted.value = "" + result
+    emitted.address = false
+    result
+}
+
+fn llvmEnsureAddress(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    &emitted llvmEmittedValue
+) String {
+    if emitted.address return "" + emitted.value
+    const address = llvmNextTemporary(&state)
+    var valueType = copySemanticType(&emitted.type)
+    const value = "" + emitted.value
+    llvmInstruction(&builder, &state, address + " = alloca " +
+        llvmTypeName(&valueType))
+    llvmStore(&builder, &state, &valueType, value, address)
+    emitted.value = "" + address
+    emitted.address = true
+    address
+}
+
+fn llvmMoveFromAddress(
+    &builder text.Builder,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &valueType semanticType,
+    address String
+) String {
+    const value = llvmLoad(&builder, &state, &valueType, address)
+    if llvmTypeRequiresDrop(&program, &valueType) {
+        const empty = llvmZeroValue(&valueType)
+        llvmStore(&builder, &state, &valueType, empty, address)
+    }
+    value
+}
+
+fn llvmStructHasDrop(
+    &program firProgram,
+    declaration u64
+) bool {
+    if declaration >= program.structs.len() return false
+    var selected = cStructAt(&program, declaration)
+    monomorphU64Present(selected.dropFunction)
+}
+
+fn llvmStructFieldAddress(
+    &builder text.Builder,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    base String,
+    &type semanticType,
+    field u64
+) String {
+    if !type.kind.Matches("StructValue") {
+        panic("LLVM struct field base has invalid type")
+    }
+    const index = field + if llvmStructHasDrop(
+        &program, type.declaration) { 1 } else { 0 }
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = getelementptr inbounds " +
+        llvmTypeName(&type) + ", ptr " + base + ", i32 0, i32 " +
+        format.U64(index))
+    result
+}
+
+fn llvmEnumTagAddress(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    base String,
+    &type semanticType
+) String {
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = getelementptr inbounds " +
+        llvmTypeName(&type) + ", ptr " + base + ", i32 0, i32 0")
+    result
+}
+
+fn llvmEnumPayloadAddress(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    base String,
+    &type semanticType,
+    variant u64
+) String {
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = getelementptr inbounds " +
+        llvmTypeName(&type) + ", ptr " + base + ", i32 0, i32 " +
+        format.U64(variant + 1))
+    result
+}
+
+fn llvmAggregateFieldAddress(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    base String,
+    &type semanticType,
+    field u64
+) String {
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = getelementptr inbounds " +
+        llvmTypeName(&type) + ", ptr " + base + ", i32 0, i32 " +
+        format.U64(field))
+    result
+}
+
+fn llvmArrayElementAddress(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    base String,
+    &type semanticType,
+    index String
+) String {
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = getelementptr inbounds " +
+        llvmTypeName(&type) + ", ptr " + base + ", i64 0, i64 " + index)
+    result
+}
+
+fn llvmPointerElementAddress(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    base String,
+    &element semanticType,
+    index String
+) String {
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = getelementptr inbounds " +
+        llvmTypeName(&element) + ", ptr " + base + ", i64 " + index)
+    result
+}
+
+fn llvmSizeOf(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    &type semanticType
+) String {
+    const end = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, end + " = getelementptr " +
+        llvmTypeName(&type) + ", ptr null, i32 1")
+    const size = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, size + " = ptrtoint ptr " + end +
+        " to i64")
+    size
+}
+
+fn llvmAllocate(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &state llvmFunctionEmission,
+    &type semanticType
+) String {
+    const size = llvmSizeOf(&builder, &state, &type)
+    llvmRequireExternal(&module, "fdn_alloc", "ptr @fdn_alloc(i64)")
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = call ptr @fdn_alloc(i64 " +
+        size + ")")
+    result
+}
+
+fn llvmIntegerConstant(
+    value firIntegerExpression
+) String {
+    const magnitude = format.U64(value.magnitude)
+    if value.negative return "-" + magnitude
+    magnitude
+}
+
+fn llvmStringValue(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &state llvmFunctionEmission,
+    value String
+) String {
+    const name = llvmStringConstantName(&module, value)
+    const first = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, first +
+        " = insertvalue %fdn.string zeroinitializer, ptr " + name + ", 0")
+    const second = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, second + " = insertvalue %fdn.string " +
+        first + ", i64 " + format.U64(text.ByteLen(value)) + ", 1")
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = insertvalue %fdn.string " +
+        second + ", i8 0, 2")
+    result
+}
+
+fn llvmCopyCleanups(
+    &source llvmEmittedValue
+) own arena<llvmCleanup> {
+    var result = newArena<llvmCleanup>()
+    var index u64 = 0
+    while index < source.cleanups.len() {
+        var cleanup = match source.cleanups.take(index) {
+            None: panic("LLVM cleanup slot is empty")
+            Some(found): found
+        }
+        discard result.add(llvmCleanup {
+            address = "" + cleanup.address
+            type = copySemanticType(&cleanup.type)
+        })
+        source.cleanups.restore(index, $cleanup)
+        index += 1
+    }
+    result
+}
+
+fn llvmIsPlaceExpression(&function firFunction, id u64) bool {
+    cIsPlaceExpression(&function, id)
+}

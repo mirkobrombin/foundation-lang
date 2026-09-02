@@ -605,7 +605,8 @@ fn analyzeSemanticCallInner(
         }
     }
     const packageName = semanticFunctionPackage(&source, function)
-    if packageName != currentSemanticPackage(&analyzer, &source) &&
+    if packageName != "std.prelude" &&
+        packageName != currentSemanticPackage(&analyzer, &source) &&
         !semanticFunctionExported(&source, function) {
         analyzer.diagnostics.reportError(
             "FDN3008", "function " + call.callee + " is not exported", span)
@@ -1035,6 +1036,19 @@ fn analyzeSemanticBuiltinCall(
             types.restore(0, $actual)
         }
         var target = newCallTarget(.Print if callee == "print" else .Panic)
+        if callee == "print" {
+            var drops = newArena<bool>()
+            var argumentIndex u64 = 0
+            while argumentIndex < arguments.len() {
+                var argumentType = semanticTypeArenaAt(&types, argumentIndex)
+                const argument = semanticArgumentID(&arguments, argumentIndex)
+                discard drops.add(
+                    requiresSemanticDrop(&analyzer, &source, &argumentType) &&
+                    !isSemanticPlaceExpression(&analyzer, &source, argument))
+                argumentIndex += 1
+            }
+            target.argumentDrops = drops
+        }
         setSemanticCallTarget(&analyzer, expression, $target)
         if callee == "panic" return neverSemanticType()
         return voidSemanticType()

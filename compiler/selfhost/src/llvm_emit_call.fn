@@ -1,0 +1,727 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn llvmOrderedArgument(
+    &call firCallExpression,
+    &values arena<String>,
+    parameter u64
+) String {
+    cOrderedArgument(&call, &values, parameter)
+}
+
+fn llvmNumericWidth(&value semanticType) u64 {
+    match value.kind {
+        I8: 8 U8: 8 I16: 16 U16: 16 I32: 32 U32: 32
+        I64: 64 U64: 64 Isize: 64 Usize: 64
+        F32: 32 F64: 64
+        _: 0
+    }
+}
+
+fn llvmUncheckedNumericConversion(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    value String,
+    &source semanticType,
+    &target semanticType
+) String {
+    if sameSemanticType(&source, &target) return "" + value
+    const result = llvmNextTemporary(&state)
+    if isSemanticInteger(&source) && isSemanticInteger(&target) {
+        const sourceWidth = llvmNumericWidth(&source)
+        const targetWidth = llvmNumericWidth(&target)
+        if sourceWidth == targetWidth return "" + value
+        const operation = if targetWidth < sourceWidth {
+            "trunc"
+        } else {
+            if isSignedSemanticInteger(&source) { "sext" } else { "zext" }
+        }
+        llvmInstruction(&builder, &state, result + " = " + operation + " " +
+            llvmTypeName(&source) + " " + value + " to " +
+            llvmTypeName(&target))
+        return result
+    }
+    if isSemanticInteger(&source) && isSemanticFloating(&target) {
+        llvmInstruction(&builder, &state, result + " = " +
+            if isSignedSemanticInteger(&source) { "sitofp " } else { "uitofp " } +
+            llvmTypeName(&source) + " " + value + " to " +
+            llvmTypeName(&target))
+        return result
+    }
+    if isSemanticFloating(&source) && isSemanticInteger(&target) {
+        llvmInstruction(&builder, &state, result + " = " +
+            if isSignedSemanticInteger(&target) { "fptosi " } else { "fptoui " } +
+            llvmTypeName(&source) + " " + value + " to " +
+            llvmTypeName(&target))
+        return result
+    }
+    if isSemanticFloating(&source) && isSemanticFloating(&target) {
+        llvmInstruction(&builder, &state, result + " = " +
+            if llvmNumericWidth(&target) < llvmNumericWidth(&source) {
+            "fptrunc "
+        } else {
+            "fpext "
+        } + llvmTypeName(&source) + " " + value + " to " +
+            llvmTypeName(&target))
+        return result
+    }
+    panic("LLVM numeric conversion has unsupported types")
+}
+
+fn llvmIntegerMinimumValue(&value semanticType) String {
+    match value.kind {
+        I8: "-128"
+        I16: "-32768"
+        I32: "-2147483648"
+        I64: "-9223372036854775808"
+        Isize: "-9223372036854775808"
+        _: "0"
+    }
+}
+
+fn llvmIntegerMaximumValue(&value semanticType) String {
+    match value.kind {
+        I8: "127" U8: "255"
+        I16: "32767" U16: "65535"
+        I32: "2147483647" U32: "4294967295"
+        I64: "9223372036854775807"
+        Isize: "9223372036854775807"
+        U64: "18446744073709551615"
+        Usize: "18446744073709551615"
+        _: "0"
+    }
+}
+
+fn llvmFloatIntegerLower(&value semanticType) String {
+    match value.kind {
+        I8: "-1.280000e+02"
+        I16: "-3.276800e+04"
+        I32: "-2.147483648000e+09"
+        I64: "-9.223372036854775808000e+18"
+        Isize: "-9.223372036854775808000e+18"
+        _: "0.000000e+00"
+    }
+}
+
+fn llvmFloatIntegerUpper(&value semanticType) String {
+    match value.kind {
+        I8: "1.280000e+02" U8: "2.560000e+02"
+        I16: "3.276800e+04" U16: "6.553600e+04"
+        I32: "2.147483648000e+09" U32: "4.294967296000e+09"
+        I64: "9.223372036854775808000e+18"
+        Isize: "9.223372036854775808000e+18"
+        U64: "1.844674407370955161600e+19"
+        Usize: "1.844674407370955161600e+19"
+        _: "0.000000e+00"
+    }
+}
+
+fn llvmEmitFiniteCondition(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &state llvmFunctionEmission,
+    value String,
+    &valueType semanticType
+) String {
+    const suffix = if valueType.kind.Matches("F32") { "f32" } else { "f64" }
+    const name = "llvm.is.fpclass." + suffix
+    llvmRequireExternal(&module, name, "i1 @" + name + "(" +
+        llvmTypeName(&valueType) + ", i32)")
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = call i1 @" + name + "(" +
+        llvmTypeName(&valueType) + " " + value + ", i32 504)")
+    result
+}
+
+fn llvmEmitIntegerRangeCondition(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    value String,
+    &source semanticType,
+    &target semanticType
+) String {
+    const wide = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, wide + " = " +
+        if isSignedSemanticInteger(&source) { "sext " } else { "zext " } +
+        llvmTypeName(&source) + " " + value + " to i128")
+    const lower = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, lower + " = icmp sge i128 " + wide +
+        ", " + llvmIntegerMinimumValue(&target))
+    const upper = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, upper + " = icmp sle i128 " + wide +
+        ", " + llvmIntegerMaximumValue(&target))
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        result + " = and i1 " + lower + ", " + upper)
+    result
+}
+
+fn llvmEmitFloatIntegerRangeCondition(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    value String,
+    &source semanticType,
+    &target semanticType
+) String {
+    const lower = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, lower + " = fcmp oge " +
+        llvmTypeName(&source) + " " + value + ", " +
+        llvmFloatIntegerLower(&target))
+    const upper = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, upper + " = fcmp olt " +
+        llvmTypeName(&source) + " " + value + ", " +
+        llvmFloatIntegerUpper(&target))
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        result + " = and i1 " + lower + ", " + upper)
+    result
+}
+
+fn llvmEmitNumericSuccess(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    result String,
+    &resultType semanticType,
+    &target semanticType,
+    converted String,
+    done String
+) void {
+    const payload = llvmEnumPayloadAddress(
+        &builder, &state, result, &resultType, 0)
+    llvmStore(&builder, &state, &target, converted, payload)
+    const tag = llvmEnumTagAddress(
+        &builder, &state, result, &resultType)
+    var tagType = i32SemanticType()
+    llvmStore(&builder, &state, &tagType, "0", tag)
+    llvmBranch(&builder, &state, done)
+}
+
+fn llvmEmitNumericFailure(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    result String,
+    &resultType semanticType,
+    &errorType semanticType,
+    variant u64,
+    done String
+) void {
+    const payload = llvmEnumPayloadAddress(
+        &builder, &state, result, &resultType, 1)
+    llvmStore(&builder, &state, &errorType, "zeroinitializer", payload)
+    const errorTag = llvmEnumTagAddress(
+        &builder, &state, payload, &errorType)
+    var tagType = i32SemanticType()
+    llvmStore(&builder, &state, &tagType, format.U64(variant), errorTag)
+    const resultTag = llvmEnumTagAddress(
+        &builder, &state, result, &resultType)
+    llvmStore(&builder, &state, &tagType, "1", resultTag)
+    llvmBranch(&builder, &state, done)
+}
+
+fn llvmEmitNumericConversion(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &call firCallExpression,
+    &resultType semanticType,
+    value String
+) llvmEmittedValue {
+    if call.typeArguments.len() != 2 {
+        panic("LLVM numeric conversion has invalid type metadata")
+    }
+    var source = semanticTypeArenaAt(&call.typeArguments, 0)
+    var target = semanticTypeArenaAt(&call.typeArguments, 1)
+    if sameSemanticType(&resultType, &target) {
+        const converted = llvmUncheckedNumericConversion(
+            &builder, &state, value, &source, &target)
+        return llvmEmitted(converted, copySemanticType(&resultType), false, false)
+    }
+    var errorType = cNumericConversionErrorType(&program, &resultType)
+    const address = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, address + " = alloca " +
+        llvmTypeName(&resultType))
+    llvmStore(&builder, &state, &resultType, "zeroinitializer", address)
+    const done = llvmNextBlock(&state, "numeric.done")
+    if isSemanticInteger(&source) && isSemanticInteger(&target) {
+        const condition = llvmEmitIntegerRangeCondition(
+            &builder, &state, value, &source, &target)
+        const success = llvmNextBlock(&state, "numeric.success")
+        const outOfRange = llvmNextBlock(&state, "numeric.out_of_range")
+        llvmConditionalBranch(
+            &builder, &state, condition, success, outOfRange)
+        llvmBlock(&builder, &state, success)
+        const converted = llvmUncheckedNumericConversion(
+            &builder, &state, value, &source, &target)
+        llvmEmitNumericSuccess(&builder, &state, address, &resultType,
+            &target, converted, done)
+        llvmBlock(&builder, &state, outOfRange)
+        llvmEmitNumericFailure(&builder, &state, address, &resultType,
+            &errorType, 0, done)
+        llvmBlock(&builder, &state, done)
+        return llvmEmitted(address,
+            copySemanticType(&resultType), true, false)
+    }
+    if isSemanticFloating(&source) && isSemanticInteger(&target) {
+        const finite = llvmEmitFiniteCondition(
+            &builder, &module, &state, value, &source)
+        const range = llvmNextBlock(&state, "numeric.range")
+        const nonFinite = llvmNextBlock(&state, "numeric.non_finite")
+        llvmConditionalBranch(
+            &builder, &state, finite, range, nonFinite)
+        llvmBlock(&builder, &state, nonFinite)
+        llvmEmitNumericFailure(&builder, &state, address, &resultType,
+            &errorType, 1, done)
+        llvmBlock(&builder, &state, range)
+        const inRange = llvmEmitFloatIntegerRangeCondition(
+            &builder, &state, value, &source, &target)
+        const convert = llvmNextBlock(&state, "numeric.convert")
+        const outOfRange = llvmNextBlock(&state, "numeric.out_of_range")
+        llvmConditionalBranch(
+            &builder, &state, inRange, convert, outOfRange)
+        llvmBlock(&builder, &state, outOfRange)
+        llvmEmitNumericFailure(&builder, &state, address, &resultType,
+            &errorType, 0, done)
+        llvmBlock(&builder, &state, convert)
+        const converted = llvmUncheckedNumericConversion(
+            &builder, &state, value, &source, &target)
+        const roundTrip = llvmUncheckedNumericConversion(
+            &builder, &state, converted, &target, &source)
+        const exact = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, exact + " = fcmp oeq " +
+            llvmTypeName(&source) + " " + roundTrip + ", " + value)
+        const success = llvmNextBlock(&state, "numeric.success")
+        const precisionLoss = llvmNextBlock(&state, "numeric.precision_loss")
+        llvmConditionalBranch(
+            &builder, &state, exact, success, precisionLoss)
+        llvmBlock(&builder, &state, success)
+        llvmEmitNumericSuccess(&builder, &state, address, &resultType,
+            &target, converted, done)
+        llvmBlock(&builder, &state, precisionLoss)
+        llvmEmitNumericFailure(&builder, &state, address, &resultType,
+            &errorType, 2, done)
+        llvmBlock(&builder, &state, done)
+        return llvmEmitted(address,
+            copySemanticType(&resultType), true, false)
+    }
+    var convertBlock = llvmNextBlock(&state, "numeric.convert")
+    if isSemanticFloating(&source) {
+        const finite = llvmEmitFiniteCondition(
+            &builder, &module, &state, value, &source)
+        const nonFinite = llvmNextBlock(&state, "numeric.non_finite")
+        llvmConditionalBranch(
+            &builder, &state, finite, convertBlock, nonFinite)
+        llvmBlock(&builder, &state, nonFinite)
+        llvmEmitNumericFailure(&builder, &state, address, &resultType,
+            &errorType, 1, done)
+    } else {
+        llvmBranch(&builder, &state, convertBlock)
+    }
+    llvmBlock(&builder, &state, convertBlock)
+    const converted = llvmUncheckedNumericConversion(
+        &builder, &state, value, &source, &target)
+    const finiteTarget = llvmEmitFiniteCondition(
+        &builder, &module, &state, converted, &target)
+    const check = llvmNextBlock(&state, "numeric.check")
+    const outOfRange = llvmNextBlock(&state, "numeric.out_of_range")
+    llvmConditionalBranch(
+        &builder, &state, finiteTarget, check, outOfRange)
+    llvmBlock(&builder, &state, outOfRange)
+    llvmEmitNumericFailure(&builder, &state, address, &resultType,
+        &errorType, 0, done)
+    llvmBlock(&builder, &state, check)
+    var exact = ""
+    if isSemanticInteger(&source) {
+        const representable = llvmEmitFloatIntegerRangeCondition(
+            &builder, &state, converted, &target, &source)
+        const roundTripBlock = llvmNextBlock(&state, "numeric.round_trip")
+        const precisionLoss = llvmNextBlock(&state, "numeric.precision_loss")
+        llvmConditionalBranch(&builder, &state,
+            representable, roundTripBlock, precisionLoss)
+        llvmBlock(&builder, &state, roundTripBlock)
+        const restored = llvmUncheckedNumericConversion(
+            &builder, &state, converted, &target, &source)
+        exact = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, exact + " = icmp eq " +
+            llvmTypeName(&source) + " " + restored + ", " + value)
+        const success = llvmNextBlock(&state, "numeric.success")
+        llvmConditionalBranch(
+            &builder, &state, exact, success, precisionLoss)
+        llvmBlock(&builder, &state, precisionLoss)
+        llvmEmitNumericFailure(&builder, &state, address, &resultType,
+            &errorType, 2, done)
+        llvmBlock(&builder, &state, success)
+    } else {
+        const restored = llvmUncheckedNumericConversion(
+            &builder, &state, converted, &target, &source)
+        exact = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, exact + " = fcmp oeq " +
+            llvmTypeName(&source) + " " + restored + ", " + value)
+        const success = llvmNextBlock(&state, "numeric.success")
+        const precisionLoss = llvmNextBlock(&state, "numeric.precision_loss")
+        llvmConditionalBranch(
+            &builder, &state, exact, success, precisionLoss)
+        llvmBlock(&builder, &state, precisionLoss)
+        llvmEmitNumericFailure(&builder, &state, address, &resultType,
+            &errorType, 2, done)
+        llvmBlock(&builder, &state, success)
+    }
+    llvmEmitNumericSuccess(&builder, &state, address, &resultType,
+        &target, converted, done)
+    llvmBlock(&builder, &state, done)
+    llvmEmitted(address, copySemanticType(&resultType), true, false)
+}
+
+fn llvmCallTargetSymbol(
+    &program firProgram,
+    id u64
+) String {
+    if id >= program.functions.len() {
+        panic("LLVM function call target is invalid")
+    }
+    var target = cFunctionAt(&program, id)
+    var result = ""
+    const hasBody = target.hasBody
+    if !target.hasBody {
+        match replace target.cSymbol with .None {
+            None: {}
+            Some(symbol): {
+                result = "" + symbol
+                target.cSymbol = .Some(symbol)
+            }
+        }
+    }
+    if hasBody return llvmFunctionName(&program, id)
+    result
+}
+
+fn llvmAppendArguments(
+    &builder text.Builder,
+    &call firCallExpression,
+    &types arena<semanticType>,
+    &values arena<String>,
+    offset u64
+) void {
+    var parameter = offset
+    while parameter < values.len() {
+        if parameter != offset {
+            llvmWrite(&builder, ", ")
+        }
+        var type = semanticTypeArenaAt(&types, parameter)
+        llvmWrite(&builder, llvmTypeName(&type) + " " +
+            llvmOrderedArgument(&call, &values, parameter))
+        parameter += 1
+    }
+}
+
+fn llvmEmitDirectCall(
+    &builder text.Builder,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &call firCallExpression,
+    &types arena<semanticType>,
+    &values arena<String>,
+    &valueType semanticType
+) llvmEmittedValue {
+    if call.function >= program.functions.len() {
+        panic("LLVM function call target is invalid")
+    }
+    var target = cFunctionAt(&program, call.function)
+    const indirect = llvmUsesExternalResultPointer(&target)
+    const diverges = target.diverges
+    const symbol = llvmCallTargetSymbol(&program, call.function)
+    var invocation = text.NewBuilder()
+    var resultAddress = ""
+    if indirect {
+        resultAddress = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, resultAddress + " = alloca " +
+            llvmTypeName(&valueType))
+        llvmWrite(&invocation, "call void @" + symbol + "(ptr sret(" +
+            llvmTypeName(&valueType) + ") " + resultAddress)
+        if values.len() != 0 {
+            llvmWrite(&invocation, ", ")
+        }
+    } else {
+        llvmWrite(&invocation, "call " +
+            if diverges { "void" } else { llvmTypeName(&valueType) } +
+            " @" + symbol + "(")
+    }
+    llvmAppendArguments(&invocation, &call, &types, &values, 0)
+    llvmWrite(&invocation, ")")
+    const callText = llvmFinish(&invocation)
+    if diverges {
+        llvmInstruction(&builder, &state, callText)
+        llvmInstruction(&builder, &state, "unreachable")
+        state.terminated = true
+        return llvmEmitted("", copySemanticType(&valueType), false, true)
+    }
+    if indirect {
+        llvmInstruction(&builder, &state, callText)
+        const loaded = llvmLoad(&builder, &state, &valueType, resultAddress)
+        return llvmEmitted(loaded, copySemanticType(&valueType), false, false)
+    }
+    if valueType.kind.Matches("Void") {
+        llvmInstruction(&builder, &state, callText)
+        return llvmVoidValue()
+    }
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = " + callText)
+    llvmEmitted(result, copySemanticType(&valueType), false, false)
+}
+
+fn llvmEmitBuiltinCall(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &call firCallExpression,
+    &types arena<semanticType>,
+    &values arena<String>,
+    &valueType semanticType
+) Option<llvmEmittedValue> {
+    if cCallKindNull(call.kind) {
+        return .Some(llvmEmitted(
+                "null", copySemanticType(&valueType), false, false))
+    }
+    if cCallKindIsNull(call.kind) {
+        const result = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, result + " = icmp eq ptr " +
+            llvmOrderedArgument(&call, &values, 0) + ", null")
+        return .Some(llvmEmitted(
+                result, copySemanticType(&valueType), false, false))
+    }
+    if cCallKindSizeOf(call.kind) {
+        var target = semanticTypeArenaAt(&call.typeArguments, 0)
+        return .Some(llvmEmitted(
+                llvmSizeOf(&builder, &state, &target),
+                copySemanticType(&valueType), false, false))
+    }
+    if cCallKindPointerCast(call.kind) {
+        return .Some(llvmEmitted(
+                llvmOrderedArgument(&call, &values, 0),
+                copySemanticType(&valueType), false, false))
+    }
+    if cCallKindLen(call.kind) {
+        var sequence = semanticTypeArenaAt(&types, 0)
+        if sequence.kind.Matches("Array") {
+            return .Some(llvmEmitted(format.U64(sequence.declaration),
+                    copySemanticType(&valueType), false, false))
+        }
+        if (sequence.kind.Matches("View") || sequence.kind.Matches("Edit")) &&
+            sequence.arguments.len() == 1 {
+            sequence = semanticTypeArgument(&sequence, 0)
+        }
+        if !sequence.kind.Matches("Slice") &&
+            !sequence.kind.Matches("StringValue") {
+            panic("LLVM len call has unsupported argument")
+        }
+        const result = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, result + " = extractvalue " +
+            llvmTypeName(&sequence) + " " +
+            llvmOrderedArgument(&call, &values, 0) + ", 1")
+        return .Some(llvmEmitted(
+                result, copySemanticType(&valueType), false, false))
+    }
+    if cCallKindPrint(call.kind) || cCallKindPanic(call.kind) {
+        var stringType = stringSemanticType()
+        var argument = llvmEmitted(llvmOrderedArgument(&call, &values, 0),
+            $stringType, false, false)
+        const address = llvmEnsureAddress(&builder, &state, &argument)
+        const symbol = if cCallKindPrint(call.kind) {
+            "fdn_abi_println"
+        } else {
+            "fdn_abi_panic"
+        }
+        llvmRequireExternal(&module, symbol,
+            "void @" + symbol + "(ptr)")
+        llvmInstruction(&builder, &state, "call void @" + symbol +
+            "(ptr " + address + ")")
+        if cCallKindPanic(call.kind) {
+            llvmInstruction(&builder, &state, "unreachable")
+            state.terminated = true
+            return .Some(llvmEmitted(
+                    "", copySemanticType(&valueType), false, true))
+        }
+        return .Some(llvmVoidValue())
+    }
+    discard function
+    .None
+}
+
+fn llvmEmitArgumentCleanups(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &arguments arena<llvmEmittedValue>
+) void {
+    var index = arguments.len()
+    while index != 0 {
+        index -= 1
+        var argument = match arguments.take(index) {
+            None: panic("LLVM emitted argument slot is empty")
+            Some(found): found
+        }
+        llvmEmitCleanups(&builder, &module, &program, &state, &argument)
+        arguments.restore(index, $argument)
+    }
+}
+
+fn llvmEmitArgumentDrops(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &call firCallExpression,
+    &arguments arena<llvmEmittedValue>
+) void {
+    var index u64 = 0
+    while index < call.arguments.len() &&
+        index < call.argumentDrops.len() &&
+        index < arguments.len() {
+        if firBoolAt(&call.argumentDrops, index) {
+            var argument = match arguments.take(index) {
+                None: panic("LLVM emitted argument slot is empty")
+                Some(found): found
+            }
+            var valueType = llvmExpressionTypeAt(
+                &function, cU64At(&call.arguments, index))
+            const address = llvmEnsureAddress(&builder, &state, &argument)
+            llvmEmitDropAddress(&builder, &module, &program,
+                &state, &valueType, address)
+            arguments.restore(index, $argument)
+        }
+        index += 1
+    }
+}
+
+fn llvmFinishArgumentLifetimes(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &call firCallExpression,
+    &arguments arena<llvmEmittedValue>
+) void {
+    llvmEmitArgumentDrops(&builder, &module, &program,
+        &function, &state, &call, &arguments)
+    llvmEmitArgumentCleanups(&builder, &module, &program,
+        &state, &arguments)
+}
+
+fn llvmEmitCallExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &call firCallExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    if cCallKindCString(call.kind) {
+        const expression = llvmExpressionAt(
+            &function, cU64At(&call.arguments, 0))
+        const firExpression { value type span } = expression
+        discard type
+        discard span
+        const literal = match value {
+            StringValue(found): "" + found.value
+            _: panic("cString argument is not a string literal")
+        }
+        return llvmEmitted(llvmStringConstantName(&module, literal),
+            copySemanticType(&valueType), false, false)
+    }
+    var emittedArguments = newArena<llvmEmittedValue>()
+    var types = newArena<semanticType>()
+    var values = newArena<String>()
+    var contractReceiverAddress = ""
+    var index u64 = 0
+    while index < call.arguments.len() {
+        const expression = cU64At(&call.arguments, index)
+        var emitted = llvmEmitExpression(&builder, &module, &program,
+            &function, &state, expression)
+        if emitted.diverges return emitted
+        if index == 0 && emitted.address {
+            contractReceiverAddress = "" + emitted.value
+        }
+        discard types.add(copySemanticType(&emitted.type))
+        discard values.add(llvmEnsureValue(&builder, &state, &emitted))
+        discard emittedArguments.add($emitted)
+        index += 1
+    }
+    if cCallKindContract(call.kind) &&
+        !cContractCallConsumesReceiver(&program, &call) &&
+        call.arguments.len() != 0 &&
+        !llvmIsPlaceExpression(&function, cU64At(&call.arguments, 0)) {
+        var receiver = match emittedArguments.take(0) {
+            None: panic("LLVM contract receiver slot is empty")
+            Some(found): found
+        }
+        var receiverType = llvmExpressionTypeAt(
+            &function, cU64At(&call.arguments, 0))
+        if receiverType.kind.Matches("Own") {
+            const owner = llvmEnsureAddress(&builder, &state, &receiver)
+            discard receiver.cleanups.add(llvmCleanup {
+                address = "" + owner
+                type = copySemanticType(&receiverType)
+            })
+        }
+        emittedArguments.restore(0, $receiver)
+    }
+    if cCallKindConstrained(call.kind) {
+        panic("LLVM backend received an unresolved constrained call")
+    }
+    if cCallKindNumericConversion(call.kind) {
+        const argument = llvmOrderedArgument(&call, &values, 0)
+        var result = llvmEmitNumericConversion(&builder, &module, &program,
+            &state, &call, &valueType, argument)
+        llvmFinishArgumentLifetimes(&builder, &module, &program,
+            &function, &state, &call, &emittedArguments)
+        return result
+    }
+    match llvmEmitBuiltinCall(&builder, &module, &function, &state,
+        &call, &types, &values, &valueType) {
+        Some(result): {
+            var emitted = result
+            if !emitted.diverges {
+                llvmFinishArgumentLifetimes(&builder, &module, &program,
+                    &function, &state, &call, &emittedArguments)
+            }
+            return emitted
+        }
+        None: {}
+    }
+    if cCallKindFunction(call.kind) {
+        var result = llvmEmitDirectCall(&builder, &program, &state, &call,
+            &types, &values, &valueType)
+        if !result.diverges {
+            llvmFinishArgumentLifetimes(&builder, &module, &program,
+                &function, &state, &call, &emittedArguments)
+        }
+        return result
+    }
+    if cCallKindFunctionValue(call.kind) {
+        var result = llvmEmitFunctionValueCall(&builder, &function, &state,
+            &call, &types, &values, &valueType)
+        if !result.diverges {
+            llvmFinishArgumentLifetimes(&builder, &module, &program,
+                &function, &state, &call, &emittedArguments)
+        }
+        return result
+    }
+    if cCallKindContract(call.kind) {
+        var result = llvmEmitContractCall(&builder, &module, &program,
+            &function, &state, &call, &types, &values,
+            contractReceiverAddress, &valueType)
+        if !result.diverges {
+            llvmFinishArgumentLifetimes(&builder, &module, &program,
+                &function, &state, &call, &emittedArguments)
+        }
+        return result
+    }
+    panic("LLVM call kind is unsupported")
+}

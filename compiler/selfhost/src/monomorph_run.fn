@@ -19,14 +19,14 @@ fn finishMonomorphizer(
     result
 }
 
-fn monomorphizeProgram(
-    &source firProgram
+fn monomorphizeProgramEntry(
+    &source firProgram,
+    entry u64
 ) own firProgram {
     var state = newMonomorphizer()
     var arguments = newArena<semanticType>()
-    const mainFunction = source.main
     state.result.main = instantiateMonomorphFunction(
-        &state, &source, mainFunction, &arguments)
+        &state, &source, entry, &arguments)
     var index u64 = 0
     while index < source.functions.len() {
         var function = match source.functions.take(index) {
@@ -45,6 +45,13 @@ fn monomorphizeProgram(
     var result = finishMonomorphizer($state)
     markFirDivergingFunctions(&result)
     result
+}
+
+fn monomorphizeProgram(
+    &source firProgram
+) own firProgram {
+    const mainFunction = source.main
+    monomorphizeProgramEntry(&source, mainFunction)
 }
 
 fn monomorphizePackageInterface(

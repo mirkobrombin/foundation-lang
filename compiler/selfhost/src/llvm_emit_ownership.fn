@@ -1,0 +1,448 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn llvmEmitDropAddress(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &valueType semanticType,
+    address String
+) void {
+    if !llvmTypeRequiresDrop(&program, &valueType) return
+    if valueType.kind.Matches("StringValue") {
+        llvmRequireExternal(
+            &module, "fdn_string_drop", "void @fdn_string_drop(ptr)")
+        llvmInstruction(&builder, &state,
+            "call void @fdn_string_drop(ptr " + address + ")")
+        return
+    }
+    if valueType.kind.Matches("Own") {
+        const owned = llvmLoad(&builder, &state, &valueType, address)
+        const present = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, present +
+            " = icmp ne ptr " + owned + ", null")
+        const dropBlock = llvmNextBlock(&state, "own.drop")
+        const endBlock = llvmNextBlock(&state, "own.end")
+        llvmConditionalBranch(
+            &builder, &state, present, dropBlock, endBlock)
+        llvmBlock(&builder, &state, dropBlock)
+        if valueType.arguments.len() != 1 {
+            panic("owned LLVM value has no target type")
+        }
+        var target = semanticTypeArgument(&valueType, 0)
+        if target.kind.Matches("ContractValue") {
+            const contractValue = llvmLoad(&builder, &state, &target, owned)
+            const data = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, data + " = extractvalue " +
+                llvmTypeName(&target) + " " + contractValue + ", 0")
+            const table = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, table + " = extractvalue " +
+                llvmTypeName(&target) + " " + contractValue + ", 1")
+            const dropAddress = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, dropAddress +
+                " = getelementptr inbounds %fdn.contract." +
+                format.U64(target.declaration) + ".vtable, ptr " + table +
+                ", i32 0, i32 0")
+            const drop = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state,
+                drop + " = load ptr, ptr " + dropAddress)
+            llvmInstruction(&builder, &state,
+                "call void " + drop + "(ptr " + data + ")")
+        } else {
+            llvmEmitDropAddress(
+                &builder, &module, &program, &state, &target, owned)
+        }
+        llvmRequireExternal(&module, "fdn_dealloc", "void @fdn_dealloc(ptr)")
+        llvmInstruction(&builder, &state,
+            "call void @fdn_dealloc(ptr " + owned + ")")
+        llvmBranch(&builder, &state, endBlock)
+        llvmBlock(&builder, &state, endBlock)
+        llvmStore(&builder, &state, &valueType, "null", address)
+        return
+    }
+    if valueType.kind.Matches("Task") {
+        llvmRequireExternal(
+            &module, "fdn_task_drop", "void @fdn_task_drop(ptr)")
+        llvmInstruction(&builder, &state,
+            "call void @fdn_task_drop(ptr " + address + ")")
+        return
+    }
+    if valueType.kind.Matches("Sender") ||
+        valueType.kind.Matches("Receiver") {
+        const symbol = if valueType.kind.Matches("Sender") {
+            "fdn_channel_drop_sender"
+        } else {
+            "fdn_channel_drop_receiver"
+        }
+        llvmRequireExternal(&module, symbol, "void @" + symbol + "(ptr)")
+        llvmInstruction(&builder, &state,
+            "call void @" + symbol + "(ptr " + address + ")")
+        return
+    }
+    if valueType.kind.Matches("Channel") {
+        var pointerType = unarySemanticType(.Raw, voidSemanticType())
+        const sender = llvmAggregateFieldAddress(
+            &builder, &state, address, &valueType, 0)
+        const receiver = llvmAggregateFieldAddress(
+            &builder, &state, address, &valueType, 1)
+        llvmRequireExternal(&module, "fdn_channel_drop_receiver",
+            "void @fdn_channel_drop_receiver(ptr)")
+        llvmRequireExternal(&module, "fdn_channel_drop_sender",
+            "void @fdn_channel_drop_sender(ptr)")
+        llvmInstruction(&builder, &state,
+            "call void @fdn_channel_drop_receiver(ptr " + receiver + ")")
+        llvmInstruction(&builder, &state,
+            "call void @fdn_channel_drop_sender(ptr " + sender + ")")
+        discard pointerType
+        return
+    }
+    if valueType.kind.Matches("Function") &&
+        !isCSemanticFunction(&valueType) {
+        const value = llvmLoad(&builder, &state, &valueType, address)
+        const environment = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, environment +
+            " = extractvalue %fdn.function " + value + ", 0")
+        const drop = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, drop +
+            " = extractvalue %fdn.function " + value + ", 2")
+        const present = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, present +
+            " = icmp ne ptr " + drop + ", null")
+        const dropBlock = llvmNextBlock(&state, "closure.drop")
+        const endBlock = llvmNextBlock(&state, "closure.end")
+        llvmConditionalBranch(
+            &builder, &state, present, dropBlock, endBlock)
+        llvmBlock(&builder, &state, dropBlock)
+        llvmInstruction(&builder, &state,
+            "call void " + drop + "(ptr " + environment + ")")
+        llvmBranch(&builder, &state, endBlock)
+        llvmBlock(&builder, &state, endBlock)
+        llvmStore(&builder, &state, &valueType, "zeroinitializer", address)
+        return
+    }
+    if valueType.kind.Matches("Array") {
+        llvmInstruction(&builder, &state, "call void @" +
+            cDropName(&valueType) + "(ptr " + address + ")")
+        return
+    }
+    if valueType.kind.Matches("StructValue") {
+        llvmInstruction(&builder, &state, "call void @" +
+            cDropName(&valueType) + "(ptr " + address + ")")
+        return
+    }
+    if valueType.kind.Matches("EnumValue") {
+        llvmInstruction(&builder, &state, "call void @" +
+            cDropName(&valueType) + "(ptr " + address + ")")
+    }
+}
+
+fn llvmEmitCleanups(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &expression llvmEmittedValue
+) void {
+    var index = expression.cleanups.len()
+    while index != 0 {
+        index -= 1
+        var cleanup = match expression.cleanups.take(index) {
+            None: panic("LLVM expression cleanup slot is empty")
+            Some(found): found
+        }
+        var cleanupType = copySemanticType(&cleanup.type)
+        const cleanupAddress = "" + cleanup.address
+        llvmEmitDropAddress(&builder, &module, &program,
+            &state, &cleanupType, cleanupAddress)
+        expression.cleanups.restore(index, $cleanup)
+    }
+}
+
+fn llvmEmitDropInspectedTemporary(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    id u64,
+    &expression llvmEmittedValue
+) void {
+    llvmEmitCleanups(&builder, &module, &program, &state, &expression)
+    var valueType = llvmExpressionTypeAt(&function, id)
+    if !llvmIsPlaceExpression(&function, id) &&
+        llvmTypeRequiresDrop(&program, &valueType) {
+        const address = llvmEnsureAddress(&builder, &state, &expression)
+        llvmEmitDropAddress(&builder, &module, &program,
+            &state, &valueType, address)
+    }
+}
+
+fn llvmEmitOwnershipFunction(
+    &module llvmModuleEmission,
+    &program firProgram,
+    &valueType semanticType
+) void {
+    if !llvmTypeRequiresDrop(&program, &valueType) return
+    var builder = text.NewBuilder()
+    var state = newLlvmFunctionEmission(0, 0)
+    llvmWrite(&builder, "define void @" + cDropName(&valueType) +
+        "(ptr %value) {\n")
+    llvmBlock(&builder, &state, "entry")
+    if valueType.kind.Matches("Array") {
+        llvmEmitArrayDrop(&builder, &module, &program,
+            &state, &valueType, "%value")
+    } else {
+        if valueType.kind.Matches("StructValue") {
+            llvmEmitStructDrop(&builder, &module, &program,
+                &state, &valueType, "%value")
+        } else {
+            if valueType.kind.Matches("EnumValue") {
+                llvmEmitEnumDrop(&builder, &module, &program,
+                    &state, &valueType, "%value")
+            }
+        }
+    }
+    if !state.terminated {
+        llvmInstruction(&builder, &state, "ret void")
+    }
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}
+
+fn llvmEmitOwnershipFunctions(
+    &module llvmModuleEmission,
+    &program firProgram,
+    &collected cCollectedTypes
+) void {
+    var index u64 = 0
+    while index < collected.arrays.len() {
+        var value = match collected.arrays.take(index) {
+            None: panic("LLVM array type slot is empty")
+            Some(found): found
+        }
+        llvmEmitOwnershipFunction(&module, &program, &value)
+        collected.arrays.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < program.structs.len() {
+        var value = declaredSemanticType(.StructValue, index)
+        llvmEmitOwnershipFunction(&module, &program, &value)
+        index += 1
+    }
+    index = 0
+    while index < program.enums.len() {
+        var value = declaredSemanticType(.EnumValue, index)
+        llvmEmitOwnershipFunction(&module, &program, &value)
+        index += 1
+    }
+}
+
+fn llvmEmitArrayDrop(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &valueType semanticType,
+    address String
+) void {
+    if valueType.arguments.len() != 1 || valueType.declaration == 0 return
+    var element = semanticTypeArgument(&valueType, 0)
+    if !llvmTypeRequiresDrop(&program, &element) return
+    const indexAddress = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, indexAddress + " = alloca i64")
+    var usizeType = usizeSemanticType()
+    llvmStore(&builder, &state, &usizeType,
+        format.U64(valueType.declaration), indexAddress)
+    const testBlock = llvmNextBlock(&state, "array.drop.test")
+    const bodyBlock = llvmNextBlock(&state, "array.drop.body")
+    const endBlock = llvmNextBlock(&state, "array.drop.end")
+    llvmBranch(&builder, &state, testBlock)
+    llvmBlock(&builder, &state, testBlock)
+    const index = llvmLoad(&builder, &state, &usizeType, indexAddress)
+    const present = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, present +
+        " = icmp ne i64 " + index + ", 0")
+    llvmConditionalBranch(
+        &builder, &state, present, bodyBlock, endBlock)
+    llvmBlock(&builder, &state, bodyBlock)
+    const previous = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, previous +
+        " = sub i64 " + index + ", 1")
+    llvmStore(&builder, &state, &usizeType, previous, indexAddress)
+    const field = llvmArrayElementAddress(
+        &builder, &state, address, &valueType, previous)
+    llvmEmitDropAddress(
+        &builder, &module, &program, &state, &element, field)
+    llvmBranch(&builder, &state, testBlock)
+    llvmBlock(&builder, &state, endBlock)
+}
+
+fn llvmEmitStructDrop(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &valueType semanticType,
+    address String
+) void {
+    if valueType.declaration >= program.structs.len() return
+    var declaration = cStructAt(&program, valueType.declaration)
+    match replace declaration.dropFunction with .None {
+        None: {}
+        Some(function): {
+            const active = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, active +
+                " = getelementptr inbounds " + llvmTypeName(&valueType) +
+                ", ptr " + address + ", i32 0, i32 0")
+            var boolean = boolSemanticType()
+            const enabled = llvmLoad(&builder, &state, &boolean, active)
+            const dropBlock = llvmNextBlock(&state, "struct.custom.drop")
+            const endBlock = llvmNextBlock(&state, "struct.custom.end")
+            llvmConditionalBranch(
+                &builder, &state, enabled, dropBlock, endBlock)
+            llvmBlock(&builder, &state, dropBlock)
+            llvmStore(&builder, &state, &boolean, "0", active)
+            llvmInstruction(&builder, &state, "call void @" +
+                llvmFunctionName(&program, function) + "(ptr " + address + ")")
+            llvmBranch(&builder, &state, endBlock)
+            llvmBlock(&builder, &state, endBlock)
+            declaration.dropFunction = .Some(function)
+        }
+    }
+    var field = declaration.fields.len()
+    while field != 0 {
+        field -= 1
+        var selected = match declaration.fields.take(field) {
+            None: panic("FIR struct field slot is empty")
+            Some(found): found
+        }
+        if llvmTypeRequiresDrop(&program, &selected.type) {
+            const fieldAddress = llvmStructFieldAddress(
+                &builder, &program, &state, address, &valueType, field)
+            llvmEmitDropAddress(&builder, &module, &program,
+                &state, &selected.type, fieldAddress)
+        }
+        declaration.fields.restore(field, $selected)
+    }
+}
+
+fn llvmEmitEnumDrop(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &valueType semanticType,
+    address String
+) void {
+    if valueType.declaration >= program.enums.len() return
+    var declaration = cEnumAt(&program, valueType.declaration)
+    const tagAddress = llvmEnumTagAddress(
+        &builder, &state, address, &valueType)
+    var tagType = i32SemanticType()
+    const tag = llvmLoad(&builder, &state, &tagType, tagAddress)
+    const endBlock = llvmNextBlock(&state, "enum.drop.end")
+    const invalidBlock = llvmNextBlock(&state, "enum.drop.invalid")
+    var blocks = newArena<String>()
+    var switchValue = "switch i32 " + tag + ", label %" + invalidBlock + " ["
+    var variant u64 = 0
+    while variant < declaration.variants.len() {
+        const block = llvmNextBlock(&state, "enum.drop.variant")
+        discard blocks.add("" + block)
+        switchValue = switchValue + " i32 " + format.U64(variant) +
+            ", label %" + block
+        variant += 1
+    }
+    llvmInstruction(&builder, &state, switchValue + " ]")
+    state.terminated = true
+    variant = 0
+    while variant < declaration.variants.len() {
+        const block = match blocks.take(variant) {
+            None: panic("LLVM enum drop block slot is empty")
+            Some(found): found
+        }
+        llvmBlock(&builder, &state, block)
+        var selected = match declaration.variants.take(variant) {
+            None: panic("FIR enum variant slot is empty")
+            Some(found): found
+        }
+        match replace selected.payload with .None {
+            None: {}
+            Some(payload): {
+                var payloadType = payload
+                if llvmTypeRequiresDrop(&program, &payloadType) {
+                    const payloadAddress = llvmEnumPayloadAddress(&builder,
+                        &state, address, &valueType, variant)
+                    llvmEmitDropAddress(&builder, &module, &program,
+                        &state, &payloadType, payloadAddress)
+                }
+                selected.payload = .Some(payloadType)
+            }
+        }
+        declaration.variants.restore(variant, $selected)
+        llvmBranch(&builder, &state, endBlock)
+        blocks.restore(variant, $block)
+        variant += 1
+    }
+    llvmBlock(&builder, &state, invalidBlock)
+    llvmRequireExternal(&module, "fdn_invalid_enum_tag",
+        "void @fdn_invalid_enum_tag()")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_invalid_enum_tag()")
+    llvmInstruction(&builder, &state, "unreachable")
+    state.terminated = true
+    llvmBlock(&builder, &state, endBlock)
+}
+
+fn llvmEmitLocalDrop(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    local u64
+) void {
+    var valueType = llvmLocalTypeAt(&function, local)
+    if !llvmTypeRequiresDrop(&program, &valueType) return
+    match llvmActiveLocal(&state, local) {
+        None: {
+            const address = llvmLocal(&state, local)
+            llvmEmitDropAddress(&builder, &module, &program,
+                &state, &valueType, address)
+        }
+        Some(active): {
+            var boolean = boolSemanticType()
+            const enabled = llvmLoad(&builder, &state, &boolean, active)
+            const dropBlock = llvmNextBlock(&state, "local.drop")
+            const endBlock = llvmNextBlock(&state, "local.drop.end")
+            llvmConditionalBranch(
+                &builder, &state, enabled, dropBlock, endBlock)
+            llvmBlock(&builder, &state, dropBlock)
+            const address = llvmLocal(&state, local)
+            llvmEmitDropAddress(&builder, &module, &program, &state,
+                &valueType, address)
+            llvmStore(&builder, &state, &boolean, "0", active)
+            llvmBranch(&builder, &state, endBlock)
+            llvmBlock(&builder, &state, endBlock)
+        }
+    }
+}
+
+fn llvmEmitDrops(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &drops arena<u64>
+) void {
+    var index u64 = 0
+    while index < drops.len() {
+        llvmEmitLocalDrop(&builder, &module, &program,
+            &function, &state, cU64At(&drops, index))
+        index += 1
+    }
+}

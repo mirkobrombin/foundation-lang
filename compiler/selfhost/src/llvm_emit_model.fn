@@ -1,0 +1,412 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+struct llvmExternalDeclaration {
+    name String
+    signature String
+}
+
+struct llvmStringConstant {
+    name String
+    value String
+    length u64
+}
+
+struct llvmCleanup {
+    address String
+    type semanticType
+}
+
+struct llvmEmittedValue {
+    value String
+    type semanticType
+    address bool
+    diverges bool
+    cleanups own arena<llvmCleanup>
+}
+
+struct llvmLoopTarget {
+    breakBlock String
+    continueBlock String
+}
+
+struct llvmModuleEmission {
+    externals own arena<llvmExternalDeclaration>
+    strings own arena<llvmStringConstant>
+    globals own text.Builder
+    functions own text.Builder
+    nextString u64
+}
+
+struct llvmFunctionEmission {
+    function u64
+    temporary u64
+    block u64
+    taskState u64
+    taskPoll bool
+    locals own arena<String>
+    activeLocals own arena<Option<String>>
+    loops own arena<llvmLoopTarget>
+    taskFrame String
+    frame String
+    currentBlock String
+    terminated bool
+}
+
+fn newLlvmModuleEmission() own llvmModuleEmission {
+    own llvmModuleEmission {
+        externals = newArena<llvmExternalDeclaration>()
+        strings = newArena<llvmStringConstant>()
+        globals = text.NewBuilder()
+        functions = text.NewBuilder()
+        nextString = 0
+    }
+}
+
+fn newLlvmFunctionEmission(
+    function u64,
+    localCount u64
+) llvmFunctionEmission {
+    var locals = newArena<String>()
+    var activeLocals = newArena<Option<String>>()
+    var index u64 = 0
+    while index < localCount {
+        discard locals.add("")
+        discard activeLocals.add(.None)
+        index += 1
+    }
+    llvmFunctionEmission {
+        function = function
+        temporary = 0
+        block = 0
+        taskState = 0
+        taskPoll = false
+        locals = locals
+        activeLocals = activeLocals
+        loops = newArena<llvmLoopTarget>()
+        taskFrame = ""
+        frame = ""
+        currentBlock = ""
+        terminated = false
+    }
+}
+
+fn llvmWrite(&builder text.Builder, value String) void {
+    const written = builder.Write(value) else error {
+        discard error
+        panic("LLVM output builder is closed")
+    }
+    discard written
+}
+
+fn llvmFinish(&builder text.Builder) String {
+    const result = builder.Finish() else error {
+        discard error
+        panic("LLVM output builder is closed")
+    }
+    result
+}
+
+fn llvmEmitted(
+    value String,
+    $type semanticType,
+    address bool,
+    diverges bool
+) llvmEmittedValue {
+    llvmEmittedValue {
+        value = "" + value
+        type = type
+        address = address
+        diverges = diverges
+        cleanups = newArena<llvmCleanup>()
+    }
+}
+
+fn llvmVoidValue() llvmEmittedValue {
+    llvmEmitted("", voidSemanticType(), false, false)
+}
+
+fn llvmNextTemporary(&state llvmFunctionEmission) String {
+    const result = "%v" + format.U64(state.temporary)
+    state.temporary += 1
+    result
+}
+
+fn llvmNextBlock(&state llvmFunctionEmission, prefix String) String {
+    const result = prefix + "." + format.U64(state.block)
+    state.block += 1
+    result
+}
+
+fn llvmInstruction(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    instruction String
+) void {
+    if state.terminated {
+        panic("LLVM instruction emitted after terminator")
+    }
+    llvmWrite(&builder, "  " + instruction + "\n")
+}
+
+fn llvmBlock(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    name String
+) void {
+    llvmWrite(&builder, name + ":\n")
+    state.currentBlock = "" + name
+    state.terminated = false
+}
+
+fn llvmBranch(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    target String
+) void {
+    llvmInstruction(&builder, &state, "br label %" + target)
+    state.terminated = true
+}
+
+fn llvmConditionalBranch(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    condition String,
+    thenBlock String,
+    elseBlock String
+) void {
+    llvmInstruction(
+        &builder,
+        &state,
+        "br i1 " + condition + ", label %" + thenBlock +
+        ", label %" + elseBlock
+    )
+    state.terminated = true
+}
+
+fn llvmSetLocal(
+    &state llvmFunctionEmission,
+    local u64,
+    value String
+) void {
+    const previous = match state.locals.take(local) {
+        None: panic("LLVM local slot is missing")
+        Some(found): found
+    }
+    discard previous
+    state.locals.restore(local, "" + value)
+}
+
+fn llvmLocal(&state llvmFunctionEmission, local u64) String {
+    const value = match state.locals.take(local) {
+        None: panic("LLVM local slot is missing")
+        Some(found): found
+    }
+    const result = "" + value
+    state.locals.restore(local, $value)
+    result
+}
+
+fn llvmSetActiveLocal(
+    &state llvmFunctionEmission,
+    local u64,
+    $value Option<String>
+) void {
+    const previous = match state.activeLocals.take(local) {
+        None: panic("LLVM active local slot is missing")
+        Some(found): found
+    }
+    discard previous
+    state.activeLocals.restore(local, $value)
+}
+
+fn llvmActiveLocal(
+    &state llvmFunctionEmission,
+    local u64
+) Option<String> {
+    const selected = match state.activeLocals.take(local) {
+        None: panic("LLVM active local slot is missing")
+        Some(found): found
+    }
+    match selected {
+        None: {
+            state.activeLocals.restore(local, .None)
+            .None
+        }
+        Some(value): {
+            const result = "" + value
+            state.activeLocals.restore(local, .Some(value))
+            .Some(result)
+        }
+    }
+}
+
+fn llvmPushLoop(
+    &state llvmFunctionEmission,
+    breakBlock String,
+    continueBlock String
+) void {
+    discard state.loops.add(llvmLoopTarget {
+        breakBlock = "" + breakBlock continueBlock = "" + continueBlock
+    })
+}
+
+fn llvmCurrentLoop(&state llvmFunctionEmission) llvmLoopTarget {
+    if state.loops.len() == 0 {
+        panic("LLVM loop stack is empty")
+    }
+    const index = state.loops.len() - 1
+    const selected = match state.loops.take(index) {
+        None: panic("LLVM loop target slot is empty")
+        Some(found): found
+    }
+    const result = llvmLoopTarget {
+        breakBlock = "" + selected.breakBlock
+        continueBlock = "" + selected.continueBlock
+    }
+    state.loops.restore(index, $selected)
+    result
+}
+
+fn llvmPopLoop(&state llvmFunctionEmission) void {
+    if state.loops.len() == 0 {
+        panic("LLVM loop stack is empty")
+    }
+    const selected = match state.loops.take(state.loops.len() - 1) {
+        None: panic("LLVM loop target slot is empty")
+        Some(found): found
+    }
+    discard selected
+    state.loops.truncate(state.loops.len() - 1)
+}
+
+fn llvmRequireExternal(
+    &module llvmModuleEmission,
+    name String,
+    declaration String
+) void {
+    var index u64 = 0
+    while index < module.externals.len() {
+        var selected = match module.externals.take(index) {
+            None: panic("LLVM external declaration slot is empty")
+            Some(found): found
+        }
+        const same = selected.name == name
+        const compatible = selected.signature == declaration
+        module.externals.restore(index, $selected)
+        if same {
+            if !compatible {
+                panic("incompatible LLVM declaration for " + name)
+            }
+            return
+        }
+        index += 1
+    }
+    discard module.externals.add(llvmExternalDeclaration {
+        name = "" + name signature = "" + declaration
+    })
+}
+
+fn llvmHexDigit(value u64) String {
+    if value < 10 return format.U64(value)
+    if value == 10 return "A"
+    if value == 11 return "B"
+    if value == 12 return "C"
+    if value == 13 return "D"
+    if value == 14 return "E"
+    "F"
+}
+
+fn llvmEscapedBytes(value String) String {
+    var builder = text.NewBuilder()
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        const byte = text.ByteAt(value, index) else error {
+            discard error
+            panic("invalid LLVM string byte offset")
+        }
+        if byte >= 32 && byte <= 126 && byte != 34 && byte != 92 {
+            const written = builder.WriteCodePoint(byte) else error {
+                discard error
+                panic("invalid LLVM string byte")
+            }
+            discard written
+        } else {
+            llvmWrite(&builder, "\\" + llvmHexDigit(byte >> 4) +
+                llvmHexDigit(byte & 15))
+        }
+        index += 1
+    }
+    llvmWrite(&builder, "\\00")
+    llvmFinish(&builder)
+}
+
+fn llvmStringConstantName(
+    &module llvmModuleEmission,
+    value String
+) String {
+    var index u64 = 0
+    while index < module.strings.len() {
+        var selected = match module.strings.take(index) {
+            None: panic("LLVM string constant slot is empty")
+            Some(found): found
+        }
+        const same = selected.value == value
+        const result = "" + selected.name
+        module.strings.restore(index, $selected)
+        if same return result
+        index += 1
+    }
+    const name = "@fdn.string." + format.U64(module.nextString)
+    module.nextString += 1
+    discard module.strings.add(llvmStringConstant {
+        name = "" + name
+        value = "" + value
+        length = text.ByteLen(value)
+    })
+    "" + name
+}
+
+fn llvmEmitStringConstants(
+    &builder text.Builder,
+    &module llvmModuleEmission
+) void {
+    var index u64 = 0
+    while index < module.strings.len() {
+        var selected = match module.strings.take(index) {
+            None: panic("LLVM string constant slot is empty")
+            Some(found): found
+        }
+        llvmWrite(
+            &builder,
+            selected.name + " = private unnamed_addr constant [" +
+            format.U64(selected.length + 1) + " x i8] c\"" +
+            llvmEscapedBytes(selected.value) + "\", align 1\n"
+        )
+        module.strings.restore(index, $selected)
+        index += 1
+    }
+    if module.strings.len() != 0 {
+        llvmWrite(&builder, "\n")
+    }
+}
+
+fn llvmEmitExternalDeclarations(
+    &builder text.Builder,
+    &module llvmModuleEmission
+) void {
+    if module.externals.len() == 0 return
+    llvmWrite(&builder, "\n")
+    var index u64 = 0
+    while index < module.externals.len() {
+        var selected = match module.externals.take(index) {
+            None: panic("LLVM external declaration slot is empty")
+            Some(found): found
+        }
+        llvmWrite(&builder, "declare " + selected.signature + "\n")
+        module.externals.restore(index, $selected)
+        index += 1
+    }
+}

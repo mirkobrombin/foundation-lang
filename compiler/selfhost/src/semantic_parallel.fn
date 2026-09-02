@@ -139,9 +139,11 @@ fn parallelSemanticTransferSafeActive(
                     None: panic("semantic struct slot is empty")
                     Some(structure): structure
                 }
+                var fieldTypes = copySemanticTypeArena(&structure.fieldTypes)
+                analyzer.model.structs.restore(type.declaration, $structure)
                 var index u64 = 0
-                while safe && index < structure.fieldTypes.len() {
-                    var field = match structure.fieldTypes.take(index) {
+                while safe && index < fieldTypes.len() {
+                    var field = match fieldTypes.take(index) {
                         None: panic("semantic field type slot is empty")
                         Some(field): field
                     }
@@ -149,10 +151,9 @@ fn parallelSemanticTransferSafeActive(
                         &field, &type.arguments)
                     safe = parallelSemanticTransferSafeActive(
                         &analyzer, &source, &resolved, &active)
-                    structure.fieldTypes.restore(index, $field)
+                    fieldTypes.restore(index, $field)
                     index += 1
                 }
-                analyzer.model.structs.restore(type.declaration, $structure)
             }
         }
     } else {
@@ -163,16 +164,19 @@ fn parallelSemanticTransferSafeActive(
                 None: panic("semantic enum slot is empty")
                 Some(enumeration): enumeration
             }
+            var payloadTypes = copySemanticOptionalTypeArena(
+                &enumeration.payloadTypes)
+            analyzer.model.enums.restore(type.declaration, $enumeration)
             var index u64 = 0
-            while safe && index < enumeration.payloadTypes.len() {
-                const selected = match enumeration.payloadTypes.take(index) {
+            while safe && index < payloadTypes.len() {
+                const selected = match payloadTypes.take(index) {
                     None: panic("enum payload slot is empty")
                     Some(selected): selected
                 }
                 match selected {
                     None: {
                         var missing Option<semanticType> = .None
-                        enumeration.payloadTypes.restore(index, $missing)
+                        payloadTypes.restore(index, $missing)
                     }
                     Some(payload): {
                         var current = payload
@@ -181,12 +185,11 @@ fn parallelSemanticTransferSafeActive(
                         safe = parallelSemanticTransferSafeActive(
                             &analyzer, &source, &resolved, &active)
                         var restored Option<semanticType> = .Some(current)
-                        enumeration.payloadTypes.restore(index, $restored)
+                        payloadTypes.restore(index, $restored)
                     }
                 }
                 index += 1
             }
-            analyzer.model.enums.restore(type.declaration, $enumeration)
         }
     }
     active.truncate(active.len() - 1)

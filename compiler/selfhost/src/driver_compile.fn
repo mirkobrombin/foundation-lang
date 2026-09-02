@@ -1,0 +1,463 @@
+package foundation.compiler
+
+import std.format
+import std.fs
+import std.io
+import std.path
+import std.text
+
+fn diagnosticPath(
+    &sources arena<projectSource>,
+    source u64,
+    fallback String
+) String {
+    if source >= sources.len() return text.Copy(fallback)
+    const selected = match sources.take(source) {
+        None: {
+            return text.Copy(fallback)
+        }
+        Some(value): value
+    }
+    const result = text.Copy(selected.path)
+    sources.restore(source, $selected)
+    result
+}
+
+fn writeCompilerDiagnostics(
+    $found own diagnostics,
+    &sources arena<projectSource>,
+    fallback String
+) void {
+    var values = $found.takeAll()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("diagnostic list invariant failed")
+            Some(value): value
+        }
+        const severity = "error" if isErrorSeverity(value.severity) else "warning"
+        discard io.WriteStderrText(
+            diagnosticPath(&sources, value.span.source, fallback) + ":" +
+            format.U64(value.span.line) + ":" +
+            format.U64(value.span.column) + " " + severity + "[" +
+            value.code + "]: " + value.message + "\n"
+        )
+        discard value
+    }
+}
+
+struct checkedProgram {
+    loaded own loadedProject
+    model own semanticModel
+}
+
+struct loweredProgram {
+    loaded own loadedProject
+    program own firProgram
+}
+
+fn loadCheckedProgram(
+    input String,
+    requireMain bool,
+    mode projectMode,
+    target targetPlatform
+) Option<own checkedProgram> {
+    var found = newDiagnostics()
+    const selected = loadProject(input, &found, mode, target)
+    const loadFailed = found.hasErrors()
+    var loaded = match selected {
+        None: {
+            var sources = newArena<projectSource>()
+            writeCompilerDiagnostics($found, &sources, input)
+            return .None
+        }
+        Some(value): value
+    }
+    if found.len() != 0 {
+        writeCompilerDiagnostics($found, &loaded.sources, input)
+        found = newDiagnostics()
+    }
+    if loadFailed return .None
+
+    const generated = deriveApplicationSource(&loaded.program, &found)
+    const generationFailed = found.hasErrors()
+    if found.len() != 0 {
+        writeCompilerDiagnostics($found, &loaded.sources, input)
+        found = newDiagnostics()
+    }
+    if generationFailed return .None
+    match generated {
+        None: {}
+        Some(source): {
+            const complete = loadProjectWithGenerated(
+                input, &found, mode, target, source)
+            const reloadFailed = found.hasErrors()
+            loaded = match complete {
+                None: {
+                    writeCompilerDiagnostics($found, &loaded.sources, input)
+                    return .None
+                }
+                Some(value): value
+            }
+            if found.len() != 0 {
+                writeCompilerDiagnostics($found, &loaded.sources, input)
+            }
+            if reloadFailed return .None
+        }
+    }
+
+    const analysis = analyzeProgram(
+        &loaded.program,
+        analyzeOptions {
+        requireMain = requireMain
+        retainInvalidModel = false
+    }
+    )
+    const semanticAnalysis { model diagnostics as semanticDiagnostics } = analysis
+    const analysisFailed = semanticDiagnostics.hasErrors()
+    if semanticDiagnostics.len() != 0 {
+        writeCompilerDiagnostics(
+            $semanticDiagnostics,
+            &loaded.sources,
+            input
+        )
+    } else {
+        discard semanticDiagnostics
+    }
+    if analysisFailed return .None
+    match model {
+        None: .None
+        Some(model): .Some(own checkedProgram {
+            loaded = loaded
+            model = model
+        })
+    }
+}
+
+fn loadLoweredProgram(
+    input String,
+    requireMain bool,
+    mode projectMode,
+    target targetPlatform
+) Option<own loweredProgram> {
+    const selected = loadCheckedProgram(input, requireMain, mode, target)
+    var checked = match selected {
+        None: {
+            return .None
+        }
+        Some(value): value
+    }
+    const checkedProgram { loaded model } = checked
+    var project = loaded
+    var semantic = model
+    const lowered = lowerProgram(&project.program, &semantic)
+    .Some(own loweredProgram { loaded = project program = lowered })
+}
+
+fn writeCompilerOutput(outputPath String, value String) i32 {
+    fs.CreateDirectory(path.Parent(outputPath)) else error {
+        discard error
+        compilerProcessFailure("cannot create output directory")
+        return 1
+    }
+    match fs.WriteTextAtomic(outputPath, value, 1073741824) {
+        Ok: 0
+        Err(error): {
+            discard error
+            compilerProcessFailure("cannot write " + outputPath)
+            1
+        }
+    }
+}
+
+fn runCompilerCheck(input String, target targetPlatform) i32 {
+    const selected = loadCheckedProgram(
+        input,
+        true,
+        .Production,
+        target
+    )
+    match selected {
+        None: 1
+        Some(value): {
+            discard value
+            0
+        }
+    }
+}
+
+fn runCompilerEmitApplicationHost(
+    input String,
+    outputPath String,
+    target targetPlatform
+) i32 {
+    var found = newDiagnostics()
+    const selected = loadProject(input, &found, .Production, target)
+    const failed = found.hasErrors()
+    var loaded = match selected {
+        None: {
+            var sources = newArena<projectSource>()
+            writeCompilerDiagnostics($found, &sources, input)
+            return 1
+        }
+        Some(value): value
+    }
+    if found.len() != 0 {
+        writeCompilerDiagnostics($found, &loaded.sources, input)
+        found = newDiagnostics()
+    }
+    if failed return 1
+    const generated = deriveApplicationSource(&loaded.program, &found)
+    const generationFailed = found.hasErrors()
+    if found.len() != 0 {
+        writeCompilerDiagnostics($found, &loaded.sources, input)
+    }
+    if generationFailed return 1
+    match generated {
+        None: {
+            compilerProcessFailure("project does not define an application host")
+            1
+        }
+        Some(source): writeCompilerOutput(outputPath, source)
+    }
+}
+
+fn runCompilerEmitC(
+    input String,
+    outputPath String,
+    target targetPlatform
+) i32 {
+    const selected = loadLoweredProgram(
+        input,
+        true,
+        .Production,
+        target
+    )
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const output = emitSelfHostedC(&lowered.program, input)
+    writeCompilerOutput(outputPath, output)
+}
+
+fn compilerSDKRoot(input String) Option<String> {
+    const root = findProjectSdkRoot(input)
+    match root {
+        None: {
+            compilerProcessFailure(
+                "cannot find SDK root; set FOUNDATION_SDK_ROOT"
+            )
+            .None
+        }
+        Some(value): .Some(value)
+    }
+}
+
+fn runCompilerEmitLlvm(input String, outputPath String) i32 {
+    const selected = loadLoweredProgram(
+        input,
+        true,
+        .Production,
+        hostTargetPlatform()
+    )
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    writeCompilerOutput(
+        outputPath,
+        emitSelfHostedLlvm(&lowered.program, input)
+    )
+}
+
+fn runCompilerBuild(
+    input String,
+    outputPath String,
+    &options compilerNativeOptions
+) i32 {
+    const selected = loadLoweredProgram(
+        input,
+        true,
+        .Production,
+        hostTargetPlatform()
+    )
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const root = match compilerSDKRoot(input) {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const temporary = match createCompilerTempDirectory() {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const llvmBackend = match options.backend {
+        Llvm: true
+        C: false
+    }
+    const generated = path.Join(
+        temporary,
+        if llvmBackend { "program.ll" } else { "program.c" }
+    )
+    const output = if llvmBackend {
+        emitSelfHostedLlvm(&lowered.program, input)
+    } else {
+        emitSelfHostedC(&lowered.program, input)
+    }
+    const written = writeCompilerOutput(generated, output)
+    if written != 0 {
+        removeCompilerTempDirectory(temporary)
+        return written
+    }
+    fs.CreateDirectory(path.Parent(outputPath)) else error {
+        discard error
+        removeCompilerTempDirectory(temporary)
+        compilerProcessFailure("cannot create output directory")
+        return 1
+    }
+    const status = if llvmBackend {
+        compileGeneratedLlvm(
+            generated, outputPath, root, &options, false)
+    } else {
+        compileGeneratedC(
+            generated, outputPath, root, &options, false)
+    }
+    removeCompilerTempDirectory(temporary)
+    status
+}
+
+fn runCompilerRun(
+    input String,
+    &options compilerNativeOptions,
+    &arguments arena<String>
+) i32 {
+    const temporary = match createCompilerTempDirectory() {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const executable = compilerExecutablePath(temporary, "program")
+    const status = runCompilerBuild(input, executable, &options)
+    if status != 0 {
+        removeCompilerTempDirectory(temporary)
+        return status
+    }
+    const result = runCompiledProgram(executable, &arguments)
+    removeCompilerTempDirectory(temporary)
+    result
+}
+
+fn compilerTestName(&program firProgram, function u64) Option<String> {
+    var value = match program.functions.take(function) {
+        None: panic("test function slot is empty")
+        Some(value): value
+    }
+    const result = copyFirStringOption(value.testName)
+    program.functions.restore(function, $value)
+    result
+}
+
+fn runCompilerTests(
+    input String,
+    &options compilerNativeOptions
+) i32 {
+    const selected = loadLoweredProgram(
+        input,
+        false,
+        .Test,
+        hostTargetPlatform()
+    )
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const root = match compilerSDKRoot(input) {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const temporary = match createCompilerTempDirectory() {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    var passed u64 = 0
+    var tests u64 = 0
+    var function u64 = 0
+    while function < lowered.program.functions.len() {
+        const selectedName = compilerTestName(&lowered.program, function)
+        match selectedName {
+            None: {}
+            Some(name): {
+                const llvmBackend = match options.backend {
+                    Llvm: true
+                    C: false
+                }
+                const generated = path.Join(temporary,
+                    "test-" + format.U64(tests) +
+                    if llvmBackend { ".ll" } else { ".c" })
+                const executable = compilerExecutablePath(
+                    temporary,
+                    "test-" + format.U64(tests)
+                )
+                const output = if llvmBackend {
+                    emitSelfHostedTestLlvm(
+                        &lowered.program, function, input)
+                } else {
+                    emitSelfHostedTestC(
+                        &lowered.program, function, input)
+                }
+                const written = writeCompilerOutput(generated, output)
+                if written != 0 {
+                    removeCompilerTempDirectory(temporary)
+                    return written
+                }
+                const compiled = if llvmBackend {
+                    compileGeneratedLlvm(
+                        generated, executable, root, &options, true)
+                } else {
+                    compileGeneratedC(
+                        generated, executable, root, &options, true)
+                }
+                if compiled != 0 {
+                    removeCompilerTempDirectory(temporary)
+                    return compiled
+                }
+                discard io.WriteStdoutText("test " + name + "\n")
+                var arguments = newArena<String>()
+                const status = runCompiledProgram(executable, &arguments)
+                if status == 0 {
+                    passed += 1
+                    discard io.WriteStdoutText("ok " + name + "\n")
+                } else {
+                    discard io.WriteStdoutText("FAILED " + name + "\n")
+                }
+                tests += 1
+            }
+        }
+        function += 1
+    }
+    removeCompilerTempDirectory(temporary)
+    discard io.WriteStdoutText(
+        format.U64(passed) + " passed; " +
+        format.U64(tests - passed) + " failed\n"
+    )
+    0 if passed == tests else 1
+}

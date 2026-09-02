@@ -1,0 +1,460 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn llvmFunctionHasCaptures(&function firFunction) bool {
+    cFunctionHasCaptures(&function)
+}
+
+fn llvmEmitFrameEnter(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    sourcePath String
+) void {
+    const frame = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, frame + " = alloca %fdn.frame")
+    state.frame = "" + frame
+    const packageName = llvmStringConstantName(&module,
+        if function.packageName == "" {
+        "main"
+    } else {
+        "" + function.packageName
+    })
+    const functionName = llvmStringConstantName(&module, function.name)
+    const sourceName = llvmStringConstantName(&module,
+        if function.sourcePath == "" {
+        "" + sourcePath
+    } else {
+        "" + function.sourcePath
+    })
+    llvmRequireExternal(&module, "fdn_frame_enter",
+        "void @fdn_frame_enter(ptr, ptr, ptr, ptr, i32, i32)")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_frame_enter(ptr " + frame + ", ptr " +
+        packageName + ", ptr " + functionName + ", ptr " + sourceName +
+        ", i32 " + format.U64(function.sourceSpan.line) + ", i32 " +
+        format.U64(function.sourceSpan.column) + ")")
+}
+
+fn llvmEmitFrameLeave(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &state llvmFunctionEmission
+) void {
+    if state.frame == "" return
+    llvmRequireExternal(
+        &module, "fdn_frame_leave", "void @fdn_frame_leave(ptr)")
+    const frame = "" + state.frame
+    llvmInstruction(&builder, &state,
+        "call void @fdn_frame_leave(ptr " + frame + ")")
+}
+
+fn llvmEmitFunctionDefinitionSignature(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    id u64
+) void {
+    llvmWrite(&builder, "define " +
+        if function.diverges { "void" } else {
+        llvmTypeName(&function.returnType)
+    } + " @" + llvmFunctionName(&program, id) + "(")
+    var wrote = false
+    if function.closure {
+        llvmWrite(&builder, "ptr %fdn_env")
+        wrote = true
+    }
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        if wrote {
+            llvmWrite(&builder, ", ")
+        }
+        const local = cU64At(&function.parameters, parameter)
+        var valueType = llvmLocalTypeAt(&function, local)
+        llvmWrite(&builder, llvmTypeName(&valueType) + " %fdn_arg_" +
+            format.U64(parameter))
+        wrote = true
+        parameter += 1
+    }
+    llvmWrite(&builder, ") {\n")
+}
+
+fn llvmPrepareLocals(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission
+) void {
+    var captureField u64 = 0
+    var local u64 = 0
+    while local < function.locals.len() {
+        var declaration = cLocalAt(&function, local)
+        var valueType = copySemanticType(&declaration.type)
+        if declaration.captured {
+            const field = llvmNextTemporary(&state)
+            const functionID = state.function
+            llvmInstruction(&builder, &state, field +
+                " = getelementptr inbounds " +
+                llvmClosureEnvironmentName(&program, functionID) +
+                ", ptr %fdn_env, i32 0, i32 " + format.U64(captureField))
+            if llvmCaptureBorrowed(declaration.captureMode) {
+                const address = llvmNextTemporary(&state)
+                llvmInstruction(&builder, &state,
+                    address + " = load ptr, ptr " + field)
+                llvmSetLocal(&state, local, address)
+            } else {
+                llvmSetLocal(&state, local, field)
+            }
+            captureField += 1
+        } else {
+            const address = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, address + " = alloca " +
+                llvmTypeName(&valueType))
+            llvmSetLocal(&state, local, address)
+            if llvmTypeRequiresDrop(&program, &valueType) {
+                const active = llvmNextTemporary(&state)
+                llvmInstruction(&builder, &state, active + " = alloca i1")
+                var boolean = boolSemanticType()
+                llvmStore(&builder, &state, &boolean, "0", active)
+                llvmSetActiveLocal(&state, local, .Some(active))
+            }
+        }
+        local += 1
+    }
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        const parameterLocal = cU64At(&function.parameters, parameter)
+        var valueType = llvmLocalTypeAt(&function, parameterLocal)
+        const address = llvmLocal(&state, parameterLocal)
+        llvmStore(&builder, &state, &valueType,
+            "%fdn_arg_" + format.U64(parameter),
+            address)
+        llvmActivateLocal(
+            &builder, &program, &function, &state, parameterLocal)
+        parameter += 1
+    }
+}
+
+fn llvmEmitFunctionBody(
+    &module llvmModuleEmission,
+    &program firProgram,
+    id u64,
+    sourcePath String
+) void {
+    var function = cFunctionAt(&program, id)
+    if function.callback || !function.hasBody return
+    if function.taskFunction && cTaskSuspensionCount(&function) != 0 return
+    var builder = text.NewBuilder()
+    llvmEmitFunctionDefinitionSignature(
+        &builder, &program, &function, id)
+    var state = newLlvmFunctionEmission(id, function.locals.len())
+    llvmBlock(&builder, &state, "entry")
+    llvmPrepareLocals(&builder, &program, &function, &state)
+    llvmEmitFrameEnter(
+        &builder, &module, &function, &state, sourcePath)
+    var synthetic = false
+    match replace function.stateTransition with .None {
+        None: {}
+        Some(transition): {
+            var selected = transition
+            llvmEmitStateTransitionBody(&builder, &module, &program,
+                &function, &state, &selected)
+            synthetic = true
+        }
+    }
+    if !synthetic {
+        match replace function.stateTimeout with .None {
+            None: {}
+            Some(timeoutValue): {
+                var selected = timeoutValue
+                llvmEmitStateTimeoutBody(&builder, &module, &program,
+                    &function, &state, &selected)
+                synthetic = true
+            }
+        }
+    }
+    if !synthetic {
+        match replace function.workflow with .None {
+            None: {}
+            Some(workflow): {
+                var selected = workflow
+                llvmEmitWorkflowBody(&builder, &module, &program,
+                    &function, &state, &selected)
+                synthetic = true
+            }
+        }
+    }
+    if !synthetic {
+        const body = function.body
+        const exits = llvmEmitBlock(&builder, &module, &program,
+            &function, &state, body)
+        if !exits && !state.terminated {
+            if function.returnType.kind.Matches("Void") {
+                llvmEmitFrameLeave(&builder, &module, &state)
+                llvmInstruction(&builder, &state, "ret void")
+                state.terminated = true
+            } else {
+                panic("LLVM function completed without returning a value")
+            }
+        }
+    }
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}
+
+fn llvmEmitFunctionValueAdapter(
+    &module llvmModuleEmission,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, "define " +
+        if function.diverges { "void" } else {
+        llvmTypeName(&function.returnType)
+    } + " @" + llvmFunctionValueAdapterName(&program, id) +
+        "(ptr %fdn_env")
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        const local = cU64At(&function.parameters, parameter)
+        var valueType = llvmLocalTypeAt(&function, local)
+        llvmWrite(&builder, ", " + llvmTypeName(&valueType) +
+            " %fdn_arg_" + format.U64(parameter))
+        parameter += 1
+    }
+    llvmWrite(&builder, ") {\nentry:\n")
+    var invocation = "call " +
+        if function.diverges { "void" } else {
+        llvmTypeName(&function.returnType)
+    } + " @" + llvmFunctionName(&program, id) + "("
+    parameter = 0
+    while parameter < function.parameters.len() {
+        if parameter != 0 {
+            invocation = invocation + ", "
+        }
+        const local = cU64At(&function.parameters, parameter)
+        var valueType = llvmLocalTypeAt(&function, local)
+        invocation = invocation + llvmTypeName(&valueType) +
+            " %fdn_arg_" + format.U64(parameter)
+        parameter += 1
+    }
+    invocation = invocation + ")"
+    if function.diverges {
+        llvmWrite(&builder, "  " + invocation + "\n  unreachable\n")
+    } else {
+        if function.returnType.kind.Matches("Void") {
+            llvmWrite(&builder, "  " + invocation + "\n  ret void\n")
+        } else {
+            llvmWrite(&builder, "  %result = " + invocation + "\n  ret " +
+                llvmTypeName(&function.returnType) + " %result\n")
+        }
+    }
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+    discard module
+}
+
+fn llvmEmitFunctions(
+    &module llvmModuleEmission,
+    &program firProgram,
+    sourcePath String
+) void {
+    llvmEmitClosureDrops(&module, &program)
+    llvmEmitTaskSupport(&module, &program, sourcePath)
+    var uses = cCollectFunctionValueUses(&program)
+    var use u64 = 0
+    while use < uses.len() {
+        llvmEmitFunctionValueAdapter(
+            &module, &program, cU64At(&uses, use))
+        use += 1
+    }
+    var function u64 = 0
+    while function < program.functions.len() {
+        llvmEmitFunctionBody(&module, &program, function, sourcePath)
+        function += 1
+    }
+}
+
+fn llvmEmitAllocationCheck(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &state llvmFunctionEmission,
+    message String
+) void {
+    llvmRequireExternal(&module, "fdn_live_allocations",
+        "i64 @fdn_live_allocations()")
+    const count = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        count + " = call i64 @fdn_live_allocations()")
+    const leaked = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        leaked + " = icmp ne i64 " + count + ", 0")
+    const panicBlock = llvmNextBlock(&state, "allocations.invalid")
+    const endBlock = llvmNextBlock(&state, "allocations.valid")
+    llvmConditionalBranch(
+        &builder, &state, leaked, panicBlock, endBlock)
+    llvmBlock(&builder, &state, panicBlock)
+    const textValue = llvmStringConstantName(&module, message)
+    llvmRequireExternal(&module, "fdn_panic_cstr",
+        "void @fdn_panic_cstr(ptr)")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_panic_cstr(ptr " + textValue + ")")
+    llvmInstruction(&builder, &state, "unreachable")
+    state.terminated = true
+    llvmBlock(&builder, &state, endBlock)
+}
+
+fn llvmEmitMainWrapper(
+    &module llvmModuleEmission,
+    &program firProgram
+) void {
+    const mainFunction = program.main
+    var function = cFunctionAt(&program, mainFunction)
+    var builder = text.NewBuilder()
+    if function.parameters.len() != 0 {
+        llvmWrite(&builder, "define i32 @main(i32 %argc, ptr %argv) {\n")
+    } else {
+        llvmWrite(&builder, "define i32 @main() {\n")
+    }
+    var state = newLlvmFunctionEmission(mainFunction, 0)
+    llvmBlock(&builder, &state, "entry")
+    var call = "call i32 @" + llvmFunctionName(&program, mainFunction) + "("
+    if function.parameters.len() != 0 {
+        const parameter = cU64At(&function.parameters, 0)
+        var parameterType = llvmLocalTypeAt(&function, parameter)
+        const positiveBlock = llvmNextBlock(&state, "arguments.present")
+        const emptyBlock = llvmNextBlock(&state, "arguments.empty")
+        const mergeBlock = llvmNextBlock(&state, "arguments.count")
+        const hasArguments = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            hasArguments + " = icmp sgt i32 %argc, 1")
+        llvmConditionalBranch(
+            &builder, &state, hasArguments, positiveBlock, emptyBlock)
+        llvmBlock(&builder, &state, positiveBlock)
+        const positiveCount = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            positiveCount + " = sub i32 %argc, 1")
+        llvmBranch(&builder, &state, mergeBlock)
+        llvmBlock(&builder, &state, emptyBlock)
+        llvmBranch(&builder, &state, mergeBlock)
+        llvmBlock(&builder, &state, mergeBlock)
+        const count32 = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, count32 +
+            " = phi i32 [ " + positiveCount + ", %" + positiveBlock +
+            " ], [ 0, %" + emptyBlock + " ]")
+        const count = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            count + " = zext i32 " + count32 + " to i64")
+        const bytes = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            bytes + " = mul i64 " + count + ", 24")
+        llvmRequireExternal(&module, "fdn_alloc", "ptr @fdn_alloc(i64)")
+        const values = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            values + " = call ptr @fdn_alloc(i64 " + bytes + ")")
+        const index = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, index + " = alloca i64")
+        var usizeType = usizeSemanticType()
+        llvmStore(&builder, &state, &usizeType, "0", index)
+        const testBlock = llvmNextBlock(&state, "arguments.test")
+        const bodyBlock = llvmNextBlock(&state, "arguments.body")
+        const endBlock = llvmNextBlock(&state, "arguments.end")
+        llvmBranch(&builder, &state, testBlock)
+        llvmBlock(&builder, &state, testBlock)
+        const current = llvmLoad(&builder, &state, &usizeType, index)
+        const present = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, present +
+            " = icmp ult i64 " + current + ", " + count)
+        llvmConditionalBranch(
+            &builder, &state, present, bodyBlock, endBlock)
+        llvmBlock(&builder, &state, bodyBlock)
+        const argumentIndex = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, argumentIndex +
+            " = add i64 " + current + ", 1")
+        const argumentAddress = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, argumentAddress +
+            " = getelementptr inbounds ptr, ptr %argv, i64 " + argumentIndex)
+        const argument = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            argument + " = load ptr, ptr " + argumentAddress)
+        llvmRequireExternal(&module, "strlen", "i64 @strlen(ptr)")
+        const length = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            length + " = call i64 @strlen(ptr " + argument + ")")
+        const stringAddress = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, stringAddress +
+            " = getelementptr inbounds %fdn.string, ptr " + values +
+            ", i64 " + current)
+        const dataField = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, dataField +
+            " = getelementptr inbounds %fdn.string, ptr " + stringAddress +
+            ", i32 0, i32 0")
+        llvmInstruction(&builder, &state,
+            "store ptr " + argument + ", ptr " + dataField)
+        const lengthField = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, lengthField +
+            " = getelementptr inbounds %fdn.string, ptr " + stringAddress +
+            ", i32 0, i32 1")
+        llvmInstruction(&builder, &state,
+            "store i64 " + length + ", ptr " + lengthField)
+        const ownedField = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, ownedField +
+            " = getelementptr inbounds %fdn.string, ptr " + stringAddress +
+            ", i32 0, i32 2")
+        llvmInstruction(&builder, &state,
+            "store i8 0, ptr " + ownedField)
+        const next = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            next + " = add i64 " + current + ", 1")
+        llvmStore(&builder, &state, &usizeType, next, index)
+        llvmBranch(&builder, &state, testBlock)
+        llvmBlock(&builder, &state, endBlock)
+        const slice0 = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, slice0 + " = insertvalue " +
+            llvmTypeName(&parameterType) + " zeroinitializer, ptr " + values +
+            ", 0")
+        const slice = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, slice + " = insertvalue " +
+            llvmTypeName(&parameterType) + " " + slice0 + ", i64 " + count +
+            ", 1")
+        call = call + llvmTypeName(&parameterType) + " " + slice + ")"
+        const result = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, result + " = " + call)
+        llvmRequireExternal(&module, "fdn_dealloc", "void @fdn_dealloc(ptr)")
+        llvmInstruction(&builder, &state,
+            "call void @fdn_dealloc(ptr " + values + ")")
+        llvmEmitAllocationCheck(
+            &builder, &module, &state, "live allocations after main")
+        llvmInstruction(&builder, &state, "ret i32 " + result)
+    } else {
+        call = call + ")"
+        const result = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, result + " = " + call)
+        llvmEmitAllocationCheck(
+            &builder, &module, &state, "live allocations after main")
+        llvmInstruction(&builder, &state, "ret i32 " + result)
+    }
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}
+
+fn llvmEmitTestMainWrapper(
+    &module llvmModuleEmission,
+    &program firProgram
+) void {
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, "define i32 @main() {\n")
+    const mainFunction = program.main
+    var state = newLlvmFunctionEmission(mainFunction, 0)
+    llvmBlock(&builder, &state, "entry")
+    llvmInstruction(&builder, &state, "call void @" +
+        llvmFunctionName(&program, mainFunction) + "()")
+    llvmEmitAllocationCheck(
+        &builder, &module, &state, "live allocations after test")
+    llvmInstruction(&builder, &state, "ret i32 0")
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}

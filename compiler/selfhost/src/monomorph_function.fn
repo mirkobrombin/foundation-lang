@@ -658,7 +658,7 @@ fn monomorphFunctionExpressions(
             Some(operand): {
                 if !firBoolAt(&contractOperands, index) &&
                     substituted.kind.Matches("View") &&
-                    substituted.declaration == 1 &&
+                    substituted.declaration != 2 &&
                     substituted.arguments.len() == 1 {
                     var target = match substituted.arguments.take(0) {
                         None: panic("implicit read target is missing")

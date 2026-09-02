@@ -1,0 +1,544 @@
+package foundation.compiler
+
+import std.text
+
+fn llvmActivateLocal(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    local u64
+) void {
+    var valueType = llvmLocalTypeAt(&function, local)
+    if !llvmTypeRequiresDrop(&program, &valueType) return
+    match llvmActiveLocal(&state, local) {
+        None: {}
+        Some(active): {
+            var boolean = boolSemanticType()
+            llvmStore(&builder, &state, &boolean, "1", active)
+        }
+    }
+}
+
+fn llvmEmitBlock(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    id u64
+) bool {
+    var block = cBlockAt(&function, id)
+    var statement u64 = 0
+    while statement < block.statements.len() {
+        const selected = cU64At(&block.statements, statement)
+        if state.taskPoll && llvmEmitSuspendingStatement(&builder, &module,
+            &program, &function, &state, selected) {
+            statement += 1
+            continue
+        }
+        if llvmEmitStatement(&builder, &module, &program, &function,
+            &state, selected) {
+            return true
+        }
+        statement += 1
+    }
+    llvmEmitDrops(&builder, &module, &program, &function, &state, &block.drops)
+    false
+}
+
+fn llvmEmitVariableStatement(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    variable firVariableStatement
+) bool {
+    var initializer = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, variable.initializer)
+    if initializer.diverges return true
+    var valueType = llvmLocalTypeAt(&function, variable.local)
+    const value = llvmEnsureValue(&builder, &state, &initializer)
+    const address = llvmLocal(&state, variable.local)
+    llvmStore(&builder, &state, &valueType, value, address)
+    llvmActivateLocal(
+        &builder, &program, &function, &state, variable.local)
+    false
+}
+
+fn llvmEmitResultElse(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    expression u64,
+    successLocal Option<u64>,
+    errorLocal u64,
+    elseBlock u64
+) bool {
+    var initializer = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, expression)
+    if initializer.diverges return true
+    var resultType = llvmExpressionTypeAt(&function, expression)
+    const result = llvmEnsureValue(&builder, &state, &initializer)
+    const tag = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, tag + " = extractvalue " +
+        llvmTypeName(&resultType) + " " + result + ", 0")
+    const failed = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, failed + " = icmp eq i32 " + tag + ", 1")
+    const errorBlock = llvmNextBlock(&state, "result.error")
+    const successBlock = llvmNextBlock(&state, "result.success")
+    const mergeBlock = llvmNextBlock(&state, "result.end")
+    llvmConditionalBranch(
+        &builder, &state, failed, errorBlock, successBlock)
+    llvmBlock(&builder, &state, errorBlock)
+    var errorType = llvmLocalTypeAt(&function, errorLocal)
+    const errorValue = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, errorValue + " = extractvalue " +
+        llvmTypeName(&resultType) + " " + result + ", 2")
+    const errorAddress = llvmLocal(&state, errorLocal)
+    llvmStore(&builder, &state, &errorType, errorValue, errorAddress)
+    llvmActivateLocal(&builder, &program, &function, &state, errorLocal)
+    const errorExits = llvmEmitBlock(&builder, &module, &program,
+        &function, &state, elseBlock)
+    if !errorExits {
+        llvmBranch(&builder, &state, mergeBlock)
+    }
+    llvmBlock(&builder, &state, successBlock)
+    match successLocal {
+        None: {}
+        Some(local): {
+            var successType = llvmLocalTypeAt(&function, local)
+            const success = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, success + " = extractvalue " +
+                llvmTypeName(&resultType) + " " + result + ", 1")
+            const successAddress = llvmLocal(&state, local)
+            llvmStore(&builder, &state, &successType, success,
+                successAddress)
+            llvmActivateLocal(
+                &builder, &program, &function, &state, local)
+        }
+    }
+    llvmBranch(&builder, &state, mergeBlock)
+    llvmBlock(&builder, &state, mergeBlock)
+    false
+}
+
+fn llvmEmitStructDestructure(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &destructure firStructDestructureStatement
+) bool {
+    var initializer = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, destructure.initializer)
+    if initializer.diverges return true
+    var structureType = copySemanticType(&destructure.type)
+    const source = if destructure.owned {
+        llvmEnsureValue(&builder, &state, &initializer)
+    } else {
+        llvmEnsureAddress(&builder, &state, &initializer)
+    }
+    var binding u64 = 0
+    while binding < destructure.bindings.len() {
+        const selected = match destructure.bindings.take(binding) {
+            None: panic("FIR struct binding slot is empty")
+            Some(found): found
+        }
+        destructure.bindings.restore(binding, selected)
+        var valueType = llvmLocalTypeAt(&function, selected.local)
+        const field = if structureType.kind.Matches("Channel") {
+            llvmAggregateFieldAddress(&builder, &state,
+                source, &structureType, selected.field)
+        } else {
+            llvmStructFieldAddress(&builder, &program, &state,
+                source, &structureType, selected.field)
+        }
+        const value = llvmLoad(&builder, &state, &valueType, field)
+        const localAddress = llvmLocal(&state, selected.local)
+        llvmStore(&builder, &state, &valueType, value,
+            localAddress)
+        llvmActivateLocal(
+            &builder, &program, &function, &state, selected.local)
+        if llvmTypeRequiresDrop(&program, &valueType) {
+            const empty = llvmZeroValue(&valueType)
+            llvmStore(&builder, &state, &valueType, empty, field)
+        }
+        binding += 1
+    }
+    if destructure.owned {
+        var ownerType = llvmExpressionTypeAt(
+            &function, destructure.initializer)
+        const ownerAddress = llvmEnsureAddress(
+            &builder, &state, &initializer)
+        llvmEmitDropAddress(&builder, &module, &program,
+            &state, &ownerType, ownerAddress)
+    }
+    false
+}
+
+fn llvmEmitAssignment(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    assignment firAssignmentStatement
+) bool {
+    var target = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, assignment.target)
+    if target.diverges return true
+    const address = llvmEnsureAddress(&builder, &state, &target)
+    var value = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, assignment.value)
+    if value.diverges return true
+    const emitted = llvmEnsureValue(&builder, &state, &value)
+    var targetType = llvmExpressionTypeAt(&function, assignment.target)
+    if cAssignmentIsAssign(assignment.operation) {
+        llvmEmitDropAddress(&builder, &module, &program,
+            &state, &targetType, address)
+        llvmStore(&builder, &state, &targetType, emitted, address)
+        return false
+    }
+    const current = llvmLoad(&builder, &state, &targetType, address)
+    const replacement = llvmEmitArithmetic(&builder, &module, &state,
+        cAssignmentBinary(assignment.operation), &targetType, current, emitted)
+    if targetType.kind.Matches("StringValue") {
+        llvmEmitDropAddress(&builder, &module, &program,
+            &state, &targetType, address)
+    }
+    llvmStore(&builder, &state, &targetType, replacement, address)
+    llvmEmitDropInspectedTemporary(&builder, &module, &program,
+        &function, &state, assignment.value, &value)
+    false
+}
+
+fn llvmEmitReturn(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    $returned firReturnStatement
+) bool {
+    const firReturnStatement { value drops } = returned
+    var dropValues = drops
+    if state.taskPoll {
+        match value {
+            None: {
+                llvmEmitDrops(&builder, &module, &program,
+                    &function, &state, &dropValues)
+            }
+            Some(expression): {
+                var emitted = llvmEmitExpression(&builder, &module, &program,
+                    &function, &state, expression)
+                if emitted.diverges return true
+                const result = llvmEnsureValue(&builder, &state, &emitted)
+                llvmEmitDrops(&builder, &module, &program,
+                    &function, &state, &dropValues)
+                const functionID = state.function
+                const taskFrame = "" + state.taskFrame
+                const resultAddress = llvmTaskFrameField(
+                    &builder, &program, &state, functionID,
+                    taskFrame, llvmTaskResultField(&function))
+                llvmStore(&builder, &state, &function.returnType,
+                    result, resultAddress)
+                const activeAddress = llvmTaskFrameField(
+                    &builder, &program, &state, functionID,
+                    taskFrame, llvmTaskResultActiveField(&function))
+                var boolean = boolSemanticType()
+                llvmStore(&builder, &state, &boolean, "1", activeAddress)
+            }
+        }
+        llvmTaskComplete(&builder, &module, &state)
+        return true
+    }
+    match value {
+        None: {
+            llvmEmitDrops(&builder, &module, &program,
+                &function, &state, &dropValues)
+            llvmEmitFrameLeave(&builder, &module, &state)
+            llvmInstruction(&builder, &state, "ret void")
+        }
+        Some(expression): {
+            var emitted = llvmEmitExpression(&builder, &module, &program,
+                &function, &state, expression)
+            if emitted.diverges return true
+            const result = llvmEnsureValue(&builder, &state, &emitted)
+            llvmEmitDrops(&builder, &module, &program,
+                &function, &state, &dropValues)
+            llvmEmitFrameLeave(&builder, &module, &state)
+            var resultType = llvmExpressionTypeAt(&function, expression)
+            llvmInstruction(&builder, &state, "ret " +
+                llvmTypeName(&resultType) + " " + result)
+        }
+    }
+    state.terminated = true
+    true
+}
+
+fn llvmEmitIf(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    $branch firIfStatement
+) bool {
+    const firIfStatement { condition thenBlock elseBlock } = branch
+    var emitted = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, condition)
+    if emitted.diverges return true
+    const conditionValue = llvmEnsureValue(&builder, &state, &emitted)
+    const thenName = llvmNextBlock(&state, "if.then")
+    const elseName = llvmNextBlock(&state, "if.else")
+    const mergeName = llvmNextBlock(&state, "if.end")
+    llvmConditionalBranch(
+        &builder, &state, conditionValue, thenName, elseName)
+    llvmBlock(&builder, &state, thenName)
+    const thenExits = llvmEmitBlock(&builder, &module, &program,
+        &function, &state, thenBlock)
+    if !thenExits {
+        llvmBranch(&builder, &state, mergeName)
+    }
+    llvmBlock(&builder, &state, elseName)
+    var elseExits = false
+    match elseBlock {
+        None: {}
+        Some(block): {
+            elseExits = llvmEmitBlock(&builder, &module, &program,
+                &function, &state, block)
+        }
+    }
+    if !elseExits {
+        llvmBranch(&builder, &state, mergeName)
+    }
+    if thenExits && elseExits {
+        state.terminated = true
+        return true
+    }
+    llvmBlock(&builder, &state, mergeName)
+    false
+}
+
+fn llvmEmitWhile(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    loop firWhileStatement
+) bool {
+    const conditionBlock = llvmNextBlock(&state, "while.test")
+    const bodyBlock = llvmNextBlock(&state, "while.body")
+    const endBlock = llvmNextBlock(&state, "while.end")
+    llvmBranch(&builder, &state, conditionBlock)
+    llvmBlock(&builder, &state, conditionBlock)
+    var condition = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, loop.condition)
+    if condition.diverges return true
+    const value = llvmEnsureValue(&builder, &state, &condition)
+    llvmConditionalBranch(&builder, &state, value, bodyBlock, endBlock)
+    llvmBlock(&builder, &state, bodyBlock)
+    llvmPushLoop(&state, endBlock, conditionBlock)
+    const exits = llvmEmitBlock(&builder, &module, &program,
+        &function, &state, loop.body)
+    llvmPopLoop(&state)
+    if !exits {
+        llvmBranch(&builder, &state, conditionBlock)
+    }
+    llvmBlock(&builder, &state, endBlock)
+    false
+}
+
+fn llvmEmitFor(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &loop firForStatement
+) bool {
+    var sequence = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, loop.sequence)
+    if sequence.diverges return true
+    var sequenceType = llvmLocalTypeAt(&function, loop.sequenceStorage)
+    const sequenceValue = llvmEnsureValue(&builder, &state, &sequence)
+    const sequenceAddress = llvmLocal(&state, loop.sequenceStorage)
+    llvmStore(&builder, &state, &sequenceType, sequenceValue, sequenceAddress)
+    var indexType = llvmLocalTypeAt(&function, loop.index)
+    const indexAddress = llvmLocal(&state, loop.index)
+    llvmStore(&builder, &state, &indexType, "0", indexAddress)
+    const testBlock = llvmNextBlock(&state, "for.test")
+    const bodyBlock = llvmNextBlock(&state, "for.body")
+    const nextBlock = llvmNextBlock(&state, "for.next")
+    const endBlock = llvmNextBlock(&state, "for.end")
+    llvmBranch(&builder, &state, testBlock)
+    llvmBlock(&builder, &state, testBlock)
+    match loop.next {
+        Some(expression): {
+            var next = llvmEmitExpression(&builder, &module, &program,
+                &function, &state, expression)
+            if next.diverges return true
+            var optionType = llvmExpressionTypeAt(&function, expression)
+            const option = llvmEnsureValue(&builder, &state, &next)
+            const tag = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, tag + " = extractvalue " +
+                llvmTypeName(&optionType) + " " + option + ", 0")
+            const present = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, present +
+                " = icmp eq i32 " + tag + ", 1")
+            llvmConditionalBranch(
+                &builder, &state, present, bodyBlock, endBlock)
+            llvmBlock(&builder, &state, bodyBlock)
+            var valueType = llvmLocalTypeAt(&function, loop.value)
+            const payload = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, payload + " = extractvalue " +
+                llvmTypeName(&optionType) + " " + option + ", 2")
+            const valueAddress = llvmLocal(&state, loop.value)
+            llvmStore(&builder, &state, &valueType, payload,
+                valueAddress)
+        }
+        None: {
+            const sequenceValueLoaded = llvmLoad(
+                &builder, &state, &sequenceType, sequenceAddress)
+            const length = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, length + " = extractvalue " +
+                llvmTypeName(&sequenceType) + " " + sequenceValueLoaded + ", 1")
+            const index = llvmLoad(&builder, &state, &indexType, indexAddress)
+            const present = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, present +
+                " = icmp ult i64 " + index + ", " + length)
+            llvmConditionalBranch(
+                &builder, &state, present, bodyBlock, endBlock)
+            llvmBlock(&builder, &state, bodyBlock)
+            const data = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, data + " = extractvalue " +
+                llvmTypeName(&sequenceType) + " " + sequenceValueLoaded + ", 0")
+            var valueType = llvmLocalTypeAt(&function, loop.value)
+            var elementType = copySemanticType(&valueType)
+            if valueType.kind.Matches("View") || valueType.kind.Matches("Edit") {
+                elementType = semanticTypeArgument(&valueType, 0)
+            }
+            const element = llvmPointerElementAddress(
+                &builder, &state, data, &elementType, index)
+            if valueType.kind.Matches("View") || valueType.kind.Matches("Edit") {
+                const valueAddress = llvmLocal(&state, loop.value)
+                llvmInstruction(&builder, &state, "store ptr " + element +
+                    ", ptr " + valueAddress)
+            } else {
+                const loaded = llvmLoad(&builder, &state, &valueType, element)
+                const valueAddress = llvmLocal(&state, loop.value)
+                llvmStore(&builder, &state, &valueType, loaded,
+                    valueAddress)
+            }
+        }
+    }
+    llvmPushLoop(&state, endBlock, nextBlock)
+    const exits = llvmEmitBlock(&builder, &module, &program,
+        &function, &state, loop.body)
+    llvmPopLoop(&state)
+    if !exits {
+        llvmBranch(&builder, &state, nextBlock)
+    }
+    llvmBlock(&builder, &state, nextBlock)
+    const index = llvmLoad(&builder, &state, &indexType, indexAddress)
+    const incremented = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, incremented +
+        " = add i64 " + index + ", 1")
+    llvmStore(&builder, &state, &indexType, incremented, indexAddress)
+    llvmBranch(&builder, &state, testBlock)
+    llvmBlock(&builder, &state, endBlock)
+    if loop.ownsSequence {
+        llvmEmitLocalDrop(&builder, &module, &program,
+            &function, &state, loop.sequenceStorage)
+    }
+    llvmEmitCleanups(&builder, &module, &program, &state, &sequence)
+    false
+}
+
+fn llvmEmitStatement(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    id u64
+) bool {
+    const statement = cStatementAt(&function, id)
+    const firStatement { value span } = statement
+    discard span
+    match value {
+        Variable(variable): llvmEmitVariableStatement(&builder, &module,
+            &program, &function, &state, variable)
+        LetElse(binding): llvmEmitResultElse(&builder, &module, &program,
+            &function, &state, binding.initializer, .Some(binding.local),
+            binding.errorLocal, binding.elseBlock)
+        ResultElse(binding): llvmEmitResultElse(&builder, &module, &program,
+            &function, &state, binding.expression, .None,
+            binding.errorLocal, binding.elseBlock)
+        StructDestructure(destructure): {
+            var selected = destructure
+            llvmEmitStructDestructure(&builder, &module, &program,
+                &function, &state, &selected)
+        }
+        Assignment(assignment): llvmEmitAssignment(&builder, &module,
+            &program, &function, &state, assignment)
+        Expression(expression): {
+            const emitted = llvmEmitExpression(&builder, &module, &program,
+                &function, &state, expression.expression)
+            emitted.diverges
+        }
+        Discard(discarded): {
+            var emitted = llvmEmitExpression(&builder, &module, &program,
+                &function, &state, discarded.expression)
+            if emitted.diverges return true
+            if llvmTypeRequiresDrop(&program, &emitted.type) {
+                const address = llvmEnsureAddress(&builder, &state, &emitted)
+                llvmEmitDropAddress(&builder, &module, &program,
+                    &state, &emitted.type, address)
+            }
+            false
+        }
+        ReturnValue(returned): llvmEmitReturn(&builder, &module,
+            &program, &function, &state, $returned)
+        IfValue(branch): llvmEmitIf(&builder, &module, &program,
+            &function, &state, $branch)
+        WhileValue(loop): llvmEmitWhile(&builder, &module, &program,
+            &function, &state, loop)
+        ForValue(loop): {
+            var selected = loop
+            llvmEmitFor(&builder, &module, &program,
+                &function, &state, &selected)
+        }
+        BreakValue(jump): {
+            const firBreakStatement { drops } = jump
+            var dropValues = drops
+            llvmEmitDrops(&builder, &module, &program,
+                &function, &state, &dropValues)
+            const target = llvmCurrentLoop(&state)
+            llvmBranch(&builder, &state, target.breakBlock)
+            true
+        }
+        ContinueValue(jump): {
+            const firContinueStatement { drops } = jump
+            var dropValues = drops
+            llvmEmitDrops(&builder, &module, &program,
+                &function, &state, &dropValues)
+            const target = llvmCurrentLoop(&state)
+            llvmBranch(&builder, &state, target.continueBlock)
+            true
+        }
+        SelectValue(selection): {
+            var selected = selection
+            llvmEmitSelectStatement(&builder, &module,
+                &program, &function, &state, &selected, span)
+        }
+        UnsafeValue(unsafeValue): llvmEmitBlock(&builder, &module,
+            &program, &function, &state, unsafeValue.body)
+    }
+}

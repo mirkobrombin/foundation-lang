@@ -1,0 +1,343 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn llvmSafeName(value String) String {
+    var builder = text.NewBuilder()
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        const byte = text.ByteAt(value, index) else error {
+            discard error
+            panic("invalid LLVM identifier byte offset")
+        }
+        if cASCIIAlphaNumeric(byte) {
+            const written = builder.WriteCodePoint(byte) else error {
+                discard error
+                panic("invalid LLVM identifier byte")
+            }
+            discard written
+        } else {
+            llvmWrite(&builder, "_")
+        }
+        index += 1
+    }
+    llvmFinish(&builder)
+}
+
+fn llvmTypeTag(&value semanticType) String {
+    match value.kind {
+        Void: "void"
+        Never: "never"
+        I8: "i8"
+        I16: "i16"
+        I32: "i32"
+        I64: "i64"
+        U8: "u8"
+        U16: "u16"
+        U32: "u32"
+        U64: "u64"
+        Isize: "isize"
+        Usize: "usize"
+        F32: "f32"
+        F64: "f64"
+        Bool: "bool"
+        StringValue: "string"
+        Raw: llvmUnaryTypeTag("raw_", &value)
+        RawConst: llvmUnaryTypeTag("raw_const_", &value)
+        Array: "array_" + format.U64(value.declaration) + "_" +
+            llvmUnaryTypeTag("", &value)
+        Slice: llvmUnaryTypeTag("slice_", &value)
+        Own: llvmUnaryTypeTag("own_", &value)
+        View: llvmUnaryTypeTag("view_", &value)
+        Edit: llvmUnaryTypeTag("edit_", &value)
+        Parameter: "invalid"
+        StructValue: "struct_" + format.U64(value.declaration)
+        EnumValue: "enum_" + format.U64(value.declaration)
+        ContractValue: "contract_" + format.U64(value.declaration)
+        Function: llvmFunctionTypeTag(&value)
+        Task: llvmUnaryTypeTag("task_", &value)
+        Channel: llvmUnaryTypeTag("channel_", &value)
+        Sender: llvmUnaryTypeTag("sender_", &value)
+        Receiver: llvmUnaryTypeTag("receiver_", &value)
+        Invalid: "invalid"
+    }
+}
+
+fn llvmUnaryTypeTag(prefix String, &value semanticType) String {
+    if value.arguments.len() != 1 return prefix + "invalid"
+    var target = semanticTypeArgument(&value, 0)
+    prefix + llvmTypeTag(&target)
+}
+
+fn llvmFunctionTypeTag(&value semanticType) String {
+    var result = if isCSemanticFunction(&value) {
+        "c_function"
+    } else {
+        "function"
+    }
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = semanticTypeArgument(&value, index)
+        result = result + "_" + llvmTypeTag(&argument)
+        index += 1
+    }
+    result
+}
+
+fn llvmTypeName(&value semanticType) String {
+    match value.kind {
+        Void: "void"
+        Never: "void"
+        I8: "i8"
+        I16: "i16"
+        I32: "i32"
+        I64: "i64"
+        U8: "i8"
+        U16: "i16"
+        U32: "i32"
+        U64: "i64"
+        Isize: "i64"
+        Usize: "i64"
+        F32: "float"
+        F64: "double"
+        Bool: "i1"
+        StringValue: "%fdn.string"
+        Raw: "ptr"
+        RawConst: "ptr"
+        Array: llvmArrayTypeName(&value)
+        Slice: llvmUnaryTypeTag("%fdn.slice.", &value)
+        Own: "ptr"
+        View: llvmBorrowTypeName(&value)
+        Edit: llvmBorrowTypeName(&value)
+        Parameter: "void"
+        StructValue: "%fdn.struct." + format.U64(value.declaration)
+        EnumValue: "%fdn.enum." + format.U64(value.declaration)
+        ContractValue: "%fdn.contract." + format.U64(value.declaration)
+        Function: if isCSemanticFunction(&value) { "ptr" } else { "%fdn.function" }
+        Task: "ptr"
+        Channel: "%fdn.channel"
+        Sender: "ptr"
+        Receiver: "ptr"
+        Invalid: "void"
+    }
+}
+
+fn llvmArrayTypeName(&value semanticType) String {
+    if value.arguments.len() != 1 return "[1 x i8]"
+    var element = semanticTypeArgument(&value, 0)
+    const length u64 = if value.declaration == 0 { 1 } else { value.declaration }
+    "[" + format.U64(length) + " x " + llvmTypeName(&element) + "]"
+}
+
+fn llvmBorrowTypeName(&value semanticType) String {
+    if value.arguments.len() != 1 return "ptr"
+    var target = semanticTypeArgument(&value, 0)
+    if target.kind.Matches("Slice") return llvmTypeName(&target)
+    if target.kind.Matches("ContractValue") return llvmTypeName(&target)
+    "ptr"
+}
+
+fn llvmFunctionName(&program firProgram, function u64) String {
+    if function == program.main return "fdn_program_main"
+    if function >= program.functions.len() return "fdn_invalid_function"
+    var declaration = cFunctionAt(&program, function)
+    var result = "fdn_fn_" + llvmSafeName(declaration.name) + "_" +
+        format.U64(declaration.source)
+    if declaration.generic {
+        result = result + "_g" + format.U64(function)
+    }
+    result
+}
+
+fn llvmClosureEnvironmentName(
+    &program firProgram,
+    function u64
+) String {
+    "%" + llvmFunctionName(&program, function) + ".environment"
+}
+
+fn llvmTypeRequiresDrop(
+    &program firProgram,
+    &value semanticType
+) bool {
+    cTypeRequiresDrop(&program, &value)
+}
+
+fn llvmZeroValue(&value semanticType) String {
+    if value.kind.Matches("Void") || value.kind.Matches("Never") return ""
+    if isSemanticFloating(&value) return "0.000000e+00"
+    if value.kind.Matches("Raw") || value.kind.Matches("RawConst") ||
+        value.kind.Matches("Own") || value.kind.Matches("Task") ||
+        value.kind.Matches("Sender") || value.kind.Matches("Receiver") ||
+        isCSemanticFunction(&value) {
+        return "null"
+    }
+    if isSemanticInteger(&value) || value.kind.Matches("Bool") {
+        return "0"
+    }
+    "zeroinitializer"
+}
+
+fn llvmEmitNamedTypes(
+    &builder text.Builder,
+    &program firProgram,
+    &collected cCollectedTypes
+) void {
+    llvmWrite(&builder, "%fdn.string = type { ptr, i64, i8 }\n")
+    llvmWrite(&builder, "%fdn.frame = type { ptr, ptr, ptr, ptr, i32, i32, i8 }\n")
+    llvmWrite(&builder, "%fdn.function = type { ptr, ptr, ptr }\n")
+    llvmWrite(&builder, "%fdn.channel = type { ptr, ptr }\n")
+    llvmWrite(&builder, "%fdn.channel.select.case = type { ptr, ptr, i32 }\n")
+    var sliceNames = newArena<String>()
+    var index u64 = 0
+    while index < collected.slices.len() {
+        var value = match collected.slices.take(index) {
+            None: panic("LLVM slice type slot is empty")
+            Some(found): found
+        }
+        const name = llvmTypeName(&value)
+        if !semanticStringContains(&sliceNames, name) {
+            discard sliceNames.add("" + name)
+            llvmWrite(&builder, name + " = type { ptr, i64 }\n")
+        }
+        collected.slices.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < program.contracts.len() {
+        var declaration = cContractAt(&program, index)
+        llvmWrite(&builder, "%fdn.contract." + format.U64(index) +
+            " = type { ptr, ptr }\n")
+        llvmWrite(&builder, "%fdn.contract." + format.U64(index) +
+            ".vtable = type { ptr")
+        var method u64 = 0
+        while method < declaration.methodList.len() {
+            llvmWrite(&builder, ", ptr")
+            method += 1
+        }
+        llvmWrite(&builder, " }\n")
+        index += 1
+    }
+    index = 0
+    while index < program.structs.len() {
+        llvmEmitStructType(&builder, &program, index)
+        index += 1
+    }
+    index = 0
+    while index < program.enums.len() {
+        llvmEmitEnumType(&builder, &program, index)
+        index += 1
+    }
+    index = 0
+    while index < program.functions.len() {
+        llvmEmitClosureEnvironmentType(&builder, &program, index)
+        index += 1
+    }
+    llvmEmitTaskFrameTypes(&builder, &program)
+    llvmWrite(&builder, "\n")
+}
+
+fn llvmEmitStructType(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var declaration = cStructAt(&program, id)
+    llvmWrite(&builder, "%fdn.struct." + format.U64(id) + " = type { ")
+    var wrote = false
+    if monomorphU64Present(declaration.dropFunction) {
+        llvmWrite(&builder, "i1")
+        wrote = true
+    }
+    var field u64 = 0
+    while field < declaration.fields.len() {
+        var selected = match declaration.fields.take(field) {
+            None: panic("FIR struct field slot is empty")
+            Some(found): found
+        }
+        if wrote {
+            llvmWrite(&builder, ", ")
+        }
+        llvmWrite(&builder, llvmTypeName(&selected.type))
+        wrote = true
+        declaration.fields.restore(field, $selected)
+        field += 1
+    }
+    if !wrote {
+        llvmWrite(&builder, "i8")
+    }
+    llvmWrite(&builder, " }\n")
+}
+
+fn llvmEmitEnumType(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var declaration = cEnumAt(&program, id)
+    llvmWrite(&builder, "%fdn.enum." + format.U64(id) + " = type { i32")
+    var variant u64 = 0
+    while variant < declaration.variants.len() {
+        var selected = match declaration.variants.take(variant) {
+            None: panic("FIR enum variant slot is empty")
+            Some(found): found
+        }
+        match replace selected.payload with .None {
+            None: llvmWrite(&builder, ", i8")
+            Some(payload): {
+                var value = payload
+                llvmWrite(&builder, ", " + llvmTypeName(&value))
+                selected.payload = .Some(value)
+            }
+        }
+        declaration.variants.restore(variant, $selected)
+        variant += 1
+    }
+    llvmWrite(&builder, " }\n")
+}
+
+fn llvmEmitClosureEnvironmentType(
+    &builder text.Builder,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.closure return
+    var fields = newArena<String>()
+    var local u64 = 0
+    while local < function.locals.len() {
+        var selected = match function.locals.take(local) {
+            None: panic("FIR local slot is empty")
+            Some(found): found
+        }
+        if selected.captured {
+            const type = if cCaptureModeView(selected.captureMode) ||
+                cCaptureModeEdit(selected.captureMode) {
+                "ptr"
+            } else {
+                llvmTypeName(&selected.type)
+            }
+            discard fields.add($type)
+        }
+        function.locals.restore(local, $selected)
+        local += 1
+    }
+    if fields.len() != 0 {
+        llvmWrite(&builder, llvmClosureEnvironmentName(&program, id) + " = type { ")
+        var field u64 = 0
+        while field < fields.len() {
+            const value = match fields.take(field) {
+                None: panic("LLVM closure field slot is empty")
+                Some(found): found
+            }
+            if field != 0 {
+                llvmWrite(&builder, ", ")
+            }
+            llvmWrite(&builder, value)
+            fields.restore(field, $value)
+            field += 1
+        }
+        llvmWrite(&builder, " }\n")
+    }
+}

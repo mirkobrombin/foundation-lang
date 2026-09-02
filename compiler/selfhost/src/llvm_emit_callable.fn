@@ -1,0 +1,366 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn llvmCaptureOwn(value firCaptureMode) bool {
+    cCaptureModeOwn(value)
+}
+
+fn llvmCaptureBorrowed(value firCaptureMode) bool {
+    cCaptureModeView(value) || cCaptureModeEdit(value)
+}
+
+fn llvmFunctionValueAdapterName(
+    &program firProgram,
+    function u64
+) String {
+    llvmFunctionName(&program, function) + ".callable"
+}
+
+fn llvmClosureDropName(
+    &program firProgram,
+    function u64
+) String {
+    llvmFunctionName(&program, function) + ".environment.drop"
+}
+
+fn llvmEmitFunctionValueExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &functionValue firFunctionValueExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    discard function
+    discard module
+    if isCSemanticFunction(&valueType) {
+        var target = cFunctionAt(&program, functionValue.function)
+        const symbol = match replace target.cSymbol with .None {
+            None: panic("C function value has no C symbol")
+            Some(found): {
+                const result = "@" + found
+                target.cSymbol = .Some(found)
+                result
+            }
+        }
+        return llvmEmitted(
+            symbol, copySemanticType(&valueType), false, false)
+    }
+    var value = "zeroinitializer"
+    const first = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, first +
+        " = insertvalue %fdn.function " + value + ", ptr null, 0")
+    const second = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, second +
+        " = insertvalue %fdn.function " + first + ", ptr @" +
+        llvmFunctionValueAdapterName(&program, functionValue.function) + ", 1")
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result +
+        " = insertvalue %fdn.function " + second + ", ptr null, 2")
+    llvmEmitted(result, copySemanticType(&valueType), false, false)
+}
+
+fn llvmCapturedFieldIndex(
+    &function firFunction,
+    local u64
+) u64 {
+    var field u64 = 0
+    var index u64 = 0
+    while index < function.locals.len() {
+        var selected = match function.locals.take(index) {
+            None: panic("FIR local slot is empty")
+            Some(found): found
+        }
+        const captured = selected.captured
+        function.locals.restore(index, $selected)
+        if index == local {
+            if !captured {
+                panic("closure capture does not name a captured local")
+            }
+            return field
+        }
+        if captured {
+            field += 1
+        }
+        index += 1
+    }
+    panic("closure capture local is invalid")
+}
+
+fn llvmEmitClosureExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &closure firClosureExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var environment = "null"
+    var drop = "null"
+    if closure.captures.len() != 0 {
+        const size = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, size + " = ptrtoint ptr getelementptr (" +
+            llvmClosureEnvironmentName(&program, closure.function) +
+            ", ptr null, i32 1) to i64")
+        llvmRequireExternal(&module, "fdn_alloc", "ptr @fdn_alloc(i64)")
+        const allocated = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, allocated +
+            " = call ptr @fdn_alloc(i64 " + size + ")")
+        environment = allocated
+        drop = "@" + llvmClosureDropName(&program, closure.function)
+        var captureIndex u64 = 0
+        while captureIndex < closure.captures.len() {
+            const selected = match closure.captures.take(captureIndex) {
+                None: panic("FIR closure capture slot is empty")
+                Some(found): found
+            }
+            closure.captures.restore(captureIndex, selected)
+            const field = captureIndex
+            const destination = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, destination +
+                " = getelementptr inbounds " +
+                llvmClosureEnvironmentName(&program, closure.function) +
+                ", ptr " + environment + ", i32 0, i32 " + format.U64(field))
+            var sourceType = llvmLocalTypeAt(&function, selected.local)
+            const sourceAddress = llvmLocal(&state, selected.local)
+            if llvmCaptureBorrowed(selected.mode) {
+                llvmInstruction(&builder, &state, "store ptr " +
+                    sourceAddress + ", ptr " + destination)
+            } else {
+                const sourceValue = llvmLoad(
+                    &builder, &state, &sourceType, sourceAddress)
+                llvmStore(&builder, &state, &sourceType, sourceValue, destination)
+                if llvmCaptureOwn(selected.mode) {
+                    const empty = llvmZeroValue(&sourceType)
+                    llvmStore(&builder, &state, &sourceType,
+                        empty, sourceAddress)
+                }
+            }
+            captureIndex += 1
+        }
+    }
+    const first = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, first +
+        " = insertvalue %fdn.function zeroinitializer, ptr " +
+        environment + ", 0")
+    const second = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, second +
+        " = insertvalue %fdn.function " + first + ", ptr @" +
+        llvmFunctionName(&program, closure.function) + ", 1")
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result +
+        " = insertvalue %fdn.function " + second + ", ptr " + drop + ", 2")
+    llvmEmitted(result, copySemanticType(&valueType), false, false)
+}
+
+fn llvmEmitFunctionValueCall(
+    &builder text.Builder,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &call firCallExpression,
+    &types arena<semanticType>,
+    &values arena<String>,
+    &valueType semanticType
+) llvmEmittedValue {
+    var callableType = llvmLocalTypeAt(&function, call.local)
+    const local = llvmLocal(&state, call.local)
+    var callable = llvmLoad(&builder, &state, &callableType, local)
+    if (callableType.kind.Matches("View") ||
+        callableType.kind.Matches("Edit")) &&
+        callableType.arguments.len() == 1 {
+        callableType = semanticTypeArgument(&callableType, 0)
+        callable = llvmLoad(&builder, &state, &callableType, callable)
+    }
+    var invocation = text.NewBuilder()
+    if isCSemanticFunction(&callableType) {
+        llvmWrite(&invocation, "call " + llvmTypeName(&valueType) + " " +
+            callable + "(")
+    } else {
+        const environment = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, environment +
+            " = extractvalue %fdn.function " + callable + ", 0")
+        const target = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, target +
+            " = extractvalue %fdn.function " + callable + ", 1")
+        llvmWrite(&invocation, "call " + llvmTypeName(&valueType) + " " +
+            target + "(ptr " + environment)
+        if values.len() != 0 {
+            llvmWrite(&invocation, ", ")
+        }
+    }
+    llvmAppendArguments(&invocation, &call, &types, &values, 0)
+    llvmWrite(&invocation, ")")
+    const callText = llvmFinish(&invocation)
+    if valueType.kind.Matches("Void") {
+        llvmInstruction(&builder, &state, callText)
+        return llvmVoidValue()
+    }
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = " + callText)
+    llvmEmitted(result, copySemanticType(&valueType), false, false)
+}
+
+fn llvmEmitContractExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &contractValue firContractExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var emitted = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, contractValue.value)
+    if emitted.diverges return emitted
+    var contractType = copySemanticType(&contractValue.contractType)
+    var concreteType = copySemanticType(&contractValue.concreteType)
+    const table = "@" + cVtableName(&contractType, &concreteType)
+    const data = llvmEnsureValue(&builder, &state, &emitted)
+    const first = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, first + " = insertvalue " +
+        llvmTypeName(&contractType) + " zeroinitializer, ptr " + data + ", 0")
+    const contractResult = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, contractResult + " = insertvalue " +
+        llvmTypeName(&contractType) + " " + first + ", ptr " + table + ", 1")
+    if valueType.kind.Matches("Own") {
+        const storage = llvmAllocate(&builder, &module, &state, &contractType)
+        llvmStore(&builder, &state, &contractType, contractResult, storage)
+        return llvmEmitted(
+            storage, copySemanticType(&valueType), false, false)
+    }
+    emitted.value = "" + contractResult
+    emitted.type = copySemanticType(&valueType)
+    emitted.address = false
+    emitted
+}
+
+fn llvmEmitContractCall(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &call firCallExpression,
+    &types arena<semanticType>,
+    &values arena<String>,
+    receiverAddress String,
+    &valueType semanticType
+) llvmEmittedValue {
+    if values.len() == 0 || call.contractID >= program.contracts.len() {
+        panic("LLVM contract call is invalid")
+    }
+    var receiverType = semanticTypeArenaAt(&types, 0)
+    var receiver = llvmOrderedArgument(&call, &values, 0)
+    var contractType = declaredSemanticType(.ContractValue, call.contractID)
+    if receiverType.kind.Matches("Own") {
+        receiver = llvmLoad(&builder, &state, &contractType, receiver)
+    }
+    const data = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, data + " = extractvalue " +
+        llvmTypeName(&contractType) + " " + receiver + ", 0")
+    const table = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, table + " = extractvalue " +
+        llvmTypeName(&contractType) + " " + receiver + ", 1")
+    const methodAddress = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, methodAddress +
+        " = getelementptr inbounds %fdn.contract." +
+        format.U64(call.contractID) + ".vtable, ptr " + table +
+        ", i32 0, i32 " + format.U64(call.method + 1))
+    const target = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, target + " = load ptr, ptr " +
+        methodAddress)
+    var invocation = text.NewBuilder()
+    llvmWrite(&invocation, "call " + llvmTypeName(&valueType) + " " +
+        target + "(ptr " + data)
+    var parameter u64 = 1
+    while parameter < values.len() {
+        var type = semanticTypeArenaAt(&types, parameter)
+        llvmWrite(&invocation, ", " + llvmTypeName(&type) + " " +
+            llvmOrderedArgument(&call, &values, parameter))
+        parameter += 1
+    }
+    llvmWrite(&invocation, ")")
+    const callText = llvmFinish(&invocation)
+    if cContractCallConsumesReceiver(&program, &call) {
+        llvmRequireExternal(&module, "fdn_dealloc", "void @fdn_dealloc(ptr)")
+    }
+    if valueType.kind.Matches("Void") {
+        llvmInstruction(&builder, &state, callText)
+        if cContractCallConsumesReceiver(&program, &call) {
+            llvmInstruction(&builder, &state,
+                "call void @fdn_dealloc(ptr " +
+                llvmOrderedArgument(&call, &values, 0) + ")")
+            if !text.IsEmpty(receiverAddress) {
+                llvmStore(&builder, &state, &receiverType,
+                    "null", receiverAddress)
+            }
+        }
+        return llvmVoidValue()
+    }
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = " + callText)
+    if cContractCallConsumesReceiver(&program, &call) {
+        llvmInstruction(&builder, &state, "call void @fdn_dealloc(ptr " +
+            llvmOrderedArgument(&call, &values, 0) + ")")
+        if !text.IsEmpty(receiverAddress) {
+            llvmStore(&builder, &state, &receiverType,
+                "null", receiverAddress)
+        }
+    }
+    discard receiverType
+    llvmEmitted(result, copySemanticType(&valueType), false, false)
+}
+
+fn llvmEmitClosureDrop(
+    &module llvmModuleEmission,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.closure || !llvmFunctionHasCaptures(&function) return
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, "define internal void @" +
+        llvmClosureDropName(&program, id) + "(ptr %fdn_env) {\n")
+    var state = newLlvmFunctionEmission(id, 0)
+    llvmBlock(&builder, &state, "entry")
+    var captureIndex u64 = 0
+    var local u64 = 0
+    while local < function.locals.len() {
+        var declaration = cLocalAt(&function, local)
+        if declaration.captured {
+            if !llvmCaptureBorrowed(declaration.captureMode) {
+                const field = llvmNextTemporary(&state)
+                llvmInstruction(&builder, &state, field +
+                    " = getelementptr inbounds " +
+                    llvmClosureEnvironmentName(&program, id) +
+                    ", ptr %fdn_env, i32 0, i32 " + format.U64(captureIndex))
+                var valueType = copySemanticType(&declaration.type)
+                llvmEmitDropAddress(&builder, &module, &program,
+                    &state, &valueType, field)
+            }
+            captureIndex += 1
+        }
+        local += 1
+    }
+    llvmRequireExternal(&module, "fdn_dealloc", "void @fdn_dealloc(ptr)")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_dealloc(ptr %fdn_env)")
+    llvmInstruction(&builder, &state, "ret void")
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}
+
+fn llvmEmitClosureDrops(
+    &module llvmModuleEmission,
+    &program firProgram
+) void {
+    var function u64 = 0
+    while function < program.functions.len() {
+        llvmEmitClosureDrop(&module, &program, function)
+        function += 1
+    }
+}

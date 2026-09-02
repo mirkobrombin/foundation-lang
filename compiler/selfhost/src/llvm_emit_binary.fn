@@ -1,0 +1,245 @@
+package foundation.compiler
+
+import std.text
+
+fn llvmBinaryArithmetic(value firBinaryOperator) bool {
+    cBinaryArithmetic(value)
+}
+
+fn llvmIntegerOperationName(value firBinaryOperator) String {
+    match value {
+        Add: "add"
+        Subtract: "subtract"
+        Multiply: "multiply"
+        Divide: "divide"
+        Remainder: "remainder"
+        ShiftLeft: "shift_left"
+        ShiftRight: "shift_right"
+        _: panic("LLVM integer operation has no runtime name")
+    }
+}
+
+fn llvmEmitArithmetic(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &state llvmFunctionEmission,
+    operation firBinaryOperator,
+    &type semanticType,
+    left String,
+    right String
+) String {
+    if type.kind.Matches("Raw") || type.kind.Matches("RawConst") {
+        if type.arguments.len() != 1 {
+            panic("LLVM pointer arithmetic has no element type")
+        }
+        var element = semanticTypeArgument(&type, 0)
+        var offset = "" + right
+        if match operation { Subtract: true _: false } {
+            const negated = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, negated + " = sub i64 0, " + right)
+            offset = negated
+        }
+        return llvmPointerElementAddress(
+            &builder, &state, left, &element, offset)
+    }
+    if type.kind.Matches("StringValue") {
+        if !match operation { Add: true _: false } {
+            panic("LLVM string arithmetic only supports concatenation")
+        }
+        var leftValue = llvmEmitted(
+            left, copySemanticType(&type), false, false)
+        var rightValue = llvmEmitted(
+            right, copySemanticType(&type), false, false)
+        const leftAddress = llvmEnsureAddress(&builder, &state, &leftValue)
+        const rightAddress = llvmEnsureAddress(&builder, &state, &rightValue)
+        const resultAddress = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, resultAddress + " = alloca %fdn.string")
+        llvmRequireExternal(
+            &module, "fdn_abi_string_concat",
+            "void @fdn_abi_string_concat(ptr, ptr, ptr)")
+        llvmInstruction(&builder, &state, "call void @fdn_abi_string_concat(ptr " +
+            resultAddress + ", ptr " + leftAddress + ", ptr " +
+            rightAddress + ")")
+        return llvmLoad(&builder, &state, &type, resultAddress)
+    }
+    const result = llvmNextTemporary(&state)
+    if isSemanticFloating(&type) {
+        const opcode = match operation {
+            Add: "fadd"
+            Subtract: "fsub"
+            Multiply: "fmul"
+            Divide: "fdiv"
+            Remainder: "frem"
+            _: panic("LLVM floating operation is invalid")
+        }
+        llvmInstruction(&builder, &state, result + " = " + opcode + " " +
+            llvmTypeName(&type) + " " + left + ", " + right)
+        return result
+    }
+    if match operation { BitwiseAnd: true BitwiseXor: true BitwiseOr: true _: false } {
+        const opcode = match operation {
+            BitwiseAnd: "and"
+            BitwiseXor: "xor"
+            BitwiseOr: "or"
+            _: panic("LLVM bitwise operation is invalid")
+        }
+        llvmInstruction(&builder, &state, result + " = " + opcode + " " +
+            llvmTypeName(&type) + " " + left + ", " + right)
+        return result
+    }
+    const symbol = "fdn_" + llvmTypeTag(&type) + "_" +
+        llvmIntegerOperationName(operation)
+    const signature = llvmTypeName(&type) + " @" + symbol + "(" +
+        llvmTypeName(&type) + ", " + llvmTypeName(&type) + ")"
+    llvmRequireExternal(&module, symbol, signature)
+    llvmInstruction(&builder, &state, result + " = call " +
+        llvmTypeName(&type) + " @" + symbol + "(" + llvmTypeName(&type) +
+        " " + left + ", " + llvmTypeName(&type) + " " + right + ")")
+    result
+}
+
+fn llvmEmitComparison(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &state llvmFunctionEmission,
+    operation firBinaryOperator,
+    &type semanticType,
+    left String,
+    right String
+) String {
+    if type.kind.Matches("StringValue") {
+        var leftValue = llvmEmitted(
+            left, copySemanticType(&type), false, false)
+        var rightValue = llvmEmitted(
+            right, copySemanticType(&type), false, false)
+        const leftAddress = llvmEnsureAddress(&builder, &state, &leftValue)
+        const rightAddress = llvmEnsureAddress(&builder, &state, &rightValue)
+        llvmRequireExternal(
+            &module, "fdn_abi_string_equal",
+            "i32 @fdn_abi_string_equal(ptr, ptr)")
+        const compared = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, compared +
+            " = call i32 @fdn_abi_string_equal(ptr " + leftAddress +
+            ", ptr " + rightAddress + ")")
+        const result = llvmNextTemporary(&state)
+        const predicate = match operation {
+            Equal: "ne"
+            NotEqual: "eq"
+            _: panic("LLVM string comparison is invalid")
+        }
+        llvmInstruction(&builder, &state, result + " = icmp " + predicate +
+            " i32 " + compared + ", 0")
+        return result
+    }
+    const result = llvmNextTemporary(&state)
+    if isSemanticFloating(&type) {
+        const predicate = match operation {
+            Equal: "oeq"
+            NotEqual: "une"
+            Less: "olt"
+            LessEqual: "ole"
+            Greater: "ogt"
+            GreaterEqual: "oge"
+            _: panic("LLVM floating comparison is invalid")
+        }
+        llvmInstruction(&builder, &state, result + " = fcmp " + predicate +
+            " " + llvmTypeName(&type) + " " + left + ", " + right)
+        return result
+    }
+    const signed = isSignedSemanticInteger(&type)
+    const predicate = match operation {
+        Equal: "eq"
+        NotEqual: "ne"
+        Less: if signed { "slt" } else { "ult" }
+        LessEqual: if signed { "sle" } else { "ule" }
+        Greater: if signed { "sgt" } else { "ugt" }
+        GreaterEqual: if signed { "sge" } else { "uge" }
+        _: panic("LLVM comparison is invalid")
+    }
+    llvmInstruction(&builder, &state, result + " = icmp " + predicate + " " +
+        llvmTypeName(&type) + " " + left + ", " + right)
+    result
+}
+
+fn llvmEmitLogical(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    binary firBinaryExpression
+) llvmEmittedValue {
+    var left = llvmEmitExpression(
+        &builder, &module, &program, &function, &state, binary.left)
+    if left.diverges return left
+    const leftValue = llvmEnsureValue(&builder, &state, &left)
+    const origin = "" + state.currentBlock
+    const rightBlock = llvmNextBlock(&state, "logic.right")
+    const mergeBlock = llvmNextBlock(&state, "logic.end")
+    if match binary.operation { And: true _: false } {
+        llvmConditionalBranch(
+            &builder, &state, leftValue, rightBlock, mergeBlock)
+    } else {
+        llvmConditionalBranch(
+            &builder, &state, leftValue, mergeBlock, rightBlock)
+    }
+    llvmBlock(&builder, &state, rightBlock)
+    var right = llvmEmitExpression(
+        &builder, &module, &program, &function, &state, binary.right)
+    if right.diverges {
+        llvmBlock(&builder, &state, mergeBlock)
+        const result = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, result + " = phi i1 [ " +
+            leftValue + ", %" + origin + " ]")
+        return llvmEmitted(result, boolSemanticType(), false, false)
+    }
+    const rightValue = llvmEnsureValue(&builder, &state, &right)
+    const rightOrigin = "" + state.currentBlock
+    llvmBranch(&builder, &state, mergeBlock)
+    llvmBlock(&builder, &state, mergeBlock)
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = phi i1 [ " + leftValue +
+        ", %" + origin + " ], [ " + rightValue + ", %" +
+        rightOrigin + " ]")
+    llvmEmitted(result, boolSemanticType(), false, false)
+}
+
+fn llvmEmitBinaryExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    binary firBinaryExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    if match binary.operation { And: true Or: true _: false } {
+        return llvmEmitLogical(&builder, &module, &program, &function,
+            &state, binary)
+    }
+    var left = llvmEmitExpression(
+        &builder, &module, &program, &function, &state, binary.left)
+    if left.diverges return left
+    var right = llvmEmitExpression(
+        &builder, &module, &program, &function, &state, binary.right)
+    if right.diverges return right
+    const leftValue = llvmEnsureValue(&builder, &state, &left)
+    const rightValue = llvmEnsureValue(&builder, &state, &right)
+    if llvmBinaryArithmetic(binary.operation) {
+        const result = llvmEmitArithmetic(&builder, &module, &state,
+            binary.operation, &valueType, leftValue, rightValue)
+        llvmEmitDropInspectedTemporary(&builder, &module, &program,
+            &function, &state, binary.left, &left)
+        llvmEmitDropInspectedTemporary(&builder, &module, &program,
+            &function, &state, binary.right, &right)
+        return llvmEmitted(result, copySemanticType(&valueType), false, false)
+    }
+    var operandType = llvmExpressionTypeAt(&function, binary.left)
+    const result = llvmEmitComparison(&builder, &module, &state,
+        binary.operation, &operandType, leftValue, rightValue)
+    llvmEmitDropInspectedTemporary(&builder, &module, &program,
+        &function, &state, binary.left, &left)
+    llvmEmitDropInspectedTemporary(&builder, &module, &program,
+        &function, &state, binary.right, &right)
+    llvmEmitted(result, copySemanticType(&valueType), false, false)
+}

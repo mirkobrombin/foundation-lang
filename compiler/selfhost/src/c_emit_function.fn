@@ -19,7 +19,7 @@ fn cEmitFunctionSignature(
     id u64
 ) void {
     var function = cFunctionAt(&program, id)
-    if id == program.main {
+    if id == program.main && !optionStringPresent(function.testName) {
         cWrite(&builder, "static int32_t " + cFunctionName(&program, id) + "(")
     } else {
         if function.closure {
@@ -477,6 +477,21 @@ fn cEmitMainWrapper(
             cFunctionName(&program, mainFunction) + "();\n#endif\n")
     }
     cWrite(&builder, "}\n")
+}
+
+fn cEmitTestMainWrapper(
+    &builder text.Builder,
+    &program firProgram
+) void {
+    const testFunction = program.main
+    cWrite(&builder, "\nint main(void) {\n")
+    cWrite(&builder, "    " + cFunctionName(&program, testFunction) + "();\n")
+    cWrite(&builder, "#if defined(FOUNDATION_VERIFY_ALLOCATIONS)\n")
+    cWrite(&builder, "    if (fdn_live_allocations() != 0) {\n")
+    cWrite(&builder,
+        "        fdn_panic_cstr(\"live allocations after test\");\n")
+    cWrite(&builder, "    }\n#endif\n")
+    cWrite(&builder, "    return 0;\n}\n")
 }
 
 fn cEmitFunctions(

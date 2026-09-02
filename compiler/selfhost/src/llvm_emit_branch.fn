@@ -1,0 +1,282 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn llvmEmitConditionalBranchValue(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    block u64,
+    expression u64,
+    resultAddress String,
+    &valueType semanticType,
+    mergeBlock String
+) bool {
+    var selected = cBlockAt(&function, block)
+    var statement u64 = 0
+    while statement < selected.statements.len() {
+        if llvmEmitStatement(&builder, &module, &program, &function,
+            &state, cU64At(&selected.statements, statement)) {
+            return true
+        }
+        statement += 1
+    }
+    var emitted = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, expression)
+    if emitted.diverges return true
+    if !valueType.kind.Matches("Void") {
+        const value = llvmEnsureValue(&builder, &state, &emitted)
+        llvmStore(&builder, &state, &valueType, value, resultAddress)
+    }
+    llvmEmitDrops(&builder, &module, &program,
+        &function, &state, &selected.drops)
+    llvmBranch(&builder, &state, mergeBlock)
+    false
+}
+
+fn llvmEmitConditionalExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    conditional firConditionalExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var condition = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, conditional.condition)
+    if condition.diverges return condition
+    const conditionValue = llvmEnsureValue(&builder, &state, &condition)
+    var resultAddress = ""
+    if !valueType.kind.Matches("Void") {
+        resultAddress = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, resultAddress + " = alloca " +
+            llvmTypeName(&valueType))
+    }
+    const thenBlock = llvmNextBlock(&state, "conditional.then")
+    const elseBlock = llvmNextBlock(&state, "conditional.else")
+    const mergeBlock = llvmNextBlock(&state, "conditional.end")
+    llvmConditionalBranch(&builder, &state,
+        conditionValue, thenBlock, elseBlock)
+    llvmBlock(&builder, &state, thenBlock)
+    const thenExits = llvmEmitConditionalBranchValue(&builder, &module,
+        &program, &function, &state, conditional.thenBlock,
+        conditional.thenValue, resultAddress, &valueType, mergeBlock)
+    llvmBlock(&builder, &state, elseBlock)
+    const elseExits = llvmEmitConditionalBranchValue(&builder, &module,
+        &program, &function, &state, conditional.elseBlock,
+        conditional.elseValue, resultAddress, &valueType, mergeBlock)
+    if thenExits && elseExits {
+        state.terminated = true
+        return llvmEmitted(
+            "", copySemanticType(&valueType), false, true)
+    }
+    llvmBlock(&builder, &state, mergeBlock)
+    if valueType.kind.Matches("Void") return llvmVoidValue()
+    llvmEmitted(resultAddress, copySemanticType(&valueType), true, false)
+}
+
+fn llvmMatchSourceAddress(
+    &builder text.Builder,
+    &state llvmFunctionEmission,
+    &emitted llvmEmittedValue,
+    &sourceType semanticType
+) String {
+    if (sourceType.kind.Matches("View") ||
+        sourceType.kind.Matches("Edit")) &&
+        sourceType.arguments.len() == 1 {
+        return llvmEnsureValue(&builder, &state, &emitted)
+    }
+    llvmEnsureAddress(&builder, &state, &emitted)
+}
+
+fn llvmEmitMatchBinding(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    local u64,
+    payload String,
+    &payloadType semanticType
+) void {
+    var localType = llvmLocalTypeAt(&function, local)
+    if localType.kind.Matches("View") &&
+        !payloadType.kind.Matches("Own") &&
+        !payloadType.kind.Matches("View") &&
+        !payloadType.kind.Matches("Edit") {
+        const localAddress = llvmLocal(&state, local)
+        llvmInstruction(&builder, &state, "store ptr " + payload +
+            ", ptr " + localAddress)
+    } else {
+        const value = llvmLoad(&builder, &state, &payloadType, payload)
+        const localAddress = llvmLocal(&state, local)
+        llvmStore(&builder, &state, &localType, value,
+            localAddress)
+        if llvmTypeRequiresDrop(&program, &localType) {
+            const empty = llvmZeroValue(&payloadType)
+            llvmStore(&builder, &state, &payloadType,
+                empty, payload)
+        }
+    }
+    llvmActivateLocal(&builder, &program, &function, &state, local)
+}
+
+fn llvmEmitMatchExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &matchValue firMatchExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var source = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, matchValue.value)
+    if source.diverges return source
+    var sourceType = llvmExpressionTypeAt(&function, matchValue.value)
+    const sourceAddress = llvmMatchSourceAddress(
+        &builder, &state, &source, &sourceType)
+    var enumType = copySemanticType(&matchValue.type)
+    const tagAddress = llvmEnumTagAddress(
+        &builder, &state, sourceAddress, &enumType)
+    var tagType = i32SemanticType()
+    const tag = llvmLoad(&builder, &state, &tagType, tagAddress)
+    var resultAddress = ""
+    if !valueType.kind.Matches("Void") &&
+        !valueType.kind.Matches("Never") {
+        resultAddress = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, resultAddress + " = alloca " +
+            llvmTypeName(&valueType))
+    }
+    const doneBlock = llvmNextBlock(&state, "match.end")
+    var nextBlock = llvmNextBlock(&state, "match.arm.check")
+    llvmBranch(&builder, &state, nextBlock)
+    var armIndex u64 = 0
+    while armIndex < matchValue.arms.len() {
+        llvmBlock(&builder, &state, nextBlock)
+        var arm = cMatchArmAt(&matchValue.arms, armIndex)
+        const bodyBlock = llvmNextBlock(&state, "match.arm.body")
+        const following = llvmNextBlock(&state, "match.arm.check")
+        if arm.wildcard {
+            llvmBranch(&builder, &state, bodyBlock)
+        } else {
+            const selected = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, selected + " = icmp eq i32 " +
+                tag + ", " + format.U64(arm.variant))
+            llvmConditionalBranch(
+                &builder, &state, selected, bodyBlock, following)
+        }
+        llvmBlock(&builder, &state, bodyBlock)
+        var payloadType = if arm.wildcard {
+            invalidSemanticType()
+        } else {
+            cEnumPayloadType(
+                &program, enumType.declaration, arm.variant)
+        }
+        var payload = ""
+        if !arm.wildcard && !payloadType.kind.Matches("Invalid") {
+            payload = llvmEnumPayloadAddress(&builder, &state,
+                sourceAddress, &enumType, arm.variant)
+        }
+        match arm.pattern {
+            None: {}
+            Some(patternExpression): {
+                var pattern = llvmEmitExpression(&builder, &module, &program,
+                    &function, &state, patternExpression)
+                if pattern.diverges return pattern
+                const patternValue = llvmEnsureValue(
+                    &builder, &state, &pattern)
+                const payloadValue = llvmLoad(
+                    &builder, &state, &payloadType, payload)
+                const matches = llvmEmitComparison(&builder, &module, &state,
+                    .Equal, &payloadType, payloadValue, patternValue)
+                const patternBlock = llvmNextBlock(&state, "match.pattern")
+                llvmConditionalBranch(&builder, &state,
+                    matches, patternBlock, following)
+                llvmBlock(&builder, &state, patternBlock)
+            }
+        }
+        match arm.guardBinding {
+            None: {}
+            Some(local): {
+                llvmEmitMatchBinding(&builder, &program, &function,
+                    &state, local, payload, &payloadType)
+            }
+        }
+        match arm.guard {
+            None: {}
+            Some(guardExpression): {
+                var guard = llvmEmitExpression(&builder, &module, &program,
+                    &function, &state, guardExpression)
+                if guard.diverges return guard
+                const guardValue = llvmEnsureValue(&builder, &state, &guard)
+                const guardedBlock = llvmNextBlock(&state, "match.guard")
+                llvmConditionalBranch(&builder, &state,
+                    guardValue, guardedBlock, following)
+                llvmBlock(&builder, &state, guardedBlock)
+            }
+        }
+        match arm.binding {
+            None: {}
+            Some(local): {
+                llvmEmitMatchBinding(&builder, &program, &function,
+                    &state, local, payload, &payloadType)
+            }
+        }
+        var armExits = false
+        var block = cBlockAt(&function, arm.block)
+        var statement u64 = 0
+        while statement < block.statements.len() && !armExits {
+            armExits = llvmEmitStatement(&builder, &module, &program,
+                &function, &state, cU64At(&block.statements, statement))
+            statement += 1
+        }
+        if !armExits {
+            match arm.expression {
+                None: {}
+                Some(expression): {
+                    var emitted = llvmEmitExpression(&builder, &module,
+                        &program, &function, &state, expression)
+                    if emitted.diverges {
+                        armExits = true
+                    } else {
+                        if !valueType.kind.Matches("Void") &&
+                            !valueType.kind.Matches("Never") {
+                            const value = llvmEnsureValue(
+                                &builder, &state, &emitted)
+                            llvmStore(&builder, &state, &valueType,
+                                value, resultAddress)
+                        }
+                    }
+                    discard emitted
+                }
+            }
+        }
+        if !armExits {
+            llvmEmitDrops(&builder, &module, &program,
+                &function, &state, &arm.drops)
+            llvmEmitDropAddress(&builder, &module, &program,
+                &state, &sourceType, sourceAddress)
+            llvmBranch(&builder, &state, doneBlock)
+        }
+        nextBlock = following
+        armIndex += 1
+    }
+    llvmBlock(&builder, &state, nextBlock)
+    llvmRequireExternal(&module, "fdn_invalid_enum_tag",
+        "void @fdn_invalid_enum_tag()")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_invalid_enum_tag()")
+    llvmInstruction(&builder, &state, "unreachable")
+    state.terminated = true
+    if valueType.kind.Matches("Never") {
+        return llvmEmitted(
+            "", copySemanticType(&valueType), false, true)
+    }
+    llvmBlock(&builder, &state, doneBlock)
+    if valueType.kind.Matches("Void") return llvmVoidValue()
+    llvmEmitted(resultAddress, copySemanticType(&valueType), true, false)
+}

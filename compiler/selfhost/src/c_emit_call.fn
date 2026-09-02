@@ -392,6 +392,28 @@ fn cEmitArgumentCleanups(
     }
 }
 
+fn cEmitArgumentDrops(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &call firCallExpression,
+    &arguments arena<String>,
+    depth u64
+) void {
+    var index u64 = 0
+    while index < call.arguments.len() &&
+        index < call.argumentDrops.len() &&
+        index < arguments.len() {
+        if firBoolAt(&call.argumentDrops, index) {
+            var valueType = cExpressionTypeAt(
+                &function, cU64At(&call.arguments, index))
+            cEmitDropValue(&builder, &program, &valueType,
+                cStringAt(&arguments, index), depth)
+        }
+        index += 1
+    }
+}
+
 fn cCallInvocation(
     &program firProgram,
     &function firFunction,
@@ -639,6 +661,8 @@ fn cEmitCallExpression(
     if valueType.kind.Matches("Void") {
         cWrite(&builder, cIndent(depth) + invocation + ";\n")
         cEmitArgumentCleanups(&builder, &program, &emittedArguments, depth)
+        cEmitArgumentDrops(
+            &builder, &program, &function, &call, &arguments, depth)
         return cEmitted("", false)
     }
     const temporary = cNextTemporary(&state)

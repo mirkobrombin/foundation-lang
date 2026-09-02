@@ -1,0 +1,283 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn llvmContractTargetData(
+    &builder text.Builder,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &use cContractUse,
+    &target firContractMethodTarget
+) String {
+    var data = "%fdn_data"
+    var valueType = copySemanticType(&use.concreteType)
+    var index u64 = 0
+    while index < target.delegatePath.len() {
+        const field = cU64At(&target.delegatePath, index)
+        if !valueType.kind.Matches("StructValue") ||
+            valueType.declaration >= program.structs.len() {
+            panic("LLVM contract delegation path is invalid")
+        }
+        var declaration = cStructAt(&program, valueType.declaration)
+        if field >= declaration.fields.len() {
+            panic("LLVM contract delegation path is invalid")
+        }
+        var selected = match declaration.fields.take(field) {
+            None: panic("LLVM contract delegate field slot is empty")
+            Some(found): found
+        }
+        data = llvmStructFieldAddress(
+            &builder, &program, &state, data, &valueType, field)
+        valueType = copySemanticType(&selected.type)
+        declaration.fields.restore(field, $selected)
+        index += 1
+    }
+    data
+}
+
+fn llvmEmitContractDrop(
+    &module llvmModuleEmission,
+    &program firProgram,
+    &use cContractUse,
+    table String
+) void {
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, "define internal void @" + table +
+        "_drop(ptr %fdn_data) {\n")
+    var state = newLlvmFunctionEmission(0, 0)
+    llvmBlock(&builder, &state, "entry")
+    const present = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, present +
+        " = icmp ne ptr %fdn_data, null")
+    const dropBlock = llvmNextBlock(&state, "contract.drop")
+    const endBlock = llvmNextBlock(&state, "contract.end")
+    llvmConditionalBranch(
+        &builder, &state, present, dropBlock, endBlock)
+    llvmBlock(&builder, &state, dropBlock)
+    var concreteType = copySemanticType(&use.concreteType)
+    llvmEmitDropAddress(
+        &builder, &module, &program, &state, &concreteType, "%fdn_data")
+    llvmRequireExternal(&module, "fdn_dealloc", "void @fdn_dealloc(ptr)")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_dealloc(ptr %fdn_data)")
+    llvmBranch(&builder, &state, endBlock)
+    llvmBlock(&builder, &state, endBlock)
+    llvmInstruction(&builder, &state, "ret void")
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}
+
+fn llvmContractAdapterSignature(
+    &builder text.Builder,
+    &method firContractMethod,
+    name String,
+    names bool
+) void {
+    llvmWrite(&builder, llvmTypeName(&method.returnType) + " @" + name +
+        "(ptr")
+    if names {
+        llvmWrite(&builder, " %fdn_data")
+    }
+    var parameter u64 = 0
+    while parameter < method.parameters.len() {
+        var valueType = semanticTypeArenaAt(
+            &method.parameters, parameter)
+        llvmWrite(&builder, ", " + llvmTypeName(&valueType))
+        if names {
+            llvmWrite(&builder, " %fdn_arg_" + format.U64(parameter))
+        }
+        parameter += 1
+    }
+    llvmWrite(&builder, ")")
+}
+
+fn llvmEmitDefaultContractSupport(
+    &module llvmModuleEmission,
+    &program firProgram,
+    &use cContractUse,
+    &target firContractMethodTarget,
+    table String,
+    methodIndex u64
+) void {
+    if !target.defaultContract.kind.Matches("ContractValue") ||
+        target.defaultContract.declaration >= program.contracts.len() {
+        panic("LLVM default method contract is invalid")
+    }
+    var effective = cContractAt(&program, use.contractType.declaration)
+    var origin = cContractAt(&program, target.defaultContract.declaration)
+    const selfTable = cDefaultSelfVtableName(table, methodIndex)
+    var method u64 = 0
+    while method < origin.methodList.len() {
+        var declaration = cContractMethodAt(&origin, method)
+        const effectiveMethod = cContractMethodIndex(
+            &effective, declaration.name)
+        var builder = text.NewBuilder()
+        llvmWrite(&builder, "define internal ")
+        llvmContractAdapterSignature(
+            &builder, &declaration,
+            selfTable + "_m" + format.U64(method), true)
+        llvmWrite(&builder, " {\nentry:\n  ")
+        const call = if declaration.returnType.kind.Matches("Void") {
+            "call void"
+        } else {
+            "%result = call " + llvmTypeName(&declaration.returnType)
+        }
+        llvmWrite(&builder, call + " @" + table + "_m" +
+            format.U64(effectiveMethod) + "(ptr %fdn_data")
+        var parameter u64 = 0
+        while parameter < declaration.parameters.len() {
+            var valueType = semanticTypeArenaAt(
+                &declaration.parameters, parameter)
+            llvmWrite(&builder, ", " + llvmTypeName(&valueType) +
+                " %fdn_arg_" + format.U64(parameter))
+            parameter += 1
+        }
+        llvmWrite(&builder, ")\n  " +
+            if declaration.returnType.kind.Matches("Void") {
+            "ret void\n"
+        } else {
+            "ret " + llvmTypeName(&declaration.returnType) + " %result\n"
+        } + "}\n\n")
+        llvmWrite(&module.functions, llvmFinish(&builder))
+        method += 1
+    }
+    var global = "@" + selfTable + " = internal constant %fdn.contract." +
+        format.U64(target.defaultContract.declaration) +
+        ".vtable { ptr @" + table + "_drop"
+    method = 0
+    while method < origin.methodList.len() {
+        global = global + ", ptr @" + selfTable + "_m" + format.U64(method)
+        method += 1
+    }
+    llvmWrite(&module.globals, global + " }\n")
+}
+
+fn llvmEmitContractMethodAdapter(
+    &module llvmModuleEmission,
+    &program firProgram,
+    &use cContractUse,
+    &declaration firContractMethod,
+    &target firContractMethodTarget,
+    table String,
+    method u64
+) void {
+    if target.function >= program.functions.len() {
+        panic("LLVM contract adapter implementation is invalid")
+    }
+    var function = cFunctionAt(&program, target.function)
+    if function.parameters.len() == 0 {
+        panic("LLVM contract adapter implementation is invalid")
+    }
+    if target.contractDefault {
+        llvmEmitDefaultContractSupport(
+            &module, &program, &use, &target, table, method)
+    }
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, "define internal ")
+    llvmContractAdapterSignature(
+        &builder, &declaration, table + "_m" + format.U64(method), true)
+    llvmWrite(&builder, " {\n")
+    var state = newLlvmFunctionEmission(target.function, 0)
+    llvmBlock(&builder, &state, "entry")
+    var receiver = "%fdn_data"
+    const receiverLocal = cU64At(&function.parameters, 0)
+    var receiverType = llvmLocalTypeAt(&function, receiverLocal)
+    if target.contractDefault {
+        var selfType = copySemanticType(&target.defaultContract)
+        const first = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, first + " = insertvalue " +
+            llvmTypeName(&selfType) +
+            " zeroinitializer, ptr %fdn_data, 0")
+        const self = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, self + " = insertvalue " +
+            llvmTypeName(&selfType) + " " + first + ", ptr @" +
+            cDefaultSelfVtableName(table, method) + ", 1")
+        receiver = self
+    } else {
+        receiver = llvmContractTargetData(
+            &builder, &program, &state, &use, &target)
+    }
+    var invocation = "call " + if function.diverges { "void" } else {
+        llvmTypeName(&function.returnType)
+    } + " @" + llvmFunctionName(&program, target.function) + "(" +
+        llvmTypeName(&receiverType) + " " + receiver
+    var parameter u64 = 0
+    while parameter < declaration.parameters.len() {
+        var valueType = semanticTypeArenaAt(
+            &declaration.parameters, parameter)
+        invocation = invocation + ", " + llvmTypeName(&valueType) +
+            " %fdn_arg_" + format.U64(parameter)
+        parameter += 1
+    }
+    invocation = invocation + ")"
+    if function.diverges {
+        llvmInstruction(&builder, &state, invocation)
+        llvmInstruction(&builder, &state, "unreachable")
+    } else {
+        if declaration.returnType.kind.Matches("Void") {
+            llvmInstruction(&builder, &state, invocation)
+            llvmInstruction(&builder, &state, "ret void")
+        } else {
+            const result = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, result + " = " + invocation)
+            llvmInstruction(&builder, &state, "ret " +
+                llvmTypeName(&declaration.returnType) + " " + result)
+        }
+    }
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}
+
+fn llvmEmitContractSupport(
+    &module llvmModuleEmission,
+    &program firProgram,
+    &use cContractUse
+) void {
+    if !use.contractType.kind.Matches("ContractValue") ||
+        use.contractType.declaration >= program.contracts.len() {
+        panic("LLVM contract adapter type is invalid")
+    }
+    var declaration = cContractAt(&program, use.contractType.declaration)
+    if use.targets.len() != declaration.methodList.len() {
+        panic("LLVM contract adapter method count mismatch")
+    }
+    var contractType = copySemanticType(&use.contractType)
+    var concreteType = copySemanticType(&use.concreteType)
+    const table = cVtableName(&contractType, &concreteType)
+    llvmEmitContractDrop(&module, &program, &use, table)
+    var method u64 = 0
+    while method < declaration.methodList.len() {
+        var contractMethod = cContractMethodAt(&declaration, method)
+        var target = cContractTargetAt(&use, method)
+        llvmEmitContractMethodAdapter(
+            &module, &program, &use, &contractMethod, &target, table, method)
+        method += 1
+    }
+    var global = "@" + table + " = internal constant %fdn.contract." +
+        format.U64(use.contractType.declaration) +
+        ".vtable { ptr @" + table + "_drop"
+    method = 0
+    while method < declaration.methodList.len() {
+        global = global + ", ptr @" + table + "_m" + format.U64(method)
+        method += 1
+    }
+    llvmWrite(&module.globals, global + " }\n")
+}
+
+fn llvmEmitContractSupports(
+    &module llvmModuleEmission,
+    &program firProgram,
+    &uses arena<cContractUse>
+) void {
+    var index u64 = 0
+    while index < uses.len() {
+        var use = match uses.take(index) {
+            None: panic("LLVM contract use slot is empty")
+            Some(found): found
+        }
+        llvmEmitContractSupport(&module, &program, &use)
+        uses.restore(index, $use)
+        index += 1
+    }
+}

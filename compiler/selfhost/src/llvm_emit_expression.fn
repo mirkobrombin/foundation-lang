@@ -1,0 +1,603 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn llvmEmitArrayExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &array firArrayExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    const address = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, address + " = alloca " +
+        llvmTypeName(&valueType))
+    llvmStore(&builder, &state, &valueType, "zeroinitializer", address)
+    if valueType.arguments.len() != 1 {
+        panic("LLVM array has no element type")
+    }
+    var elementType = semanticTypeArgument(&valueType, 0)
+    var index u64 = 0
+    while index < array.elements.len() {
+        const expression = match array.elements.take(index) {
+            None: panic("FIR array element slot is empty")
+            Some(found): found
+        }
+        var emitted = llvmEmitExpression(&builder, &module, &program,
+            &function, &state, expression)
+        array.elements.restore(index, expression)
+        if emitted.diverges return emitted
+        const value = llvmEnsureValue(&builder, &state, &emitted)
+        const target = llvmArrayElementAddress(&builder, &state, address,
+            &valueType, format.U64(index))
+        llvmStore(&builder, &state, &elementType, value, target)
+        index += 1
+    }
+    llvmEmitted(address, copySemanticType(&valueType), true, false)
+}
+
+fn llvmEmitStructExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &literal firStructExpression
+) llvmEmittedValue {
+    const address = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, address + " = alloca " +
+        llvmTypeName(&literal.type))
+    llvmStore(&builder, &state, &literal.type, "zeroinitializer", address)
+    if llvmStructHasDrop(&program, literal.type.declaration) {
+        const active = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, active + " = getelementptr inbounds " +
+            llvmTypeName(&literal.type) + ", ptr " + address +
+            ", i32 0, i32 0")
+        var boolean = boolSemanticType()
+        llvmStore(&builder, &state, &boolean, "1", active)
+    }
+    var index u64 = 0
+    while index < literal.fields.len() {
+        const field = match literal.fields.take(index) {
+            None: panic("FIR struct field value slot is empty")
+            Some(found): found
+        }
+        var emitted = llvmEmitExpression(&builder, &module, &program,
+            &function, &state, field.value)
+        literal.fields.restore(index, field)
+        if emitted.diverges return emitted
+        const value = llvmEnsureValue(&builder, &state, &emitted)
+        const target = llvmStructFieldAddress(&builder, &program, &state,
+            address, &literal.type, field.field)
+        llvmStore(&builder, &state, &emitted.type, value, target)
+        index += 1
+    }
+    llvmEmitted(address, copySemanticType(&literal.type), true, false)
+}
+
+fn llvmEmitEnumExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &constructor firEnumExpression
+) llvmEmittedValue {
+    const address = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, address + " = alloca " +
+        llvmTypeName(&constructor.type))
+    llvmStore(&builder, &state, &constructor.type, "zeroinitializer", address)
+    match constructor.payload {
+        None: {}
+        Some(expression): {
+            var emitted = llvmEmitExpression(&builder, &module, &program,
+                &function, &state, expression)
+            if emitted.diverges return emitted
+            const value = llvmEnsureValue(&builder, &state, &emitted)
+            const variant = constructor.variant
+            const payload = llvmEnumPayloadAddress(&builder, &state, address,
+                &constructor.type, variant)
+            llvmStore(&builder, &state, &emitted.type, value, payload)
+        }
+    }
+    const tag = llvmEnumTagAddress(
+        &builder, &state, address, &constructor.type)
+    var tagType = i32SemanticType()
+    llvmStore(&builder, &state, &tagType,
+        format.U64(constructor.variant), tag)
+    llvmEmitted(address, copySemanticType(&constructor.type), true, false)
+}
+
+fn llvmEmitUnaryExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    unary firUnaryExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var operand = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, unary.operand)
+    if operand.diverges return operand
+    if cUnaryDereference(unary.operation) {
+        const pointer = llvmEnsureValue(&builder, &state, &operand)
+        return llvmEmitted(
+            pointer, copySemanticType(&valueType), true, false)
+    }
+    const value = llvmEnsureValue(&builder, &state, &operand)
+    if cUnaryEmpty(unary.operation) {
+        var operandType = llvmExpressionTypeAt(&function, unary.operand)
+        if operandType.kind.Matches("Array") {
+            return llvmEmitted(
+                if operandType.declaration == 0 { "1" } else { "0" },
+                copySemanticType(&valueType), false, false)
+        }
+        if (operandType.kind.Matches("View") ||
+            operandType.kind.Matches("Edit")) &&
+            operandType.arguments.len() == 1 {
+            operandType = semanticTypeArgument(&operandType, 0)
+        }
+        if operandType.kind.Matches("StringValue") ||
+            operandType.kind.Matches("Slice") {
+            const length = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, length + " = extractvalue " +
+                llvmTypeName(&operand.type) + " " + value + ", 1")
+            const result = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, result + " = icmp eq i64 " +
+                length + ", 0")
+            return llvmEmitted(
+                result, copySemanticType(&valueType), false, false)
+        }
+        panic("LLVM empty test has an unsupported type")
+    }
+    const result = llvmNextTemporary(&state)
+    if cUnaryNegate(unary.operation) {
+        if isSemanticFloating(&valueType) {
+            llvmInstruction(&builder, &state, result + " = fneg " +
+                llvmTypeName(&valueType) + " " + value)
+        } else {
+            const symbol = "fdn_" + llvmTypeTag(&valueType) + "_negate"
+            const signature = llvmTypeName(&valueType) + " @" + symbol +
+                "(" + llvmTypeName(&valueType) + ")"
+            llvmRequireExternal(&module, symbol, signature)
+            llvmInstruction(&builder, &state, result + " = call " +
+                llvmTypeName(&valueType) + " @" + symbol + "(" +
+                llvmTypeName(&valueType) + " " + value + ")")
+        }
+    } else {
+        if cUnaryNot(unary.operation) || cUnaryBitwiseNot(unary.operation) {
+            llvmInstruction(&builder, &state, result + " = xor " +
+                llvmTypeName(&valueType) + " " + value + ", -1")
+        } else {
+            panic("LLVM unary operation is invalid")
+        }
+    }
+    llvmEmitted(result, copySemanticType(&valueType), false, false)
+}
+
+fn llvmEmitOwnershipExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &ownership firOwnershipExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var operand = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, ownership.operand)
+    if operand.diverges return operand
+    var operandType = llvmExpressionTypeAt(&function, ownership.operand)
+    if cOwnershipOwn(ownership.operation) {
+        const value = llvmEnsureValue(&builder, &state, &operand)
+        const storage = llvmAllocate(
+            &builder, &module, &state, &operandType)
+        llvmStore(&builder, &state, &operandType, value, storage)
+        return llvmEmitted(
+            storage, copySemanticType(&valueType), false, false)
+    }
+    if cOwnershipView(ownership.operation) &&
+        !valueType.kind.Matches("View") {
+        if !llvmIsPlaceExpression(&function, ownership.operand) &&
+            llvmTypeRequiresDrop(&program, &operandType) {
+            const address = llvmEnsureAddress(&builder, &state, &operand)
+            discard operand.cleanups.add(llvmCleanup {
+                address = "" + address
+                type = copySemanticType(&operandType)
+            })
+        }
+        var value = llvmEnsureValue(&builder, &state, &operand)
+        if operandType.kind.Matches("Own") &&
+            operandType.arguments.len() == 1 {
+            var target = semanticTypeArgument(&operandType, 0)
+            if target.kind.Matches("ContractValue") {
+                value = llvmLoad(&builder, &state, &target, value)
+            }
+        }
+        operand.value = "" + value
+        operand.type = copySemanticType(&valueType)
+        operand.address = false
+        return operand
+    }
+    if cOwnershipView(ownership.operation) &&
+        !llvmIsPlaceExpression(&function, ownership.operand) &&
+        llvmTypeRequiresDrop(&program, &operandType) {
+        const address = llvmEnsureAddress(&builder, &state, &operand)
+        discard operand.cleanups.add(llvmCleanup {
+            address = "" + address
+            type = copySemanticType(&operandType)
+        })
+    }
+    if valueType.arguments.len() == 1 {
+        var target = semanticTypeArgument(&valueType, 0)
+        if target.kind.Matches("Slice") {
+            var borrowedSlice = false
+            if (operandType.kind.Matches("View") ||
+                operandType.kind.Matches("Edit")) &&
+                operandType.arguments.len() == 1 {
+                var borrowedTarget = semanticTypeArgument(&operandType, 0)
+                borrowedSlice = borrowedTarget.kind.Matches("Slice")
+            }
+            if operandType.kind.Matches("Slice") ||
+                borrowedSlice {
+                const value = llvmEnsureValue(&builder, &state, &operand)
+                operand.value = "" + value
+                operand.type = copySemanticType(&valueType)
+                operand.address = false
+                return operand
+            }
+            var arrayType = copySemanticType(&operandType)
+            var arrayAddress = llvmEnsureAddress(
+                &builder, &state, &operand)
+            if arrayType.kind.Matches("Own") &&
+                arrayType.arguments.len() == 1 {
+                arrayType = semanticTypeArgument(&arrayType, 0)
+                arrayAddress = llvmEnsureValue(&builder, &state, &operand)
+            }
+            var element = semanticTypeArgument(&arrayType, 0)
+            const data = llvmPointerElementAddress(
+                &builder, &state, arrayAddress, &element, "0")
+            const first = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, first + " = insertvalue " +
+                llvmTypeName(&valueType) + " zeroinitializer, ptr " +
+                data + ", 0")
+            const result = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, result + " = insertvalue " +
+                llvmTypeName(&valueType) + " " + first + ", i64 " +
+                format.U64(arrayType.declaration) + ", 1")
+            operand.value = "" + result
+            operand.type = copySemanticType(&valueType)
+            operand.address = false
+            return operand
+        }
+    }
+    if operandType.kind.Matches("Own") ||
+        operandType.kind.Matches("View") ||
+        operandType.kind.Matches("Edit") {
+        var value = llvmEnsureValue(&builder, &state, &operand)
+        if operandType.kind.Matches("Own") &&
+            operandType.arguments.len() == 1 {
+            var target = semanticTypeArgument(&operandType, 0)
+            if target.kind.Matches("ContractValue") {
+                value = llvmLoad(&builder, &state, &target, value)
+            }
+        }
+        operand.value = "" + value
+        operand.type = copySemanticType(&valueType)
+        operand.address = false
+        return operand
+    }
+    const address = llvmEnsureAddress(&builder, &state, &operand)
+    operand.value = "" + address
+    operand.type = copySemanticType(&valueType)
+    operand.address = false
+    operand
+}
+
+fn llvmEmitFieldExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    field firFieldExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var base = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, field.base)
+    if base.diverges return base
+    var baseType = llvmExpressionTypeAt(&function, field.base)
+    var originalBaseType = copySemanticType(&baseType)
+    var address = ""
+    if baseType.kind.Matches("Own") || baseType.kind.Matches("View") ||
+        baseType.kind.Matches("Edit") {
+        address = llvmEnsureValue(&builder, &state, &base)
+        if baseType.arguments.len() != 1 {
+            panic("LLVM borrowed field base has no target type")
+        }
+        baseType = semanticTypeArgument(&baseType, 0)
+    } else {
+        address = llvmEnsureAddress(&builder, &state, &base)
+    }
+    const result = llvmStructFieldAddress(&builder, &program, &state,
+        address, &baseType, field.field)
+    if llvmIsPlaceExpression(&function, field.base) ||
+        !llvmTypeRequiresDrop(&program, &originalBaseType) {
+        base.value = "" + result
+        base.type = copySemanticType(&valueType)
+        base.address = true
+        return base
+    }
+    const value = llvmMoveFromAddress(
+        &builder, &program, &state, &valueType, result)
+    const owner = llvmEnsureAddress(&builder, &state, &base)
+    llvmEmitDropAddress(&builder, &module, &program,
+        &state, &originalBaseType, owner)
+    llvmEmitCleanups(&builder, &module, &program, &state, &base)
+    llvmEmitted(value, copySemanticType(&valueType), false, false)
+}
+
+fn llvmEmitIndexExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    indexValue firIndexExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var base = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, indexValue.base)
+    if base.diverges return base
+    var emittedIndex = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, indexValue.index)
+    if emittedIndex.diverges return emittedIndex
+    const index = llvmEnsureValue(&builder, &state, &emittedIndex)
+    var sequence = llvmExpressionTypeAt(&function, indexValue.base)
+    var sequenceAddress = ""
+    if sequence.kind.Matches("Own") {
+        sequenceAddress = llvmEnsureValue(&builder, &state, &base)
+        sequence = semanticTypeArgument(&sequence, 0)
+    } else {
+        if (sequence.kind.Matches("View") || sequence.kind.Matches("Edit")) &&
+            sequence.arguments.len() == 1 {
+            var target = semanticTypeArgument(&sequence, 0)
+            if target.kind.Matches("Slice") {
+                sequence = target
+                sequenceAddress = llvmEnsureAddress(&builder, &state, &base)
+            } else {
+                sequenceAddress = llvmEnsureValue(&builder, &state, &base)
+                sequence = target
+            }
+        } else {
+            sequenceAddress = llvmEnsureAddress(&builder, &state, &base)
+        }
+    }
+    llvmRequireExternal(&module, "fdn_bounds_check",
+        "i64 @fdn_bounds_check(i64, i64)")
+    var length = ""
+    var data = ""
+    if sequence.kind.Matches("Array") {
+        length = format.U64(sequence.declaration)
+        data = sequenceAddress
+    } else {
+        if !sequence.kind.Matches("Slice") || sequence.arguments.len() != 1 {
+            panic("LLVM index base is not an array or slice")
+        }
+        const value = llvmLoad(&builder, &state, &sequence, sequenceAddress)
+        const dataValue = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, dataValue + " = extractvalue " +
+            llvmTypeName(&sequence) + " " + value + ", 0")
+        const lengthValue = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, lengthValue + " = extractvalue " +
+            llvmTypeName(&sequence) + " " + value + ", 1")
+        data = dataValue
+        length = lengthValue
+    }
+    const checked = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, checked +
+        " = call i64 @fdn_bounds_check(i64 " + index + ", i64 " +
+        length + ")")
+    const result = if sequence.kind.Matches("Array") {
+        llvmArrayElementAddress(
+            &builder, &state, data, &sequence, checked)
+    } else {
+        var element = semanticTypeArgument(&sequence, 0)
+        llvmPointerElementAddress(
+            &builder, &state, data, &element, checked)
+    }
+    llvmEmitted(result, copySemanticType(&valueType), true, false)
+}
+
+fn llvmEmitMoveExpression(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    local u64
+) llvmEmittedValue {
+    var type = llvmLocalTypeAt(&function, local)
+    const address = llvmLocal(&state, local)
+    const value = llvmLoad(&builder, &state, &type, address)
+    const empty = llvmZeroValue(&type)
+    llvmStore(&builder, &state, &type, empty, address)
+    match llvmActiveLocal(&state, local) {
+        None: {}
+        Some(active): {
+            var boolean = boolSemanticType()
+            llvmStore(&builder, &state, &boolean, "0", active)
+        }
+    }
+    discard program
+    llvmEmitted(value, $type, false, false)
+}
+
+fn llvmEmitReplaceExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    replaceValue firReplaceExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var value = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, replaceValue.value)
+    if value.diverges return value
+    var target = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, replaceValue.target)
+    if target.diverges return target
+    const address = llvmEnsureAddress(&builder, &state, &target)
+    const previous = llvmLoad(&builder, &state, &valueType, address)
+    const replacement = llvmEnsureValue(&builder, &state, &value)
+    llvmStore(&builder, &state, &valueType, replacement, address)
+    llvmEmitted(previous, copySemanticType(&valueType), false, false)
+}
+
+fn llvmEmitExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    id u64
+) llvmEmittedValue {
+    const expression = llvmExpressionAt(&function, id)
+    const firExpression { value type span } = expression
+    discard span
+    var valueType = type
+    match value {
+        Integer(integer): llvmEmitted(
+            llvmIntegerConstant(integer), copySemanticType(&valueType), false,
+            false)
+        Floating(floating): llvmEmitted(
+            floating.text, copySemanticType(&valueType), false, false)
+        Boolean(boolean): llvmEmitted(
+            if boolean.value { "1" } else { "0" },
+            copySemanticType(&valueType), false, false)
+        StringValue(string): llvmEmitted(
+            llvmStringValue(&builder, &module, &state, string.value),
+            copySemanticType(&valueType), false, false)
+        Array(array): {
+            var selected = array
+            llvmEmitArrayExpression(&builder, &module, &program,
+                &function, &state, &selected, &valueType)
+        }
+        Local(local): llvmEmitted(
+            llvmLocal(&state, local.local), copySemanticType(&valueType), true,
+            false)
+        Read(read): {
+            var localType = llvmLocalTypeAt(&function, read.local)
+            const local = llvmLocal(&state, read.local)
+            if localType.kind.Matches("View") &&
+                localType.arguments.len() == 1 {
+                var target = semanticTypeArgument(&localType, 0)
+                if target.kind.Matches("Slice") ||
+                    target.kind.Matches("ContractValue") {
+                    const loaded = llvmLoad(
+                        &builder, &state, &localType, local)
+                    return llvmEmitted(
+                        loaded, copySemanticType(&valueType), false, false)
+                }
+            }
+            const pointer = llvmLoad(&builder, &state, &localType, local)
+            llvmEmitted(pointer, copySemanticType(&valueType), true, false)
+        }
+        Move(moved): llvmEmitMoveExpression(
+            &builder, &program, &function, &state, moved.local)
+        FunctionValue(functionValue): {
+            var selected = functionValue
+            llvmEmitFunctionValueExpression(&builder, &module, &program,
+                &function, &state, &selected, &valueType)
+        }
+        Closure(closure): {
+            var selected = closure
+            llvmEmitClosureExpression(&builder, &module, &program,
+                &function, &state, &selected, &valueType)
+        }
+        Unary(unary): llvmEmitUnaryExpression(&builder, &module, &program,
+            &function, &state, unary, &valueType)
+        Ownership(ownership): {
+            var selected = ownership
+            llvmEmitOwnershipExpression(&builder, &module, &program,
+                &function, &state, &selected, &valueType)
+        }
+        Binary(binary): llvmEmitBinaryExpression(&builder, &module, &program,
+            &function, &state, binary, &valueType)
+        Call(call): {
+            var selected = call
+            llvmEmitCallExpression(&builder, &module, &program,
+                &function, &state, &selected, &valueType)
+        }
+        ContractValue(contractValue): {
+            var selected = contractValue
+            llvmEmitContractExpression(&builder, &module, &program,
+                &function, &state, &selected, &valueType)
+        }
+        StructValue(literal): {
+            var selected = literal
+            llvmEmitStructExpression(&builder, &module, &program,
+                &function, &state, &selected)
+        }
+        Field(field): llvmEmitFieldExpression(&builder, &module, &program,
+            &function, &state, field, &valueType)
+        Index(index): llvmEmitIndexExpression(&builder, &module, &program,
+            &function, &state, index, &valueType)
+        RawPointer(pointer): {
+            var base = llvmEmitExpression(&builder, &module, &program,
+                &function, &state, pointer.base)
+            if base.diverges return base
+            const aggregate = llvmEnsureValue(&builder, &state, &base)
+            const result = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, result + " = extractvalue " +
+                llvmTypeName(&base.type) + " " + aggregate + ", 0")
+            llvmEmitted(result, copySemanticType(&valueType), false, false)
+        }
+        ReplaceValue(replaceValue): llvmEmitReplaceExpression(&builder,
+            &module, &program, &function, &state, replaceValue, &valueType)
+        Spawn(spawnValue): llvmEmitSpawnExpression(&builder, &module,
+            &program, &function, &state, spawnValue, &valueType)
+        TaskWait(wait): llvmEmitTaskWaitExpression(&builder, &module,
+            &program, &function, &state, wait, &valueType)
+        BlockingCall(blocking): {
+            var selected = blocking
+            llvmEmitBlockingCallExpression(&builder, &module, &program,
+                &function, &state, &selected, &valueType)
+        }
+        CallbackCall(callback): {
+            var selected = callback
+            llvmEmitCallbackCallExpression(&builder, &module, &program,
+                &function, &state, &selected, &valueType)
+        }
+        ChannelValue(channel): {
+            var selected = channel
+            llvmEmitChannelExpression(&builder, &module, &program,
+                &function, &state, &selected, &valueType)
+        }
+        ChannelSenderClone(clone): llvmEmitChannelCloneExpression(&builder,
+            &module, &program, &function, &state, clone, &valueType)
+        ChannelSend(send): {
+            var selected = send
+            llvmEmitChannelSendExpression(&builder, &module, &program,
+                &function, &state, &selected, &valueType)
+        }
+        ChannelReceive(receive): llvmEmitChannelReceiveExpression(&builder,
+            &module, &program, &function, &state, receive, &valueType)
+        EnumValue(constructor): {
+            var selected = constructor
+            llvmEmitEnumExpression(&builder, &module, &program,
+                &function, &state, &selected)
+        }
+        MatchValue(matchValue): {
+            var selected = matchValue
+            llvmEmitMatchExpression(&builder, &module, &program,
+                &function, &state, &selected, &valueType)
+        }
+        Conditional(conditional): llvmEmitConditionalExpression(&builder,
+            &module, &program, &function, &state, conditional, &valueType)
+    }
+}

@@ -523,6 +523,36 @@ fn inferSemanticType(
             return
         }
     }
+    if (pattern.kind.Matches("View") || pattern.kind.Matches("Edit") ||
+        pattern.kind.Matches("Own")) && pattern.arguments.len() == 1 &&
+        (actual.kind.Matches("View") || actual.kind.Matches("Edit") ||
+        actual.kind.Matches("Own")) && actual.arguments.len() == 1 &&
+        (pattern.kind.Matches("View") || sameSemanticTypeKind(pattern.kind, actual.kind)) {
+        var patternTarget = semanticTypeArgument(&pattern, 0)
+        var actualTarget = semanticTypeArgument(&actual, 0)
+        if patternTarget.kind.Matches("ContractValue") &&
+            actualTarget.kind.Matches("StructValue") {
+            match implementedSemanticContract(
+                &analyzer, &actualTarget, patternTarget.declaration) {
+                None: {}
+                Some(implemented): {
+                    var matchValue = implemented
+                    if !matchValue.ambiguous {
+                        inferSemanticType(
+                            &analyzer,
+                            &source,
+                            &patternTarget,
+                            &matchValue.contractType,
+                            &inferred,
+                            span,
+                            context
+                        )
+                        return
+                    }
+                }
+            }
+        }
+    }
     if (pattern.kind.Matches("StructValue") || pattern.kind.Matches("EnumValue") ||
         pattern.kind.Matches("ContractValue") || pattern.kind.Matches("Function") ||
         pattern.kind.Matches("Task") || pattern.kind.Matches("Channel") || pattern.kind.Matches("Sender") ||

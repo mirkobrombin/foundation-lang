@@ -1241,7 +1241,9 @@ fn analyzeSemanticArray(
         )
         element = copySemanticType(&expectedElement)
     }
-    unarySemanticType(.Array, $element)
+    var result = unarySemanticType(.Array, $element)
+    result.declaration = length
+    result
 }
 
 fn analyzeSemanticIndex(

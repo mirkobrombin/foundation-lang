@@ -1,5 +1,7 @@
 package foundation.compiler
 
+import std.collections
+
 struct semanticTaskWaitProbe {
     matched bool
     base u64
@@ -393,6 +395,121 @@ fn analyzeSemanticUnary(
         var target = newCallTarget(.Len)
         target.receiver = .Some(unary.operand)
         setSemanticCallTarget(&analyzer, expression, $target)
+        return boolSemanticType()
+    }
+    var hasEmptyMethod = false
+    if base.kind.Matches("StructValue") {
+        const owner = semanticStructName(&source, base.declaration)
+        match findSemanticMethod(&analyzer.state.methodList, owner, "IsEmpty") {
+            None: {}
+            Some(function): {
+                discard function
+                hasEmptyMethod = true
+            }
+        }
+    }
+    if base.kind.Matches("ContractValue") {
+        match semanticContractMethodIndex(
+            &analyzer, base.declaration, "IsEmpty") {
+            None: {}
+            Some(method): {
+                discard method
+                hasEmptyMethod = true
+            }
+        }
+    }
+    if base.kind.Matches("Parameter") {
+        match semanticFunctionConstraint(&analyzer, base.declaration) {
+            None: {}
+            Some(constraint): {
+                if constraint.kind.Matches("ContractValue") {
+                    match semanticContractMethodIndex(
+                        &analyzer, constraint.declaration, "IsEmpty") {
+                        None: {}
+                        Some(method): {
+                            discard method
+                            hasEmptyMethod = true
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if hasEmptyMethod {
+        var typeArguments = collections.NewList<typeSyntax>()
+        var arguments = collections.NewList<u64>()
+        var argumentNames = collections.NewList<Option<String>>()
+        var argumentNameSpans = collections.NewList<Option<sourceSpan>>()
+        var method = memberExpression {
+            base = .Some(unary.operand)
+            member = "IsEmpty"
+            typeArguments = typeArguments
+            invoked = true
+            arguments = arguments
+            argumentNames = argumentNames
+            argumentNameSpans = argumentNameSpans
+        }
+        const result = analyzeSemanticMethod(
+            &analyzer,
+            &source,
+            expression,
+            &method,
+            &operand,
+            &base,
+            span
+        )
+        var readOnly = false
+        const selected = analyzer.model.callTargets.take(expression)
+        var restored Option<callTarget> = .None
+        match selected {
+            None: panic("call target slot is empty")
+            Some(targetValue): match targetValue {
+                None: {}
+                Some(value): {
+                    var target = value
+                    if target.kind.Matches("Method") &&
+                        target.function < source.functions.len() {
+                        var declaration = match source.functions.take(target.function) {
+                            None: panic("function slot is empty")
+                            Some(declaration): declaration
+                        }
+                        match declaration.receiver {
+                            None: {}
+                            Some(receiver): { readOnly = receiver.Matches("View") }
+                        }
+                        source.functions.restore(target.function, $declaration)
+                    }
+                    if (target.kind.Matches("ContractMethod") ||
+                        target.kind.Matches("ConstrainedMethod")) &&
+                        target.contractID < analyzer.model.contracts.len() {
+                        var contractValue = match analyzer.model.contracts.take(
+                            target.contractID) {
+                            None: panic("semantic contract slot is empty")
+                            Some(contractValue): contractValue
+                        }
+                        if target.method < contractValue.methodList.len() {
+                            var contractMethod = match contractValue.methodList.take(
+                                target.method) {
+                                None: panic("semantic contract method slot is empty")
+                                Some(contractMethod): contractMethod
+                            }
+                            readOnly = contractMethod.receiver.Matches("View")
+                            contractValue.methodList.restore(
+                                target.method, $contractMethod)
+                        }
+                        analyzer.model.contracts.restore(
+                            target.contractID, $contractValue)
+                    }
+                    restored = .Some(target)
+                }
+            }
+        }
+        analyzer.model.callTargets.restore(expression, $restored)
+        if !readOnly || !result.kind.Matches("Bool") {
+            analyzer.diagnostics.reportError(
+                "FDN2220", "empty test requires fn IsEmpty(self) bool", span)
+        }
+        setSemanticBool(&analyzer.model.emptyTests, expression, true)
         return boolSemanticType()
     }
     analyzer.diagnostics.reportError(

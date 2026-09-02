@@ -1,0 +1,1960 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn llvmChannelDropName(&payload semanticType) String {
+    "fdn.channel.drop." + llvmTypeTag(&payload)
+}
+
+fn llvmTaskFrameName(&program firProgram, function u64) String {
+    "%" + llvmFunctionName(&program, function) + ".task.frame"
+}
+
+fn llvmTaskPollName(&program firProgram, function u64) String {
+    llvmFunctionName(&program, function) + ".task.poll"
+}
+
+fn llvmTaskMoveResultName(&program firProgram, function u64) String {
+    llvmFunctionName(&program, function) + ".task.move_result"
+}
+
+fn llvmTaskDropFrameName(&program firProgram, function u64) String {
+    llvmFunctionName(&program, function) + ".task.drop_frame"
+}
+
+fn llvmTaskBlockingWorkName(
+    &program firProgram,
+    function u64,
+    expression u64
+) String {
+    llvmFunctionName(&program, function) + ".task.blocking." +
+        format.U64(expression)
+}
+
+fn llvmTaskCallbackStartName(
+    &program firProgram,
+    function u64,
+    expression u64
+) String {
+    llvmFunctionName(&program, function) + ".task.callback." +
+        format.U64(expression) + ".start"
+}
+
+fn llvmTaskCallbackCancelName(
+    &program firProgram,
+    function u64,
+    expression u64
+) String {
+    llvmFunctionName(&program, function) + ".task.callback." +
+        format.U64(expression) + ".cancel"
+}
+
+fn llvmTaskResultField(&function firFunction) u64 {
+    function.parameters.len()
+}
+
+fn llvmTaskResultActiveField(&function firFunction) u64 {
+    llvmTaskResultField(&function) + 1
+}
+
+fn llvmTaskArgumentsActiveField(&function firFunction) u64 {
+    function.parameters.len() +
+        if function.returnType.kind.Matches("Void") { 0 } else { 2 }
+}
+
+fn llvmTaskStateField(&function firFunction) u64 {
+    llvmTaskArgumentsActiveField(&function) + 1
+}
+
+fn llvmTaskFirstLocalField(&function firFunction) u64 {
+    llvmTaskStateField(&function) + 1
+}
+
+fn llvmTaskLocalField(
+    &program firProgram,
+    &function firFunction,
+    local u64
+) u64 {
+    var field = llvmTaskFirstLocalField(&function)
+    var index u64 = 0
+    while index < local {
+        var valueType = llvmLocalTypeAt(&function, index)
+        field += 1
+        if llvmTypeRequiresDrop(&program, &valueType) {
+            field += 1
+        }
+        index += 1
+    }
+    field
+}
+
+fn llvmTaskLocalActiveField(
+    &program firProgram,
+    &function firFunction,
+    local u64
+) u64 {
+    var valueType = llvmLocalTypeAt(&function, local)
+    if !llvmTypeRequiresDrop(&program, &valueType) {
+        panic("LLVM task local does not have an active flag")
+    }
+    llvmTaskLocalField(&program, &function, local) + 1
+}
+
+fn llvmTaskFirstWorkField(
+    &program firProgram,
+    &function firFunction
+) u64 {
+    var field = llvmTaskFirstLocalField(&function)
+    var local u64 = 0
+    while local < function.locals.len() {
+        var valueType = llvmLocalTypeAt(&function, local)
+        field += 1
+        if llvmTypeRequiresDrop(&program, &valueType) {
+            field += 1
+        }
+        local += 1
+    }
+    field
+}
+
+fn llvmTaskWorkField(
+    &program firProgram,
+    &function firFunction,
+    expression u64,
+    callback bool
+) u64 {
+    var field = llvmTaskFirstWorkField(&program, &function)
+    var index u64 = 0
+    while index < function.expressions.len() {
+        const value = cExpressionAt(&function, index)
+        if cExpressionIsBlocking($value) {
+            if index == expression && !callback return field
+            field += 1
+        }
+        const callbackValue = cExpressionAt(&function, index)
+        if cExpressionIsCallback($callbackValue) {
+            if index == expression && callback return field
+            field += 1
+        }
+        index += 1
+    }
+    panic("LLVM task work field is missing")
+}
+
+fn llvmTaskFrameField(
+    &builder text.Builder,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    function u64,
+    frame String,
+    field u64
+) String {
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = getelementptr inbounds " +
+        llvmTaskFrameName(&program, function) + ", ptr " + frame +
+        ", i32 0, i32 " + format.U64(field))
+    result
+}
+
+fn llvmEmitTaskFrameTypes(
+    &builder text.Builder,
+    &program firProgram
+) void {
+    var id u64 = 0
+    while id < program.functions.len() {
+        var function = cFunctionAt(&program, id)
+        if function.taskFunction {
+            llvmWrite(&builder, llvmTaskFrameName(&program, id) + " = type { ")
+            var wrote = false
+            var parameter u64 = 0
+            while parameter < function.parameters.len() {
+                if wrote { llvmWrite(&builder, ", ") }
+                const local = cU64At(&function.parameters, parameter)
+                var valueType = llvmLocalTypeAt(&function, local)
+                llvmWrite(&builder, llvmTypeName(&valueType))
+                wrote = true
+                parameter += 1
+            }
+            if !function.returnType.kind.Matches("Void") {
+                if wrote { llvmWrite(&builder, ", ") }
+                llvmWrite(&builder,
+                    llvmTypeName(&function.returnType) + ", i1")
+                wrote = true
+            }
+            if wrote { llvmWrite(&builder, ", ") }
+            llvmWrite(&builder, "i1")
+            wrote = true
+            if cTaskSuspensionCount(&function) != 0 {
+                llvmWrite(&builder, ", i32")
+                var local u64 = 0
+                while local < function.locals.len() {
+                    var valueType = llvmLocalTypeAt(&function, local)
+                    llvmWrite(&builder, ", " + llvmTypeName(&valueType))
+                    if llvmTypeRequiresDrop(&program, &valueType) {
+                        llvmWrite(&builder, ", i1")
+                    }
+                    local += 1
+                }
+                var expression u64 = 0
+                while expression < function.expressions.len() {
+                    const value = cExpressionAt(&function, expression)
+                    if cExpressionIsBlocking($value) {
+                        llvmWrite(&builder, ", ptr")
+                    }
+                    const callbackValue = cExpressionAt(&function, expression)
+                    if cExpressionIsCallback($callbackValue) {
+                        llvmWrite(&builder, ", ptr")
+                    }
+                    expression += 1
+                }
+            }
+            llvmWrite(&builder, " }\n")
+            discard wrote
+        }
+        id += 1
+    }
+}
+
+fn llvmEmitTaskLocation(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &state llvmFunctionEmission,
+    span sourceSpan
+) void {
+    if state.frame == "" return
+    const traceFrame = "" + state.frame
+    const line = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, line +
+        " = getelementptr inbounds %fdn.frame, ptr " + traceFrame +
+        ", i32 0, i32 4")
+    var lineType = i32SemanticType()
+    llvmStore(&builder, &state, &lineType,
+        format.U64(span.line), line)
+    const column = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, column +
+        " = getelementptr inbounds %fdn.frame, ptr " + traceFrame +
+        ", i32 0, i32 5")
+    llvmStore(&builder, &state, &lineType,
+        format.U64(span.column), column)
+    discard module
+}
+
+fn llvmEmitPendingTaskReturn(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &state llvmFunctionEmission
+) void {
+    llvmRequireExternal(&module, "fdn_task_cancellation_leave",
+        "void @fdn_task_cancellation_leave(i1)")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_task_cancellation_leave(i1 %fdn_previous_cancellation)")
+    llvmEmitFrameLeave(&builder, &module, &state)
+    llvmInstruction(&builder, &state, "ret i32 0")
+    state.terminated = true
+}
+
+fn llvmPrepareTaskLocals(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    functionID u64,
+    frame String
+) void {
+    state.taskPoll = true
+    state.taskFrame = "" + frame
+    var local u64 = 0
+    while local < function.locals.len() {
+        const localField = llvmTaskLocalField(
+            &program, &function, local)
+        const address = llvmTaskFrameField(&builder, &program, &state,
+            functionID, frame, localField)
+        llvmSetLocal(&state, local, address)
+        var valueType = llvmLocalTypeAt(&function, local)
+        if llvmTypeRequiresDrop(&program, &valueType) {
+            const activeField = llvmTaskLocalActiveField(
+                &program, &function, local)
+            const active = llvmTaskFrameField(&builder, &program, &state,
+                functionID, frame, activeField)
+            llvmSetActiveLocal(&state, local, .Some(active))
+        }
+        local += 1
+    }
+}
+
+fn llvmTaskComplete(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &state llvmFunctionEmission
+) void {
+    llvmRequireExternal(&module, "fdn_task_cancellation_leave",
+        "void @fdn_task_cancellation_leave(i1)")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_task_cancellation_leave(i1 %fdn_previous_cancellation)")
+    llvmEmitFrameLeave(&builder, &module, &state)
+    llvmInstruction(&builder, &state, "ret i32 1")
+    state.terminated = true
+}
+
+fn llvmTaskSuspend(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission
+) void {
+    state.taskState += 1
+    const taskState = state.taskState
+    const functionID = state.function
+    const taskFrame = "" + state.taskFrame
+    const stateField = llvmTaskStateField(&function)
+    const stateAddress = llvmTaskFrameField(&builder, &program, &state,
+        functionID, taskFrame, stateField)
+    var stateType = i32SemanticType()
+    llvmStore(&builder, &state, &stateType,
+        format.U64(taskState), stateAddress)
+    const resume = "task.resume." + format.U64(taskState)
+    llvmBranch(&builder, &state, resume)
+    llvmBlock(&builder, &state, resume)
+}
+
+fn llvmEmitTaskWaitExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    wait firTaskWaitExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var emittedTask = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, wait.taskValue)
+    if emittedTask.diverges return emittedTask
+    const taskAddress = llvmEnsureAddress(&builder, &state, &emittedTask)
+    llvmRequireExternal(
+        &module, "fdn_task_wait", "void @fdn_task_wait(ptr, ptr)")
+    if valueType.kind.Matches("Void") {
+        llvmInstruction(&builder, &state, "call void @fdn_task_wait(ptr " +
+            taskAddress + ", ptr null)")
+        return llvmVoidValue()
+    }
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = alloca " +
+        llvmTypeName(&valueType))
+    llvmInstruction(&builder, &state, "call void @fdn_task_wait(ptr " +
+        taskAddress + ", ptr " + result + ")")
+    llvmEmitted(result, copySemanticType(&valueType), true, false)
+}
+
+fn llvmEmitChannelExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &channel firChannelExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var capacity = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, channel.capacity)
+    if capacity.diverges return capacity
+    const capacityValue = llvmEnsureValue(&builder, &state, &capacity)
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = alloca %fdn.channel")
+    const sender = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, sender +
+        " = getelementptr inbounds %fdn.channel, ptr " + result +
+        ", i32 0, i32 0")
+    const receiver = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, receiver +
+        " = getelementptr inbounds %fdn.channel, ptr " + result +
+        ", i32 0, i32 1")
+    const payloadSize = if channel.payload.kind.Matches("Void") {
+        "0"
+    } else {
+        llvmSizeOf(&builder, &state, &channel.payload)
+    }
+    llvmRequireExternal(&module, "fdn_channel_open",
+        "void @fdn_channel_open(i64, i64, ptr, ptr, ptr)")
+    const drop = if llvmTypeRequiresDrop(&program, &channel.payload) {
+        "@" + llvmChannelDropName(&channel.payload)
+    } else { "null" }
+    llvmInstruction(&builder, &state, "call void @fdn_channel_open(i64 " +
+        payloadSize + ", i64 " + capacityValue +
+        ", ptr " + drop + ", ptr " + sender + ", ptr " + receiver + ")")
+    llvmEmitted(result, copySemanticType(&valueType), true, false)
+}
+
+fn llvmEmitChannelCloneExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    clone firChannelSenderCloneExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    var sender = llvmEmitExpression(&builder, &module, &program,
+        &function, &state, clone.sender)
+    if sender.diverges return sender
+    const senderValue = llvmEnsureValue(&builder, &state, &sender)
+    llvmRequireExternal(&module, "fdn_channel_clone_sender",
+        "ptr @fdn_channel_clone_sender(ptr)")
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result +
+        " = call ptr @fdn_channel_clone_sender(ptr " + senderValue + ")")
+    llvmEmitted(result, copySemanticType(&valueType), false, false)
+}
+
+fn llvmEmitWaitSuspension(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    expressionID u64,
+    wait firTaskWaitExpression,
+    resultLocal Option<u64>
+) void {
+    const taskExpression = cExpressionAt(&function, wait.taskValue)
+    const firExpression { value type span } = taskExpression
+    discard type
+    discard span
+    const taskLocal = match value {
+        Move(payload): payload.local
+        _: panic("LLVM suspending task wait does not consume a local handle")
+    }
+    llvmTaskSuspend(&builder, &program, &function, &state)
+    const expression = cExpressionAt(&function, expressionID)
+    llvmEmitTaskLocation(&builder, &module, &state, expression.span)
+    llvmRequireExternal(&module, "fdn_task_poll_wait",
+        "i1 @fdn_task_poll_wait(ptr, ptr)")
+    const taskAddress = llvmLocal(&state, taskLocal)
+    var resultAddress = "null"
+    match resultLocal {
+        None: {}
+        Some(local): {
+            resultAddress = llvmLocal(&state, local)
+        }
+    }
+    const ready = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, ready +
+        " = call i1 @fdn_task_poll_wait(ptr " + taskAddress +
+        ", ptr " + resultAddress + ")")
+    const readyBlock = llvmNextBlock(&state, "task.wait.ready")
+    const pendingBlock = llvmNextBlock(&state, "task.wait.pending")
+    llvmConditionalBranch(&builder, &state, ready, readyBlock, pendingBlock)
+    llvmBlock(&builder, &state, pendingBlock)
+    llvmEmitPendingTaskReturn(&builder, &module, &state)
+    llvmBlock(&builder, &state, readyBlock)
+    match llvmActiveLocal(&state, taskLocal) {
+        None: {}
+        Some(active): {
+            var boolean = boolSemanticType()
+            llvmStore(&builder, &state, &boolean, "0", active)
+        }
+    }
+    match resultLocal {
+        None: {}
+        Some(local): llvmActivateLocal(
+            &builder, &program, &function, &state, local)
+    }
+}
+
+fn llvmStoreTaskArguments(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &arguments arena<u64>,
+    &storages arena<u64>,
+    &parameters arena<u64>
+) void {
+    if arguments.len() != storages.len() {
+        panic("LLVM suspending call has invalid argument storage")
+    }
+    var index u64 = 0
+    while index < arguments.len() {
+        var emitted = llvmEmitExpression(&builder, &module, &program,
+            &function, &state, cU64At(&arguments, index))
+        if emitted.diverges return
+        const parameter = if parameters.len() == 0 {
+            index
+        } else { cU64At(&parameters, index) }
+        if parameter >= storages.len() {
+            panic("LLVM suspending call argument mapping is invalid")
+        }
+        const storage = cU64At(&storages, parameter)
+        var storageType = llvmLocalTypeAt(&function, storage)
+        const value = llvmEnsureValue(&builder, &state, &emitted)
+        const storageAddress = llvmLocal(&state, storage)
+        llvmStore(&builder, &state, &storageType,
+            value, storageAddress)
+        llvmActivateLocal(&builder, &program, &function, &state, storage)
+        index += 1
+    }
+}
+
+fn llvmMoveTaskLocal(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    source u64,
+    target u64
+) void {
+    var valueType = llvmLocalTypeAt(&function, source)
+    const sourceAddress = llvmLocal(&state, source)
+    const value = llvmLoad(&builder, &state, &valueType, sourceAddress)
+    const targetAddress = llvmLocal(&state, target)
+    llvmStore(&builder, &state, &valueType,
+        value, targetAddress)
+    if llvmTypeRequiresDrop(&program, &valueType) {
+        const empty = llvmZeroValue(&valueType)
+        llvmStore(&builder, &state, &valueType,
+            empty, sourceAddress)
+        match llvmActiveLocal(&state, source) {
+            None: {}
+            Some(active): {
+                var boolean = boolSemanticType()
+                llvmStore(&builder, &state, &boolean, "0", active)
+            }
+        }
+    }
+    llvmActivateLocal(&builder, &program, &function, &state, target)
+}
+
+fn llvmEmitBlockingSuspension(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    expressionID u64,
+    &blocking firBlockingCallExpression,
+    resultLocal Option<u64>,
+    discarded bool
+) void {
+    var arguments = copyFirU64Arena(&blocking.arguments)
+    var storages = copyFirU64Arena(&blocking.argumentStorages)
+    var parameters = copyFirU64Arena(&blocking.argumentParameters)
+    llvmStoreTaskArguments(&builder, &module, &program, &function, &state,
+        &arguments, &storages, &parameters)
+    llvmTaskSuspend(&builder, &program, &function, &state)
+    const expression = cExpressionAt(&function, expressionID)
+    llvmEmitTaskLocation(&builder, &module, &state, expression.span)
+    const functionID = state.function
+    const taskFrame = "" + state.taskFrame
+    const workField = llvmTaskWorkField(
+        &program, &function, expressionID, false)
+    const slot = llvmTaskFrameField(&builder, &program, &state,
+        functionID, taskFrame, workField)
+    const workName = llvmTaskBlockingWorkName(
+        &program, functionID, expressionID)
+    llvmRequireExternal(&module, "fdn_blocking_poll",
+        "i1 @fdn_blocking_poll(ptr, ptr, ptr)")
+    const ready = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, ready +
+        " = call i1 @fdn_blocking_poll(ptr " + slot + ", ptr " +
+        taskFrame + ", ptr @" + workName + ")")
+    const readyBlock = llvmNextBlock(&state, "blocking.ready")
+    const pendingBlock = llvmNextBlock(&state, "blocking.pending")
+    llvmConditionalBranch(&builder, &state, ready, readyBlock, pendingBlock)
+    llvmBlock(&builder, &state, pendingBlock)
+    llvmEmitPendingTaskReturn(&builder, &module, &state)
+    llvmBlock(&builder, &state, readyBlock)
+    match blocking.resultStorage {
+        None: {}
+        Some(storage): {
+            match resultLocal {
+                None: {
+                    if discarded {
+                        llvmEmitLocalDrop(&builder, &module, &program,
+                            &function, &state, storage)
+                    }
+                }
+                Some(local): llvmMoveTaskLocal(&builder, &program,
+                    &function, &state, storage, local)
+            }
+        }
+    }
+}
+
+fn llvmEmitCallbackSuspension(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    expressionID u64,
+    &callback firCallbackCallExpression,
+    resultLocal Option<u64>
+) void {
+    var arguments = copyFirU64Arena(&callback.arguments)
+    var storages = copyFirU64Arena(&callback.argumentStorages)
+    var parameters = copyFirU64Arena(&callback.argumentParameters)
+    llvmStoreTaskArguments(&builder, &module, &program, &function, &state,
+        &arguments, &storages, &parameters)
+    llvmTaskSuspend(&builder, &program, &function, &state)
+    const expression = cExpressionAt(&function, expressionID)
+    llvmEmitTaskLocation(&builder, &module, &state, expression.span)
+    const functionID = state.function
+    const taskFrame = "" + state.taskFrame
+    const workField = llvmTaskWorkField(
+        &program, &function, expressionID, true)
+    const slot = llvmTaskFrameField(&builder, &program, &state,
+        functionID, taskFrame, workField)
+    const resultAddress = llvmLocal(&state, callback.resultStorage)
+    var target = cFunctionAt(&program, callback.function)
+    var cancel = "null"
+    match replace target.callbackCancelSymbol with .None {
+        None: {}
+        Some(symbol): {
+            discard symbol
+            cancel = "@" + llvmTaskCallbackCancelName(
+                &program, functionID, expressionID)
+        }
+    }
+    const startName = llvmTaskCallbackStartName(
+        &program, functionID, expressionID)
+    llvmRequireExternal(&module, "fdn_reactor_poll",
+        "i1 @fdn_reactor_poll(ptr, ptr, ptr, ptr, ptr)")
+    const ready = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, ready +
+        " = call i1 @fdn_reactor_poll(ptr " + slot + ", ptr " +
+        taskFrame + ", ptr @" + startName + ", ptr " + cancel +
+        ", ptr " + resultAddress + ")")
+    const readyBlock = llvmNextBlock(&state, "callback.ready")
+    const pendingBlock = llvmNextBlock(&state, "callback.pending")
+    llvmConditionalBranch(&builder, &state, ready, readyBlock, pendingBlock)
+    llvmBlock(&builder, &state, pendingBlock)
+    llvmEmitPendingTaskReturn(&builder, &module, &state)
+    llvmBlock(&builder, &state, readyBlock)
+    match resultLocal {
+        None: {}
+        Some(local): llvmMoveTaskLocal(&builder, &program,
+            &function, &state, callback.resultStorage, local)
+    }
+}
+
+fn llvmChannelErrorType(
+    &program firProgram,
+    &function firFunction,
+    resultStorage u64
+) semanticType {
+    cChannelTypes(&program, &function, resultStorage)
+}
+
+fn llvmEmitChannelStatusResult(
+    &builder text.Builder,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    resultStorage u64,
+    status String
+) void {
+    var resultType = llvmLocalTypeAt(&function, resultStorage)
+    var errorType = llvmChannelErrorType(
+        &program, &function, resultStorage)
+    const resultAddress = llvmLocal(&state, resultStorage)
+    const resultTag = llvmEnumTagAddress(
+        &builder, &state, resultAddress, &resultType)
+    var tagType = i32SemanticType()
+    const ready = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        ready + " = icmp eq i32 " + status + ", 1")
+    const successBlock = llvmNextBlock(&state, "channel.success")
+    const errorBlock = llvmNextBlock(&state, "channel.error")
+    const endBlock = llvmNextBlock(&state, "channel.result")
+    llvmConditionalBranch(&builder, &state, ready, successBlock, errorBlock)
+    llvmBlock(&builder, &state, successBlock)
+    llvmStore(&builder, &state, &tagType, "0", resultTag)
+    llvmBranch(&builder, &state, endBlock)
+    llvmBlock(&builder, &state, errorBlock)
+    const errorAddress = llvmEnumPayloadAddress(
+        &builder, &state, resultAddress, &resultType, 1)
+    const errorTag = llvmEnumTagAddress(
+        &builder, &state, errorAddress, &errorType)
+    const closed = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        closed + " = icmp eq i32 " + status + ", 2")
+    const errorValue = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, errorValue +
+        " = select i1 " + closed + ", i32 0, i32 1")
+    llvmStore(&builder, &state, &tagType, errorValue, errorTag)
+    llvmStore(&builder, &state, &tagType, "1", resultTag)
+    llvmBranch(&builder, &state, endBlock)
+    llvmBlock(&builder, &state, endBlock)
+    llvmActivateLocal(&builder, &program, &function, &state, resultStorage)
+}
+
+fn llvmFinishChannelSuspension(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    resultStorage u64,
+    resultLocal Option<u64>,
+    discarded bool
+) void {
+    match resultLocal {
+        Some(local): llvmMoveTaskLocal(&builder, &program,
+            &function, &state, resultStorage, local)
+        None: {
+            if discarded {
+                llvmEmitLocalDrop(&builder, &module, &program,
+                    &function, &state, resultStorage)
+            } else {
+                panic("LLVM channel Result is neither bound nor discarded")
+            }
+        }
+    }
+}
+
+fn llvmEmitChannelSuspension(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    expressionID u64,
+    send Option<firChannelSendExpression>,
+    receive Option<firChannelReceiveExpression>,
+    resultLocal Option<u64>,
+    discarded bool
+) void {
+    var isSend = false
+    var resultStorage u64 = 0
+    match send {
+        None: {
+            match receive {
+                None: panic("LLVM channel suspension has no operation")
+                Some(value): {
+                    resultStorage = value.resultStorage
+                }
+            }
+        }
+        Some(value): {
+            isSend = true
+            resultStorage = value.resultStorage
+            match value.value {
+                None: {}
+                Some(expression): {
+                    const storage = match value.valueStorage {
+                        None: panic("LLVM channel send has no value storage")
+                        Some(found): found
+                    }
+                    var emitted = llvmEmitExpression(&builder, &module,
+                        &program, &function, &state, expression)
+                    if emitted.diverges return
+                    var storageType = llvmLocalTypeAt(&function, storage)
+                    const payload = llvmEnsureValue(
+                        &builder, &state, &emitted)
+                    const storageAddress = llvmLocal(&state, storage)
+                    llvmStore(&builder, &state, &storageType,
+                        payload, storageAddress)
+                    llvmActivateLocal(&builder, &program,
+                        &function, &state, storage)
+                }
+            }
+        }
+    }
+    llvmTaskSuspend(&builder, &program, &function, &state)
+    const expression = cExpressionAt(&function, expressionID)
+    llvmEmitTaskLocation(&builder, &module, &state, expression.span)
+    var resultType = llvmLocalTypeAt(&function, resultStorage)
+    var call = ""
+    match send {
+        None: {
+            const value = match receive {
+                None: panic("LLVM channel suspension has no receive operation")
+                Some(found): found
+            }
+            var receiverType = llvmLocalTypeAt(&function, value.receiver)
+            const receiverAddress = llvmLocal(&state, value.receiver)
+            const receiver = llvmLoad(&builder, &state, &receiverType,
+                receiverAddress)
+            var payload = cEnumPayloadType(
+                &program, resultType.declaration, 0)
+            var payloadAddress = "null"
+            if !payload.kind.Matches("Invalid") {
+                const resultAddress = llvmLocal(&state, resultStorage)
+                payloadAddress = llvmEnumPayloadAddress(&builder, &state,
+                    resultAddress, &resultType, 0)
+            }
+            llvmRequireExternal(&module, "fdn_channel_poll_receive",
+                "i32 @fdn_channel_poll_receive(ptr, ptr)")
+            call = "call i32 @fdn_channel_poll_receive(ptr " + receiver +
+                ", ptr " + payloadAddress + ")"
+        }
+        Some(value): {
+            var senderType = llvmLocalTypeAt(&function, value.sender)
+            const senderAddress = llvmLocal(&state, value.sender)
+            const sender = llvmLoad(&builder, &state, &senderType,
+                senderAddress)
+            var payloadAddress = "null"
+            match value.valueStorage {
+                None: {}
+                Some(storage): {
+                    payloadAddress = llvmLocal(&state, storage)
+                }
+            }
+            llvmRequireExternal(&module, "fdn_channel_poll_send",
+                "i32 @fdn_channel_poll_send(ptr, ptr)")
+            call = "call i32 @fdn_channel_poll_send(ptr " + sender +
+                ", ptr " + payloadAddress + ")"
+        }
+    }
+    const status = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, status + " = " + call)
+    const pending = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        pending + " = icmp eq i32 " + status + ", 0")
+    const pendingBlock = llvmNextBlock(&state, "channel.pending")
+    const readyBlock = llvmNextBlock(&state, "channel.resolved")
+    llvmConditionalBranch(
+        &builder, &state, pending, pendingBlock, readyBlock)
+    llvmBlock(&builder, &state, pendingBlock)
+    llvmEmitPendingTaskReturn(&builder, &module, &state)
+    llvmBlock(&builder, &state, readyBlock)
+    if isSend {
+        match send {
+            None: {}
+            Some(value): {
+                match value.valueStorage {
+                    None: {}
+                    Some(storage): {
+                        var storageType = llvmLocalTypeAt(&function, storage)
+                        if llvmTypeRequiresDrop(&program, &storageType) {
+                            const sent = llvmNextTemporary(&state)
+                            llvmInstruction(&builder, &state, sent +
+                                " = icmp eq i32 " + status + ", 1")
+                            const consumedBlock = llvmNextBlock(
+                                &state, "channel.consumed")
+                            const rejectedBlock = llvmNextBlock(
+                                &state, "channel.rejected")
+                            const cleanupEnd = llvmNextBlock(
+                                &state, "channel.cleanup")
+                            llvmConditionalBranch(&builder, &state, sent,
+                                consumedBlock, rejectedBlock)
+                            llvmBlock(&builder, &state, consumedBlock)
+                            match llvmActiveLocal(&state, storage) {
+                                None: {}
+                                Some(active): {
+                                    var boolean = boolSemanticType()
+                                    llvmStore(&builder, &state,
+                                        &boolean, "0", active)
+                                }
+                            }
+                            llvmBranch(&builder, &state, cleanupEnd)
+                            llvmBlock(&builder, &state, rejectedBlock)
+                            llvmEmitLocalDrop(&builder, &module, &program,
+                                &function, &state, storage)
+                            llvmBranch(&builder, &state, cleanupEnd)
+                            llvmBlock(&builder, &state, cleanupEnd)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    llvmEmitChannelStatusResult(&builder, &program,
+        &function, &state, resultStorage, status)
+    llvmFinishChannelSuspension(&builder, &module, &program, &function,
+        &state, resultStorage, resultLocal, discarded)
+}
+
+fn llvmEmitSpawnExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    spawnValue firSpawnExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    const expression = cExpressionAt(&function, spawnValue.call)
+    const firExpression { value type span } = expression
+    discard type
+    discard span
+    var call = match value {
+        Call(found): found
+        _: panic("LLVM spawn did not lower to a task call")
+    }
+    if !cCallKindFunction(call.kind) ||
+        call.function >= program.functions.len() {
+        panic("LLVM spawn did not lower to a task call")
+    }
+    var target = cFunctionAt(&program, call.function)
+    if !target.taskFunction {
+        panic("LLVM spawn did not lower to a task call")
+    }
+    var values = newArena<String>()
+    var index u64 = 0
+    while index < call.arguments.len() {
+        var emitted = llvmEmitExpression(&builder, &module, &program,
+            &function, &state, cU64At(&call.arguments, index))
+        if emitted.diverges return emitted
+        discard values.add(llvmEnsureValue(&builder, &state, &emitted))
+        index += 1
+    }
+    const frameType = llvmTaskFrameName(&program, call.function)
+    const frameEnd = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, frameEnd + " = getelementptr " +
+        frameType + ", ptr null, i32 1")
+    const frameSize = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, frameSize +
+        " = ptrtoint ptr " + frameEnd + " to i64")
+    llvmRequireExternal(&module, "fdn_alloc", "ptr @fdn_alloc(i64)")
+    const frame = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, frame +
+        " = call ptr @fdn_alloc(i64 " + frameSize + ")")
+    llvmInstruction(&builder, &state,
+        "store " + frameType + " zeroinitializer, ptr " + frame)
+    index = 0
+    while index < target.parameters.len() {
+        const local = cU64At(&target.parameters, index)
+        var parameterType = llvmLocalTypeAt(&target, local)
+        const address = llvmTaskFrameField(&builder, &program, &state,
+            call.function, frame, index)
+        llvmStore(&builder, &state, &parameterType,
+            llvmOrderedArgument(&call, &values, index), address)
+        index += 1
+    }
+    const active = llvmTaskFrameField(&builder, &program, &state,
+        call.function, frame, llvmTaskArgumentsActiveField(&target))
+    var boolean = boolSemanticType()
+    llvmStore(&builder, &state, &boolean, "1", active)
+    llvmRequireExternal(&module, "fdn_task_spawn",
+        "ptr @fdn_task_spawn(ptr, ptr, ptr, ptr)")
+    const taskHandle = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, taskHandle +
+        " = call ptr @fdn_task_spawn(ptr " + frame + ", ptr @" +
+        llvmTaskPollName(&program, call.function) + ", ptr @" +
+        llvmTaskMoveResultName(&program, call.function) + ", ptr @" +
+        llvmTaskDropFrameName(&program, call.function) + ")")
+    llvmEmitted(taskHandle, copySemanticType(&valueType), false, false)
+}
+
+fn llvmEmitBlockingCallExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &blocking firBlockingCallExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    discard builder
+    discard module
+    discard program
+    discard function
+    discard state
+    discard blocking
+    discard valueType
+    panic("LLVM suspending blocking call reached expression emission")
+}
+
+fn llvmEmitCallbackCallExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &callback firCallbackCallExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    discard builder
+    discard module
+    discard program
+    discard function
+    discard state
+    discard callback
+    discard valueType
+    panic("LLVM suspending callback call reached expression emission")
+}
+
+fn llvmEmitChannelSendExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &send firChannelSendExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    discard builder
+    discard module
+    discard program
+    discard function
+    discard state
+    discard send
+    discard valueType
+    panic("LLVM suspending channel send reached expression emission")
+}
+
+fn llvmEmitChannelReceiveExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    receive firChannelReceiveExpression,
+    &valueType semanticType
+) llvmEmittedValue {
+    discard builder
+    discard module
+    discard program
+    discard function
+    discard state
+    discard receive
+    discard valueType
+    panic("LLVM suspending channel receive reached expression emission")
+}
+
+fn llvmEmitSelectSendCleanup(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &selection firSelectStatement,
+    selected Option<u64>
+) void {
+    var index u64 = 0
+    while index < selection.operations.len() {
+        const arm = cSelectOperationAt(&selection, index)
+        if arm.send {
+            match arm.valueStorage {
+                None: {}
+                Some(storage): {
+                    var storageType = llvmLocalTypeAt(&function, storage)
+                    if llvmTypeRequiresDrop(&program, &storageType) {
+                        var consumed = false
+                        match selected {
+                            None: {}
+                            Some(found): {
+                                consumed = found == index
+                            }
+                        }
+                        if consumed {
+                            match llvmActiveLocal(&state, storage) {
+                                None: {}
+                                Some(active): {
+                                    var boolean = boolSemanticType()
+                                    llvmStore(&builder, &state,
+                                        &boolean, "0", active)
+                                }
+                            }
+                        } else {
+                            llvmEmitLocalDrop(&builder, &module, &program,
+                                &function, &state, storage)
+                        }
+                    }
+                }
+            }
+        }
+        index += 1
+    }
+}
+
+fn llvmEmitSelectStatement(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &selection firSelectStatement,
+    span sourceSpan
+) bool {
+    var index u64 = 0
+    while index < selection.operations.len() {
+        const arm = cSelectOperationAt(&selection, index)
+        if arm.send {
+            match arm.value {
+                None: {}
+                Some(expression): {
+                    const storage = match arm.valueStorage {
+                        None: panic("LLVM select send has no value storage")
+                        Some(found): found
+                    }
+                    var emitted = llvmEmitExpression(&builder, &module,
+                        &program, &function, &state, expression)
+                    if emitted.diverges return true
+                    var storageType = llvmLocalTypeAt(&function, storage)
+                    const value = llvmEnsureValue(
+                        &builder, &state, &emitted)
+                    const storageAddress = llvmLocal(&state, storage)
+                    llvmStore(&builder, &state, &storageType,
+                        value, storageAddress)
+                    llvmActivateLocal(&builder, &program,
+                        &function, &state, storage)
+                }
+            }
+        }
+        index += 1
+    }
+    var hasTimeout = false
+    var duration = "0"
+    var timeoutBody u64 = 0
+    match selection.timeoutArm {
+        None: {}
+        Some(timeoutValue): {
+            hasTimeout = true
+            timeoutBody = timeoutValue.body
+            duration = format.U64(timeoutValue.nanoseconds)
+            match timeoutValue.duration {
+                None: {}
+                Some(expression): {
+                    var emitted = llvmEmitExpression(&builder, &module,
+                        &program, &function, &state, expression)
+                    if emitted.diverges return true
+                    duration = llvmEnsureValue(&builder, &state, &emitted)
+                }
+            }
+        }
+    }
+    const deadlineAddress = llvmLocal(
+        &state, selection.deadlineStorage)
+    var deadlineType = llvmLocalTypeAt(
+        &function, selection.deadlineStorage)
+    if hasTimeout {
+        llvmRequireExternal(&module, "fdn_monotonic_nanoseconds",
+            "i64 @fdn_monotonic_nanoseconds()")
+        const now = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, now +
+            " = call i64 @fdn_monotonic_nanoseconds()")
+        const sum = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            sum + " = add i64 " + now + ", " + duration)
+        const overflow = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            overflow + " = icmp ult i64 " + sum + ", " + now)
+        const deadline = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, deadline +
+            " = select i1 " + overflow +
+            ", i64 -1, i64 " + sum)
+        llvmStore(&builder, &state, &deadlineType,
+            deadline, deadlineAddress)
+    } else {
+        llvmStore(&builder, &state, &deadlineType, "-1", deadlineAddress)
+    }
+    llvmTaskSuspend(&builder, &program, &function, &state)
+    llvmEmitTaskLocation(&builder, &module, &state, span)
+    const count = selection.operations.len()
+    const cases = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, cases + " = alloca [" +
+        format.U64(count) + " x %fdn.channel.select.case]")
+    index = 0
+    while index < count {
+        const arm = cSelectOperationAt(&selection, index)
+        const element = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, element +
+            " = getelementptr inbounds [" + format.U64(count) +
+            " x %fdn.channel.select.case], ptr " + cases +
+            ", i64 0, i64 " + format.U64(index))
+        const channelField = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, channelField +
+            " = getelementptr inbounds %fdn.channel.select.case, ptr " +
+            element + ", i32 0, i32 0")
+        var endpointType = llvmLocalTypeAt(&function, arm.endpoint)
+        const endpointAddress = llvmLocal(&state, arm.endpoint)
+        const endpoint = llvmLoad(&builder, &state, &endpointType,
+            endpointAddress)
+        var pointerType = unarySemanticType(.Raw, voidSemanticType())
+        llvmStore(&builder, &state, &pointerType, endpoint, channelField)
+        const valueField = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, valueField +
+            " = getelementptr inbounds %fdn.channel.select.case, ptr " +
+            element + ", i32 0, i32 1")
+        var valueAddress = "null"
+        if arm.send {
+            match arm.valueStorage {
+                None: {}
+                Some(storage): {
+                    valueAddress = llvmLocal(&state, storage)
+                }
+            }
+        } else {
+            var resultType = llvmLocalTypeAt(&function, arm.resultStorage)
+            var payload = cEnumPayloadType(
+                &program, resultType.declaration, 0)
+            if !payload.kind.Matches("Invalid") {
+                const resultAddress = llvmLocal(
+                    &state, arm.resultStorage)
+                valueAddress = llvmEnumPayloadAddress(&builder, &state,
+                    resultAddress, &resultType, 0)
+            }
+        }
+        llvmStore(&builder, &state, &pointerType, valueAddress, valueField)
+        const kindField = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, kindField +
+            " = getelementptr inbounds %fdn.channel.select.case, ptr " +
+            element + ", i32 0, i32 2")
+        var kindType = i32SemanticType()
+        llvmStore(&builder, &state, &kindType,
+            if arm.send { "1" } else { "2" }, kindField)
+        index += 1
+    }
+    const selectedAddress = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, selectedAddress + " = alloca i64")
+    var usizeType = usizeSemanticType()
+    llvmStore(&builder, &state, &usizeType, "-1", selectedAddress)
+    const deadline = llvmLoad(
+        &builder, &state, &deadlineType, deadlineAddress)
+    llvmRequireExternal(&module, "fdn_channel_poll_select",
+        "i32 @fdn_channel_poll_select(ptr, ptr, i64, i64, ptr)")
+    const taskFrame = "" + state.taskFrame
+    const status = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, status +
+        " = call i32 @fdn_channel_poll_select(ptr " + taskFrame +
+        ", ptr " + cases + ", i64 " + format.U64(count) +
+        ", i64 " + deadline + ", ptr " + selectedAddress + ")")
+    const pending = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        pending + " = icmp eq i32 " + status + ", 0")
+    const pendingBlock = llvmNextBlock(&state, "select.pending")
+    const resolvedBlock = llvmNextBlock(&state, "select.resolved")
+    llvmConditionalBranch(
+        &builder, &state, pending, pendingBlock, resolvedBlock)
+    llvmBlock(&builder, &state, pendingBlock)
+    llvmEmitPendingTaskReturn(&builder, &module, &state)
+    llvmBlock(&builder, &state, resolvedBlock)
+    const timedOut = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        timedOut + " = icmp eq i32 " + status + ", 4")
+    const timeoutBlock = llvmNextBlock(&state, "select.timeout")
+    const notTimeoutBlock = llvmNextBlock(&state, "select.not_timeout")
+    const endBlock = llvmNextBlock(&state, "select.end")
+    llvmConditionalBranch(&builder, &state,
+        timedOut, timeoutBlock, notTimeoutBlock)
+    llvmBlock(&builder, &state, timeoutBlock)
+    llvmEmitSelectSendCleanup(&builder, &module, &program,
+        &function, &state, &selection, .None)
+    if hasTimeout {
+        const exits = llvmEmitBlock(&builder, &module, &program,
+            &function, &state, timeoutBody)
+        if !exits && !state.terminated {
+            llvmBranch(&builder, &state, endBlock)
+        }
+    } else {
+        const message = llvmStringConstantName(&module,
+            "select reached an unavailable timeout")
+        llvmRequireExternal(&module, "fdn_panic_cstr",
+            "void @fdn_panic_cstr(ptr)")
+        llvmInstruction(&builder, &state,
+            "call void @fdn_panic_cstr(ptr " + message + ")")
+        llvmInstruction(&builder, &state, "unreachable")
+        state.terminated = true
+    }
+    llvmBlock(&builder, &state, notTimeoutBlock)
+    const ready = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        ready + " = icmp eq i32 " + status + ", 1")
+    const readyBlock = llvmNextBlock(&state, "select.ready")
+    const errorBlock = llvmNextBlock(&state, "select.error")
+    llvmConditionalBranch(&builder, &state, ready, readyBlock, errorBlock)
+    llvmBlock(&builder, &state, errorBlock)
+    var errorType = llvmLocalTypeAt(&function, selection.errorLocal)
+    const errorAddress = llvmLocal(&state, selection.errorLocal)
+    const errorTag = llvmEnumTagAddress(
+        &builder, &state, errorAddress, &errorType)
+    const closed = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        closed + " = icmp eq i32 " + status + ", 2")
+    const errorValue = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, errorValue +
+        " = select i1 " + closed + ", i32 0, i32 1")
+    var tagType = i32SemanticType()
+    llvmStore(&builder, &state, &tagType, errorValue, errorTag)
+    llvmActivateLocal(&builder, &program,
+        &function, &state, selection.errorLocal)
+    llvmEmitSelectSendCleanup(&builder, &module, &program,
+        &function, &state, &selection, .None)
+    const errorExits = llvmEmitBlock(&builder, &module, &program,
+        &function, &state, selection.errorBlock)
+    if !errorExits && !state.terminated {
+        llvmBranch(&builder, &state, endBlock)
+    }
+    llvmBlock(&builder, &state, readyBlock)
+    const selected = llvmLoad(
+        &builder, &state, &usizeType, selectedAddress)
+    const invalidBlock = llvmNextBlock(&state, "select.invalid")
+    var switchValue = "switch i64 " + selected +
+        ", label %" + invalidBlock + " ["
+    index = 0
+    while index < count {
+        switchValue = switchValue + " i64 " + format.U64(index) +
+            ", label %select.arm." + format.U64(state.block) +
+            "." + format.U64(index)
+        index += 1
+    }
+    switchValue = switchValue + " ]"
+    const switchGroup = state.block
+    state.block += 1
+    llvmInstruction(&builder, &state, switchValue)
+    state.terminated = true
+    llvmBlock(&builder, &state, invalidBlock)
+    const invalidMessage = llvmStringConstantName(
+        &module, "invalid select branch")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_panic_cstr(ptr " + invalidMessage + ")")
+    llvmInstruction(&builder, &state, "unreachable")
+    state.terminated = true
+    index = 0
+    while index < count {
+        llvmBlock(&builder, &state, "select.arm." +
+            format.U64(switchGroup) + "." + format.U64(index))
+        const arm = cSelectOperationAt(&selection, index)
+        match arm.binding {
+            None: {}
+            Some(binding): {
+                var resultType = llvmLocalTypeAt(
+                    &function, arm.resultStorage)
+                var payloadType = cEnumPayloadType(
+                    &program, resultType.declaration, 0)
+                const resultAddress = llvmLocal(
+                    &state, arm.resultStorage)
+                const payload = llvmEnumPayloadAddress(&builder, &state,
+                    resultAddress, &resultType, 0)
+                const value = llvmLoad(
+                    &builder, &state, &payloadType, payload)
+                var bindingType = llvmLocalTypeAt(&function, binding)
+                const bindingAddress = llvmLocal(&state, binding)
+                llvmStore(&builder, &state, &bindingType,
+                    value, bindingAddress)
+                if llvmTypeRequiresDrop(&program, &payloadType) {
+                    const empty = llvmZeroValue(&payloadType)
+                    llvmStore(&builder, &state, &payloadType,
+                        empty, payload)
+                }
+                llvmActivateLocal(
+                    &builder, &program, &function, &state, binding)
+            }
+        }
+        llvmEmitSelectSendCleanup(&builder, &module, &program,
+            &function, &state, &selection, .Some(index))
+        const exits = llvmEmitBlock(&builder, &module, &program,
+            &function, &state, arm.body)
+        if !exits && !state.terminated {
+            llvmBranch(&builder, &state, endBlock)
+        }
+        index += 1
+    }
+    llvmBlock(&builder, &state, endBlock)
+    false
+}
+
+fn llvmEmitSuspendingExpression(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    expressionID u64,
+    resultLocal Option<u64>,
+    discarded bool
+) bool {
+    const expression = cExpressionAt(&function, expressionID)
+    const firExpression { value type span } = expression
+    discard type
+    discard span
+    match value {
+        BlockingCall(payload): {
+            var selected = payload
+            llvmEmitBlockingSuspension(&builder, &module, &program,
+                &function, &state, expressionID, &selected,
+                resultLocal, discarded)
+            true
+        }
+        CallbackCall(payload): {
+            var selected = payload
+            llvmEmitCallbackSuspension(&builder, &module, &program,
+                &function, &state, expressionID, &selected, resultLocal)
+            true
+        }
+        TaskWait(payload): {
+            llvmEmitWaitSuspension(&builder, &module, &program,
+                &function, &state, expressionID, payload, resultLocal)
+            true
+        }
+        ChannelSend(payload): {
+            llvmEmitChannelSuspension(&builder, &module, &program,
+                &function, &state, expressionID, .Some(payload), .None,
+                resultLocal, discarded)
+            true
+        }
+        ChannelReceive(payload): {
+            llvmEmitChannelSuspension(&builder, &module, &program,
+                &function, &state, expressionID, .None, .Some(payload),
+                resultLocal, discarded)
+            true
+        }
+        _: false
+    }
+}
+
+fn llvmEmitSuspendingStatement(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    statementID u64
+) bool {
+    const statement = cStatementAt(&function, statementID)
+    const firStatement { value span } = statement
+    match value {
+        SelectValue(selection): {
+            var selected = selection
+            discard llvmEmitSelectStatement(&builder, &module,
+                &program, &function, &state, &selected, span)
+            true
+        }
+        Variable(variable): llvmEmitSuspendingExpression(
+            &builder, &module, &program, &function, &state,
+            variable.initializer, .Some(variable.local), false)
+        Expression(expression): llvmEmitSuspendingExpression(
+            &builder, &module, &program, &function, &state,
+            expression.expression, .None, false)
+        Discard(discarded): llvmEmitSuspendingExpression(
+            &builder, &module, &program, &function, &state,
+            discarded.expression, .None, true)
+        _: false
+    }
+}
+
+fn llvmEmitTaskPoll(
+    &module llvmModuleEmission,
+    &program firProgram,
+    id u64,
+    sourcePath String
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.taskFunction return
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, "define internal i32 @" +
+        llvmTaskPollName(&program, id) +
+        "(ptr %fdn_frame, i1 %fdn_cancellation_requested) {\n")
+    var state = newLlvmFunctionEmission(id, function.locals.len())
+    llvmBlock(&builder, &state, "entry")
+    llvmRequireExternal(&module, "fdn_task_cancellation_enter",
+        "i1 @fdn_task_cancellation_enter(i1)")
+    llvmInstruction(&builder, &state, "%fdn_previous_cancellation = " +
+        "call i1 @fdn_task_cancellation_enter(i1 " +
+        "%fdn_cancellation_requested)")
+    const suspensions = cTaskSuspensionCount(&function)
+    if suspensions == 0 {
+        const argumentsActive = llvmTaskFrameField(&builder, &program,
+            &state, id, "%fdn_frame",
+            llvmTaskArgumentsActiveField(&function))
+        var boolean = boolSemanticType()
+        llvmStore(&builder, &state, &boolean, "0", argumentsActive)
+        var invocation = "call " +
+            if function.diverges { "void" } else {
+            llvmTypeName(&function.returnType)
+        } + " @" + llvmFunctionName(&program, id) + "("
+        var parameter u64 = 0
+        while parameter < function.parameters.len() {
+            if parameter != 0 { invocation = invocation + ", " }
+            const local = cU64At(&function.parameters, parameter)
+            var valueType = llvmLocalTypeAt(&function, local)
+            const address = llvmTaskFrameField(&builder, &program,
+                &state, id, "%fdn_frame", parameter)
+            const value = llvmLoad(&builder, &state, &valueType, address)
+            invocation = invocation + llvmTypeName(&valueType) + " " + value
+            parameter += 1
+        }
+        invocation = invocation + ")"
+        if function.diverges {
+            llvmInstruction(&builder, &state, invocation)
+            llvmInstruction(&builder, &state, "unreachable")
+            state.terminated = true
+        } else {
+            if function.returnType.kind.Matches("Void") {
+                llvmInstruction(&builder, &state, invocation)
+            } else {
+                const result = llvmNextTemporary(&state)
+                llvmInstruction(&builder, &state, result + " = " + invocation)
+                const resultAddress = llvmTaskFrameField(&builder, &program,
+                    &state, id, "%fdn_frame",
+                    llvmTaskResultField(&function))
+                llvmStore(&builder, &state, &function.returnType,
+                    result, resultAddress)
+                const active = llvmTaskFrameField(&builder, &program,
+                    &state, id, "%fdn_frame",
+                    llvmTaskResultActiveField(&function))
+                llvmStore(&builder, &state, &boolean, "1", active)
+            }
+            llvmTaskComplete(&builder, &module, &state)
+        }
+        llvmWrite(&builder, "}\n\n")
+        llvmWrite(&module.functions, llvmFinish(&builder))
+        return
+    }
+
+    llvmPrepareTaskLocals(&builder, &program, &function,
+        &state, id, "%fdn_frame")
+    llvmEmitFrameEnter(&builder, &module, &function, &state, sourcePath)
+    const taskStateField = llvmTaskStateField(&function)
+    const stateAddress = llvmTaskFrameField(&builder, &program, &state,
+        id, "%fdn_frame", taskStateField)
+    var stateType = i32SemanticType()
+    const current = llvmLoad(&builder, &state, &stateType, stateAddress)
+    var switchValue = "switch i32 " + current +
+        ", label %task.invalid [ i32 0, label %task.initial"
+    var taskState u64 = 1
+    while taskState <= suspensions {
+        switchValue = switchValue + " i32 " + format.U64(taskState) +
+            ", label %task.resume." + format.U64(taskState)
+        taskState += 1
+    }
+    llvmInstruction(&builder, &state, switchValue + " ]")
+    state.terminated = true
+    llvmBlock(&builder, &state, "task.invalid")
+    llvmRequireExternal(&module, "fdn_panic_cstr",
+        "void @fdn_panic_cstr(ptr)")
+    const invalidMessage = llvmStringConstantName(&module,
+        "invalid task state")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_panic_cstr(ptr " + invalidMessage + ")")
+    llvmInstruction(&builder, &state, "unreachable")
+    state.terminated = true
+    llvmBlock(&builder, &state, "task.initial")
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        const local = cU64At(&function.parameters, parameter)
+        var valueType = llvmLocalTypeAt(&function, local)
+        const source = llvmTaskFrameField(&builder, &program, &state,
+            id, "%fdn_frame", parameter)
+        const value = llvmLoad(&builder, &state, &valueType, source)
+        const target = llvmLocal(&state, local)
+        llvmStore(&builder, &state, &valueType, value, target)
+        llvmActivateLocal(&builder, &program, &function, &state, local)
+        parameter += 1
+    }
+    const argumentsActive = llvmTaskFrameField(&builder, &program,
+        &state, id, "%fdn_frame",
+        llvmTaskArgumentsActiveField(&function))
+    var boolean = boolSemanticType()
+    llvmStore(&builder, &state, &boolean, "0", argumentsActive)
+    llvmBranch(&builder, &state, "task.body")
+    llvmBlock(&builder, &state, "task.body")
+    const body = function.body
+    const exits = llvmEmitBlock(&builder, &module, &program,
+        &function, &state, body)
+    if !exits && !state.terminated {
+        if function.returnType.kind.Matches("Void") {
+            llvmTaskComplete(&builder, &module, &state)
+        } else {
+            const missingMessage = llvmStringConstantName(&module,
+                "task completed without a result")
+            llvmInstruction(&builder, &state,
+                "call void @fdn_panic_cstr(ptr " + missingMessage + ")")
+            llvmInstruction(&builder, &state, "unreachable")
+            state.terminated = true
+        }
+    }
+    if state.taskState != suspensions {
+        panic("LLVM task suspension count changed during emission")
+    }
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}
+
+fn llvmEmitBlockingWork(
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    id u64,
+    expressionID u64,
+    &blocking firBlockingCallExpression,
+    sourcePath String,
+    span sourceSpan
+) void {
+    var target = cFunctionAt(&program, blocking.function)
+    if !target.blocking ||
+        blocking.argumentStorages.len() != target.parameters.len() {
+        panic("LLVM blocking call has invalid argument storage")
+    }
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, "define internal void @" +
+        llvmTaskBlockingWorkName(&program, id, expressionID) +
+        "(ptr %fdn_frame) {\n")
+    var state = newLlvmFunctionEmission(id, function.locals.len())
+    llvmBlock(&builder, &state, "entry")
+    llvmPrepareTaskLocals(&builder, &program, &function,
+        &state, id, "%fdn_frame")
+    llvmEmitFrameEnter(&builder, &module, &function, &state, sourcePath)
+    llvmEmitTaskLocation(&builder, &module, &state, span)
+    const symbol = llvmCallTargetSymbol(&program, blocking.function)
+    const indirect = llvmUsesExternalResultPointer(&target)
+    var invocation = "call " + if indirect { "void" } else {
+        llvmTypeName(&target.returnType)
+    } + " @" + symbol + "("
+    var wrote = false
+    match blocking.resultStorage {
+        None: {}
+        Some(storage): {
+            if indirect {
+                const resultAddress = llvmLocal(&state, storage)
+                invocation = invocation + "ptr sret(" +
+                    llvmTypeName(&target.returnType) + ") " +
+                    resultAddress
+                wrote = true
+            }
+        }
+    }
+    var parameter u64 = 0
+    while parameter < blocking.argumentStorages.len() {
+        if wrote { invocation = invocation + ", " }
+        const storage = cU64At(&blocking.argumentStorages, parameter)
+        var valueType = llvmLocalTypeAt(&function, storage)
+        const storageAddress = llvmLocal(&state, storage)
+        const value = llvmLoad(&builder, &state, &valueType,
+            storageAddress)
+        invocation = invocation + llvmTypeName(&valueType) + " " + value
+        wrote = true
+        parameter += 1
+    }
+    invocation = invocation + ")"
+    if target.returnType.kind.Matches("Void") || indirect {
+        llvmInstruction(&builder, &state, invocation)
+    } else {
+        const result = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, result + " = " + invocation)
+        const storage = match blocking.resultStorage {
+            None: panic("LLVM blocking result has no storage")
+            Some(found): found
+        }
+        const storageAddress = llvmLocal(&state, storage)
+        llvmStore(&builder, &state, &target.returnType,
+            result, storageAddress)
+    }
+    match blocking.resultStorage {
+        None: {}
+        Some(storage): llvmActivateLocal(
+            &builder, &program, &function, &state, storage)
+    }
+    llvmEmitFrameLeave(&builder, &module, &state)
+    llvmInstruction(&builder, &state, "ret void")
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}
+
+fn llvmEmitCallbackWork(
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    id u64,
+    expressionID u64,
+    &callback firCallbackCallExpression,
+    sourcePath String,
+    span sourceSpan
+) void {
+    var target = cFunctionAt(&program, callback.function)
+    const symbol = match replace target.cSymbol with .None {
+        None: panic("LLVM callback target has no C symbol")
+        Some(found): {
+            const result = "" + found
+            target.cSymbol = .Some(found)
+            result
+        }
+    }
+    if !target.callback ||
+        callback.argumentStorages.len() != target.parameters.len() {
+        panic("LLVM callback call has invalid argument storage")
+    }
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, "define internal void @" +
+        llvmTaskCallbackStartName(&program, id, expressionID) +
+        "(ptr %fdn_frame, ptr %fdn_operation) {\n")
+    var state = newLlvmFunctionEmission(id, function.locals.len())
+    llvmBlock(&builder, &state, "entry")
+    llvmPrepareTaskLocals(&builder, &program, &function,
+        &state, id, "%fdn_frame")
+    llvmEmitFrameEnter(&builder, &module, &function, &state, sourcePath)
+    llvmEmitTaskLocation(&builder, &module, &state, span)
+    var invocation = "call void @" + symbol + "("
+    var parameter u64 = 0
+    while parameter < callback.argumentStorages.len() {
+        if parameter != 0 { invocation = invocation + ", " }
+        const storage = cU64At(&callback.argumentStorages, parameter)
+        var valueType = llvmLocalTypeAt(&function, storage)
+        const storageAddress = llvmLocal(&state, storage)
+        const value = llvmLoad(&builder, &state, &valueType,
+            storageAddress)
+        invocation = invocation + llvmTypeName(&valueType) + " " + value
+        parameter += 1
+    }
+    if callback.argumentStorages.len() != 0 {
+        invocation = invocation + ", "
+    }
+    invocation = invocation + "ptr %fdn_operation)"
+    llvmInstruction(&builder, &state, invocation)
+    llvmEmitFrameLeave(&builder, &module, &state)
+    llvmInstruction(&builder, &state, "ret void")
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+
+    match replace target.callbackCancelSymbol with .None {
+        None: {}
+        Some(cancelSymbol): {
+            var cancelBuilder = text.NewBuilder()
+            llvmWrite(&cancelBuilder, "define internal void @" +
+                llvmTaskCallbackCancelName(&program, id, expressionID) +
+                "(ptr %fdn_frame) {\n")
+            var cancelState = newLlvmFunctionEmission(id, 0)
+            llvmBlock(&cancelBuilder, &cancelState, "entry")
+            const workField = llvmTaskWorkField(
+                &program, &function, expressionID, true)
+            const slot = llvmTaskFrameField(&cancelBuilder, &program,
+                &cancelState, id, "%fdn_frame", workField)
+            var pointerType = unarySemanticType(.Raw, voidSemanticType())
+            const operation = llvmLoad(
+                &cancelBuilder, &cancelState, &pointerType, slot)
+            const present = llvmNextTemporary(&cancelState)
+            llvmInstruction(&cancelBuilder, &cancelState, present +
+                " = icmp ne ptr " + operation + ", null")
+            llvmConditionalBranch(&cancelBuilder, &cancelState, present,
+                "cancel.ready", "cancel.invalid")
+            llvmBlock(&cancelBuilder, &cancelState, "cancel.invalid")
+            llvmRequireExternal(&module, "fdn_panic_cstr",
+                "void @fdn_panic_cstr(ptr)")
+            const message = llvmStringConstantName(&module,
+                "callback cancellation has no operation")
+            llvmInstruction(&cancelBuilder, &cancelState,
+                "call void @fdn_panic_cstr(ptr " + message + ")")
+            llvmInstruction(&cancelBuilder, &cancelState, "unreachable")
+            cancelState.terminated = true
+            llvmBlock(&cancelBuilder, &cancelState, "cancel.ready")
+            llvmRequireExternal(&module, cancelSymbol,
+                "void @" + cancelSymbol + "(ptr)")
+            llvmInstruction(&cancelBuilder, &cancelState,
+                "call void @" + cancelSymbol + "(ptr " + operation + ")")
+            llvmInstruction(&cancelBuilder, &cancelState, "ret void")
+            llvmWrite(&cancelBuilder, "}\n\n")
+            llvmWrite(&module.functions, llvmFinish(&cancelBuilder))
+            target.callbackCancelSymbol = .Some(cancelSymbol)
+        }
+    }
+}
+
+fn llvmEmitTaskWorkDefinitions(
+    &module llvmModuleEmission,
+    &program firProgram,
+    sourcePath String
+) void {
+    var id u64 = 0
+    while id < program.functions.len() {
+        var function = cFunctionAt(&program, id)
+        if function.taskFunction {
+            var expressionID u64 = 0
+            while expressionID < function.expressions.len() {
+                const expression = cExpressionAt(&function, expressionID)
+                const firExpression { value type span } = expression
+                discard type
+                match value {
+                    BlockingCall(payload): {
+                        var selected = payload
+                        llvmEmitBlockingWork(&module, &program, &function,
+                            id, expressionID, &selected, sourcePath, span)
+                    }
+                    CallbackCall(payload): {
+                        var selected = payload
+                        llvmEmitCallbackWork(&module, &program, &function,
+                            id, expressionID, &selected, sourcePath, span)
+                    }
+                    _: {}
+                }
+                expressionID += 1
+            }
+        }
+        id += 1
+    }
+}
+
+fn llvmEmitChannelDropFunctions(
+    &module llvmModuleEmission,
+    &program firProgram
+) void {
+    var emitted = newArena<String>()
+    var functionID u64 = 0
+    while functionID < program.functions.len() {
+        var function = cFunctionAt(&program, functionID)
+        var expressionID u64 = 0
+        while expressionID < function.expressions.len() {
+            const expression = cExpressionAt(&function, expressionID)
+            const firExpression { value type span } = expression
+            discard type
+            discard span
+            match value {
+                ChannelValue(channel): {
+                    var channelValue = channel
+                    if llvmTypeRequiresDrop(
+                        &program, &channelValue.payload) {
+                        const name = llvmChannelDropName(
+                            &channelValue.payload)
+                        if !semanticStringContains(&emitted, name) {
+                            discard emitted.add("" + name)
+                            var builder = text.NewBuilder()
+                            llvmWrite(&builder, "define internal void @" +
+                                name + "(ptr %fdn_value) {\n")
+                            var state = newLlvmFunctionEmission(functionID, 0)
+                            llvmBlock(&builder, &state, "entry")
+                            var payload = copySemanticType(
+                                &channelValue.payload)
+                            llvmEmitDropAddress(&builder, &module, &program,
+                                &state, &payload, "%fdn_value")
+                            llvmInstruction(&builder, &state, "ret void")
+                            llvmWrite(&builder, "}\n\n")
+                            llvmWrite(&module.functions,
+                                llvmFinish(&builder))
+                        }
+                    }
+                }
+                _: {}
+            }
+            expressionID += 1
+        }
+        functionID += 1
+    }
+}
+
+fn llvmEmitTaskMoveResult(
+    &module llvmModuleEmission,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.taskFunction return
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, "define internal void @" +
+        llvmTaskMoveResultName(&program, id) +
+        "(ptr %fdn_frame, ptr %fdn_result) {\n")
+    var state = newLlvmFunctionEmission(id, 0)
+    llvmBlock(&builder, &state, "entry")
+    if function.returnType.kind.Matches("Void") {
+        llvmInstruction(&builder, &state, "ret void")
+        llvmWrite(&builder, "}\n\n")
+        llvmWrite(&module.functions, llvmFinish(&builder))
+        return
+    }
+    const activeAddress = llvmTaskFrameField(&builder, &program, &state,
+        id, "%fdn_frame", llvmTaskResultActiveField(&function))
+    var boolean = boolSemanticType()
+    const active = llvmLoad(&builder, &state, &boolean, activeAddress)
+    const targetPresent = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, targetPresent +
+        " = icmp ne ptr %fdn_result, null")
+    const available = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, available +
+        " = and i1 " + active + ", " + targetPresent)
+    llvmConditionalBranch(&builder, &state, available,
+        "result.available", "result.unavailable")
+    llvmBlock(&builder, &state, "result.unavailable")
+    llvmRequireExternal(&module, "fdn_panic_cstr",
+        "void @fdn_panic_cstr(ptr)")
+    const message = llvmStringConstantName(&module,
+        "task result is unavailable")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_panic_cstr(ptr " + message + ")")
+    llvmInstruction(&builder, &state, "unreachable")
+    state.terminated = true
+    llvmBlock(&builder, &state, "result.available")
+    const source = llvmTaskFrameField(&builder, &program, &state,
+        id, "%fdn_frame", llvmTaskResultField(&function))
+    const value = llvmLoad(&builder, &state, &function.returnType, source)
+    llvmStore(&builder, &state, &function.returnType, value, "%fdn_result")
+    const empty = llvmZeroValue(&function.returnType)
+    llvmStore(&builder, &state, &function.returnType,
+        empty, source)
+    llvmStore(&builder, &state, &boolean, "0", activeAddress)
+    llvmInstruction(&builder, &state, "ret void")
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}
+
+fn llvmEmitTaskDropFrame(
+    &module llvmModuleEmission,
+    &program firProgram,
+    id u64
+) void {
+    var function = cFunctionAt(&program, id)
+    if !function.taskFunction return
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, "define internal void @" +
+        llvmTaskDropFrameName(&program, id) + "(ptr %fdn_frame) {\n")
+    var state = newLlvmFunctionEmission(id, function.locals.len())
+    llvmBlock(&builder, &state, "entry")
+    const argumentsActiveAddress = llvmTaskFrameField(
+        &builder, &program, &state, id, "%fdn_frame",
+        llvmTaskArgumentsActiveField(&function))
+    var boolean = boolSemanticType()
+    const argumentsActive = llvmLoad(&builder, &state,
+        &boolean, argumentsActiveAddress)
+    llvmConditionalBranch(&builder, &state, argumentsActive,
+        "arguments.drop", "arguments.end")
+    llvmBlock(&builder, &state, "arguments.drop")
+    var parameter = function.parameters.len()
+    while parameter != 0 {
+        parameter -= 1
+        const local = cU64At(&function.parameters, parameter)
+        var valueType = llvmLocalTypeAt(&function, local)
+        const address = llvmTaskFrameField(&builder, &program, &state,
+            id, "%fdn_frame", parameter)
+        llvmEmitDropAddress(&builder, &module, &program,
+            &state, &valueType, address)
+    }
+    llvmBranch(&builder, &state, "arguments.end")
+    llvmBlock(&builder, &state, "arguments.end")
+    if cTaskSuspensionCount(&function) != 0 {
+        llvmPrepareTaskLocals(&builder, &program, &function,
+            &state, id, "%fdn_frame")
+        var local = function.locals.len()
+        while local != 0 {
+            local -= 1
+            llvmEmitLocalDrop(&builder, &module, &program,
+                &function, &state, local)
+        }
+    }
+    if !function.returnType.kind.Matches("Void") {
+        const activeAddress = llvmTaskFrameField(&builder, &program, &state,
+            id, "%fdn_frame", llvmTaskResultActiveField(&function))
+        const active = llvmLoad(&builder, &state, &boolean, activeAddress)
+        const dropBlock = llvmNextBlock(&state, "result.drop")
+        const endBlock = llvmNextBlock(&state, "result.end")
+        llvmConditionalBranch(&builder, &state, active, dropBlock, endBlock)
+        llvmBlock(&builder, &state, dropBlock)
+        const resultAddress = llvmTaskFrameField(&builder, &program, &state,
+            id, "%fdn_frame", llvmTaskResultField(&function))
+        llvmEmitDropAddress(&builder, &module, &program,
+            &state, &function.returnType, resultAddress)
+        llvmBranch(&builder, &state, endBlock)
+        llvmBlock(&builder, &state, endBlock)
+    }
+    llvmRequireExternal(&module, "fdn_dealloc", "void @fdn_dealloc(ptr)")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_dealloc(ptr %fdn_frame)")
+    llvmInstruction(&builder, &state, "ret void")
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}
+
+fn llvmEmitTaskSupport(
+    &module llvmModuleEmission,
+    &program firProgram,
+    sourcePath String
+) void {
+    llvmEmitChannelDropFunctions(&module, &program)
+    llvmEmitTaskWorkDefinitions(&module, &program, sourcePath)
+    var id u64 = 0
+    while id < program.functions.len() {
+        llvmEmitTaskPoll(&module, &program, id, sourcePath)
+        llvmEmitTaskMoveResult(&module, &program, id)
+        llvmEmitTaskDropFrame(&module, &program, id)
+        id += 1
+    }
+}

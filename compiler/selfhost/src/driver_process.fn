@@ -1,0 +1,390 @@
+package foundation.compiler
+
+import std.fs
+import std.io
+import std.path
+import std.process
+import std.text
+
+enum compilerBackend {
+    Llvm
+    C
+}
+
+struct compilerNativeOptions {
+    backend compilerBackend
+    backendSeen bool
+    inputs own arena<String>
+    links own arena<String>
+}
+
+fn newCompilerNativeOptions() own compilerNativeOptions {
+    own compilerNativeOptions {
+        backend = .Llvm
+        backendSeen = false
+        inputs = newArena<String>()
+        links = newArena<String>()
+    }
+}
+
+fn compilerProcessFailure(message String) void {
+    discard io.WriteStderrText("foundationc-selfhost: " + message + "\n")
+}
+
+fn compilerAddArgument(
+    &command process.Command,
+    argument String
+) bool {
+    command.AddArgument(argument) else error {
+        discard error
+        compilerProcessFailure("cannot prepare native compiler arguments")
+        return false
+    }
+    true
+}
+
+fn compilerRelayOutput(output process.Output) bool {
+    const stdout = output.StdoutText() else error {
+        discard error
+        compilerProcessFailure("cannot read native compiler output")
+        return false
+    }
+    const stderr = output.StderrText() else error {
+        discard error
+        compilerProcessFailure("cannot read native compiler diagnostics")
+        return false
+    }
+    if !text.IsEmpty(stdout) {
+        discard io.WriteStdoutText(stdout)
+    }
+    if !text.IsEmpty(stderr) {
+        discard io.WriteStderrText(stderr)
+    }
+    true
+}
+
+fn compilerRunCommand($command own process.Command) i32 {
+    var running = command
+    const output = running.Capture() else error {
+        discard error
+        compilerProcessFailure("cannot start native compiler")
+        return 1
+    }
+    if !compilerRelayOutput(output) return 1
+    output.ExitCode
+}
+
+fn compilerConfiguredProgram(name String, fallback String) String {
+    match packageEnvironment(name) {
+        None: text.Copy(fallback)
+        Some(value): {
+            if text.IsEmpty(value) return text.Copy(fallback)
+            value
+        }
+    }
+}
+
+fn compilerProgram(backend compilerBackend) String {
+    match backend {
+        Llvm: compilerConfiguredProgram("FOUNDATION_CLANG", "clang")
+        C: {
+            match packageEnvironment("FOUNDATION_C_COMPILER") {
+                None: compilerConfiguredProgram("CC", "cc")
+                Some(value): {
+                    if text.IsEmpty(value) return compilerConfiguredProgram("CC", "cc")
+                    value
+                }
+            }
+        }
+    }
+}
+
+@target(linux)
+fn compilerTempRoot() String {
+    compilerConfiguredProgram("TMPDIR", "/tmp")
+}
+
+@target(macos)
+fn compilerTempRoot() String {
+    compilerConfiguredProgram("TMPDIR", "/tmp")
+}
+
+@target(windows)
+fn compilerTempRoot() String {
+    compilerConfiguredProgram("TEMP", ".")
+}
+
+fn createCompilerTempDirectory() Option<String> {
+    const root = compilerTempRoot()
+    const created = fs.CreateTempDirectory(root, "foundationc-")
+    match created {
+        Err(error): {
+            discard error
+            compilerProcessFailure("cannot create temporary directory")
+            .None
+        }
+        Ok(value): .Some(value)
+    }
+}
+
+fn removeCompilerTempDirectory(value String) void {
+    fs.RemoveTree(value, 100000, 128) else error {
+        discard error
+        compilerProcessFailure("cannot remove temporary directory")
+        return
+    }
+}
+
+@target(linux)
+fn compilerExecutablePath(directory String, name String) String {
+    path.Join(directory, name)
+}
+
+@target(macos)
+fn compilerExecutablePath(directory String, name String) String {
+    path.Join(directory, name)
+}
+
+@target(windows)
+fn compilerExecutablePath(directory String, name String) String {
+    path.Join(directory, name + ".exe")
+}
+
+fn compilerRuntimeSources() [16]String {
+    [
+        "runtime.c",
+        "fs_host.c",
+        "process.c",
+        "crypto.c",
+        "parse.c",
+        "task.c",
+        "cancellation.c",
+        "channel.c",
+        "blocking.c",
+        "pool.c",
+        "reactor.c",
+        "watch.c",
+        "resiliency.c",
+        "net.c",
+        "plugin.c",
+        "plugin_sandbox.c"
+    ]
+}
+
+fn compilerAddArenaArguments(
+    &command process.Command,
+    &values arena<String>
+) bool {
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("native argument slot is empty")
+            Some(value): value
+        }
+        const added = compilerAddArgument(&command, value)
+        values.restore(index, $value)
+        if !added return false
+        index += 1
+    }
+    true
+}
+
+@target(linux)
+fn compilerAddPlatformLinks(&command process.Command) bool {
+    compilerAddArgument(&command, "-pthread") &&
+        compilerAddArgument(&command, "-ldl") &&
+        compilerAddArgument(&command, "-lm")
+}
+
+@target(macos)
+fn compilerAddPlatformLinks(&command process.Command) bool {
+    compilerAddArgument(&command, "-pthread") &&
+        compilerAddArgument(&command, "-lm")
+}
+
+@target(windows)
+fn compilerAddPlatformLinks(&command process.Command) bool {
+    compilerAddArgument(&command, "-lbcrypt") &&
+        compilerAddArgument(&command, "-lws2_32")
+}
+
+fn compileGeneratedC(
+    generated String,
+    outputPath String,
+    sdkRoot String,
+    &options compilerNativeOptions,
+    verifyAllocations bool
+) i32 {
+    const processOptions = process.Options {
+        WorkingDirectory = .None
+        InheritEnvironment = true
+        OutputLimit = 67108864
+    }
+    const opened = process.Open(
+        compilerProgram(options.backend),
+        $processOptions
+    ) else error {
+        discard error
+        compilerProcessFailure("cannot prepare native compiler")
+        return 1
+    }
+    var command = opened
+    if !compilerAddArgument(&command, "-std=c11") ||
+        !compilerAddArgument(&command, "-O2") ||
+        !compilerAddArgument(&command, "-Wall") ||
+        !compilerAddArgument(&command, "-Wextra") ||
+        !compilerAddArgument(&command, "-Wpedantic") ||
+        !compilerAddArgument(&command, "-Werror") {
+        return 1
+    }
+    if verifyAllocations &&
+        !compilerAddArgument(&command, "-DFOUNDATION_VERIFY_ALLOCATIONS=1") {
+        return 1
+    }
+    if !compilerAddArgument(&command, generated) return 1
+    const runtimeRoot = path.Join(path.Join(sdkRoot, "runtime"), "src")
+    for source in compilerRuntimeSources() {
+        if !compilerAddArgument(&command, path.Join(runtimeRoot, source)) return 1
+    }
+    if !compilerAddArgument(&command, "-I") ||
+        !compilerAddArgument(
+        &command,
+        path.Join(path.Join(sdkRoot, "runtime"), "include")
+    ) || !compilerAddArenaArguments(&command, &options.inputs) ||
+        !compilerAddPlatformLinks(&command) {
+        return 1
+    }
+    var linkIndex u64 = 0
+    while linkIndex < options.links.len() {
+        const link = match options.links.take(linkIndex) {
+            None: panic("native link slot is empty")
+            Some(value): value
+        }
+        const added = compilerAddArgument(&command, "-l" + link)
+        options.links.restore(linkIndex, $link)
+        if !added return 1
+        linkIndex += 1
+    }
+    if !compilerAddArgument(&command, "-o") ||
+        !compilerAddArgument(&command, outputPath) {
+        return 1
+    }
+    compilerRunCommand($command)
+}
+
+fn emitLlvmFromC(
+    generated String,
+    outputPath String,
+    sdkRoot String
+) i32 {
+    const processOptions = process.Options {
+        WorkingDirectory = .None
+        InheritEnvironment = true
+        OutputLimit = 67108864
+    }
+    const opened = process.Open(
+        compilerProgram(.Llvm),
+        $processOptions
+    ) else error {
+        discard error
+        compilerProcessFailure("cannot prepare LLVM compiler")
+        return 1
+    }
+    var command = opened
+    const ready = compilerAddArgument(&command, "-std=c11") &&
+        compilerAddArgument(&command, "-O2") &&
+        compilerAddArgument(&command, "-S") &&
+        compilerAddArgument(&command, "-emit-llvm") &&
+        compilerAddArgument(&command, generated) &&
+        compilerAddArgument(&command, "-I") &&
+        compilerAddArgument(
+        &command,
+        path.Join(path.Join(sdkRoot, "runtime"), "include")
+    ) && compilerAddArgument(&command, "-o") &&
+        compilerAddArgument(&command, outputPath)
+    if !ready return 1
+    compilerRunCommand($command)
+}
+
+fn compileGeneratedLlvm(
+    generated String,
+    outputPath String,
+    sdkRoot String,
+    &options compilerNativeOptions,
+    verifyAllocations bool
+) i32 {
+    const processOptions = process.Options {
+        WorkingDirectory = .None
+        InheritEnvironment = true
+        OutputLimit = 67108864
+    }
+    const opened = process.Open(
+        compilerProgram(.Llvm),
+        $processOptions
+    ) else error {
+        discard error
+        compilerProcessFailure("cannot prepare LLVM compiler")
+        return 1
+    }
+    var command = opened
+    if !compilerAddArgument(&command, "-O2") ||
+        !compilerAddArgument(&command, "-Wall") ||
+        !compilerAddArgument(&command, "-Wextra") ||
+        !compilerAddArgument(&command, "-Wpedantic") ||
+        !compilerAddArgument(&command, "-Wno-override-module") ||
+        !compilerAddArgument(&command, "-Werror") {
+        return 1
+    }
+    if verifyAllocations &&
+        !compilerAddArgument(&command, "-DFOUNDATION_VERIFY_ALLOCATIONS=1") {
+        return 1
+    }
+    if !compilerAddArgument(&command, generated) return 1
+    const runtimeRoot = path.Join(path.Join(sdkRoot, "runtime"), "src")
+    for source in compilerRuntimeSources() {
+        if !compilerAddArgument(&command, path.Join(runtimeRoot, source)) return 1
+    }
+    if !compilerAddArgument(&command, "-I") ||
+        !compilerAddArgument(
+        &command,
+        path.Join(path.Join(sdkRoot, "runtime"), "include")
+    ) || !compilerAddArenaArguments(&command, &options.inputs) ||
+        !compilerAddPlatformLinks(&command) {
+        return 1
+    }
+    var linkIndex u64 = 0
+    while linkIndex < options.links.len() {
+        const link = match options.links.take(linkIndex) {
+            None: panic("native link slot is empty")
+            Some(value): value
+        }
+        const added = compilerAddArgument(&command, "-l" + link)
+        options.links.restore(linkIndex, $link)
+        if !added return 1
+        linkIndex += 1
+    }
+    if !compilerAddArgument(&command, "-o") ||
+        !compilerAddArgument(&command, outputPath) {
+        return 1
+    }
+    compilerRunCommand($command)
+}
+
+fn runCompiledProgram(
+    executable String,
+    &arguments arena<String>
+) i32 {
+    const processOptions = process.Options {
+        WorkingDirectory = .None
+        InheritEnvironment = true
+        OutputLimit = 67108864
+    }
+    const opened = process.Open(executable, $processOptions) else error {
+        discard error
+        compilerProcessFailure("cannot prepare executable")
+        return 1
+    }
+    var command = opened
+    if !compilerAddArenaArguments(&command, &arguments) return 1
+    compilerRunCommand($command)
+}

@@ -2,11 +2,15 @@ package foundation.compiler
 
 import std.text
 
-fn emitSelfHostedC(
+fn emitSelfHostedCImpl(
     &source firProgram,
-    sourcePath String
+    sourcePath String,
+    testEntry Option<u64>
 ) String {
-    var program = monomorphizeProgram(&source)
+    var program = match testEntry {
+        None: monomorphizeProgram(&source)
+        Some(entry): monomorphizeProgramEntry(&source, entry)
+    }
     var collected = cCollectTypes(&program)
     var contractUses = cCollectContractUses(&program)
     var builder = text.NewBuilder()
@@ -36,6 +40,27 @@ fn emitSelfHostedC(
     cEmitFunctions(&builder, &program, sourcePath)
     cEmitAllTaskWorkDefinitions(&builder, &program, sourcePath)
     cEmitAllTaskSupport(&builder, &program, sourcePath)
-    cEmitMainWrapper(&builder, &program)
+    match testEntry {
+        None: cEmitMainWrapper(&builder, &program)
+        Some(entry): {
+            discard entry
+            cEmitTestMainWrapper(&builder, &program)
+        }
+    }
     cFinish(&builder)
+}
+
+fn emitSelfHostedC(
+    &source firProgram,
+    sourcePath String
+) String {
+    emitSelfHostedCImpl(&source, sourcePath, .None)
+}
+
+fn emitSelfHostedTestC(
+    &source firProgram,
+    test u64,
+    sourcePath String
+) String {
+    emitSelfHostedCImpl(&source, sourcePath, .Some(test))
 }

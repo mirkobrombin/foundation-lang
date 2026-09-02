@@ -300,8 +300,9 @@ fn semanticContractConversion(
         None: false
         Some(value): {
             var matchValue = value
-            !matchValue.ambiguous &&
-                sameSemanticType(&matchValue.contractType, &contractTypeValue)
+            const same = sameSemanticType(
+                &matchValue.contractType, &contractTypeValue)
+            !matchValue.ambiguous && same
         }
     }
     if !valid return .None

@@ -1,146 +1,312 @@
 package foundation.compiler
 
-import std.format
-import std.fs
 import std.io
 import std.text
 
 fn compilerUsage() String {
     "usage:\n" +
-        "  foundationc-selfhost check <source-or-project>\n" +
-        "  foundationc-selfhost emit-c <source-or-project> -o <output.c>\n"
+        "  foundationc-selfhost check <source-or-project> " +
+        "[--target <platform>]\n" +
+        "  foundationc-selfhost emit-c <source-or-project> -o <output.c> " +
+        "[--target <platform>]\n" +
+        "  foundationc-selfhost emit-app-host <source-or-project> " +
+        "-o <output.fn> [--target <platform>]\n" +
+        "  foundationc-selfhost emit-llvm <source-or-project> -o <output.ll>\n" +
+        "  foundationc-selfhost build <source-or-project> -o <executable> " +
+        "[--backend <llvm|c>] [--native <input>] " +
+        "[--native-link <library>]...\n" +
+        "  foundationc-selfhost run <source-or-project> " +
+        "[--backend <llvm|c>] [--native <input>] " +
+        "[--native-link <library>]... [-- <argument>...]\n" +
+        "  foundationc-selfhost test <source-or-project> " +
+        "[--backend <llvm|c>] [--native <input>] " +
+        "[--native-link <library>]...\n" +
+        "  foundationc-selfhost package " +
+        "<init|resolve|fetch|verify|inspect|prune> ...\n" +
+        "  foundationc-selfhost version\n"
 }
 
-fn diagnosticPath(
-    &sources arena<projectSource>,
-    source u64,
-    fallback String
-) String {
-    if source >= sources.len() return text.Copy(fallback)
-    const selected = match sources.take(source) {
-        None: {
-            return text.Copy(fallback)
+fn compilerArgument(args [String], index usize) String {
+    if index >= len(args) return ""
+    text.Copy(args[index])
+}
+
+fn parseCompilerTarget(value String) Option<targetPlatform> {
+    if value == "linux" return .Some(.Linux)
+    if value == "macos" return .Some(.MacOS)
+    if value == "windows" return .Some(.Windows)
+    .None
+}
+
+fn parseCompilerBackend(value String) Option<compilerBackend> {
+    if value == "llvm" return .Some(.Llvm)
+    if value == "c" return .Some(.C)
+    .None
+}
+
+fn compilerNativeLinkValid(value String) bool {
+    const length = text.ByteLen(value)
+    if length == 0 return false
+    var index u64 = 0
+    while index < length {
+        const selected = text.ByteAt(value, index) else error {
+            discard error
+            return false
         }
-        Some(value): value
+        const letter = (selected >= 65 && selected <= 90) ||
+            (selected >= 97 && selected <= 122)
+        const digit = selected >= 48 && selected <= 57
+        if !letter && !digit && selected != 95 return false
+        index += 1
     }
-    const result = text.Copy(selected.path)
-    sources.restore(source, $selected)
+    true
+}
+
+fn parseCompilerTargetArguments(
+    args [String],
+    start usize
+) Option<targetPlatform> {
+    if start == len(args) return .Some(hostTargetPlatform())
+    if start + 2 != len(args) || compilerArgument(args, start) != "--target" {
+        return .None
+    }
+    parseCompilerTarget(compilerArgument(args, start + 1))
+}
+
+fn parseCompilerOutputTarget(args [String]) Option<targetPlatform> {
+    if len(args) < 4 || compilerArgument(args, 2) != "-o" return .None
+    parseCompilerTargetArguments(args, 4)
+}
+
+fn parseCompilerNativeOption(
+    args [String],
+    index usize,
+    &options compilerNativeOptions
+) bool {
+    if index + 1 >= len(args) return false
+    const option = compilerArgument(args, index)
+    const value = compilerArgument(args, index + 1)
+    if option == "--native" {
+        discard options.inputs.add($value)
+        return true
+    }
+    if option == "--native-link" && compilerNativeLinkValid(value) {
+        discard options.links.add($value)
+        return true
+    }
+    if option == "--backend" && !options.backendSeen {
+        const parsed = parseCompilerBackend(value)
+        match parsed {
+            None: false
+            Some(backend): {
+                options.backend = backend
+                options.backendSeen = true
+                true
+            }
+        }
+    } else {
+        false
+    }
+}
+
+fn parseCompilerBuildArguments(
+    args [String],
+    &options compilerNativeOptions,
+    &output Option<String>
+) bool {
+    var index usize = 2
+    while index < len(args) {
+        if index + 1 >= len(args) return false
+        const option = compilerArgument(args, index)
+        if option == "-o" {
+            match output {
+                Some(value): {
+                    discard value
+                    return false
+                }
+                None: {
+                    output = .Some(compilerArgument(args, index + 1))
+                }
+            }
+        } else {
+            if !parseCompilerNativeOption(
+                args,
+                index,
+                &options
+            ) {
+                return false
+            }
+        }
+        index += 2
+    }
+    match output {
+        None: false
+        Some(value): {
+            discard value
+            true
+        }
+    }
+}
+
+fn parseCompilerRunArguments(
+    args [String],
+    &options compilerNativeOptions,
+    &programArguments arena<String>
+) bool {
+    var index usize = 2
+    while index < len(args) {
+        if compilerArgument(args, index) == "--" {
+            index += 1
+            while index < len(args) {
+                discard programArguments.add(compilerArgument(args, index))
+                index += 1
+            }
+            return true
+        }
+        if !parseCompilerNativeOption(
+            args,
+            index,
+            &options
+        ) {
+            return false
+        }
+        index += 2
+    }
+    true
+}
+
+fn parseCompilerTestArguments(
+    args [String],
+    &options compilerNativeOptions
+) bool {
+    var index usize = 2
+    while index < len(args) {
+        if !parseCompilerNativeOption(
+            args,
+            index,
+            &options
+        ) {
+            return false
+        }
+        index += 2
+    }
+    true
+}
+
+fn compilerPackageArguments(args [String]) own arena<String> {
+    var result = newArena<String>()
+    var index usize = 1
+    while index < len(args) {
+        discard result.add(compilerArgument(args, index))
+        index += 1
+    }
     result
 }
 
-fn writeCompilerDiagnostics(
-    $found own diagnostics,
-    &sources arena<projectSource>,
-    fallback String
-) void {
-    var values = $found.takeAll()
-    while !values.IsEmpty() {
-        const value = match values.PopFront() {
-            None: panic("diagnostic list invariant failed")
-            Some(value): value
-        }
-        const severity = "error" if isErrorSeverity(value.severity) else "warning"
-        discard io.WriteStderrText(
-            diagnosticPath(&sources, value.span.source, fallback) + ":" +
-            format.U64(value.span.line) + ":" +
-            format.U64(value.span.column) + " " + severity + "[" +
-            value.code + "]: " + value.message + "\n"
-        )
-        discard value
+fn runCompilerCommand(args [String]) Option<i32> {
+    const command = compilerArgument(args, 0)
+    if (command == "version" || command == "--version") && len(args) == 1 {
+        discard io.WriteStdoutText("foundationc 0.1.0\n")
+        return .Some(0)
     }
-}
-
-struct checkedProgram {
-    loaded own loadedProject
-    model own semanticModel
-}
-
-fn loadCheckedProgram(
-    input String
-) Option<own checkedProgram> {
-    var found = newDiagnostics()
-    const selected = loadProject(
-        input, &found, .Production, hostTargetPlatform())
-    const loadFailed = found.hasErrors()
-    var loaded = match selected {
-        None: {
-            var sources = newArena<projectSource>()
-            writeCompilerDiagnostics($found, &sources, input)
+    if (command == "help" || command == "--help" || command == "-h") &&
+        len(args) == 1 {
+        discard io.WriteStdoutText(compilerUsage())
+        return .Some(0)
+    }
+    if command == "package" {
+        var packageArguments = compilerPackageArguments(args)
+        return .Some(runPackageCommand(&packageArguments))
+    }
+    if command == "check" && len(args) >= 2 {
+        const target = parseCompilerTargetArguments(args, 2)
+        match target {
+            None: {
+                return .None
+            }
+            Some(value): {
+                return .Some(runCompilerCheck(
+                        compilerArgument(args, 1), value))
+            }
+        }
+    }
+    if command == "emit-c" && len(args) >= 4 {
+        const target = parseCompilerOutputTarget(args)
+        match target {
+            None: {
+                return .None
+            }
+            Some(value): {
+                return .Some(runCompilerEmitC(
+                        compilerArgument(args, 1),
+                        compilerArgument(args, 3),
+                        value))
+            }
+        }
+    }
+    if command == "emit-app-host" && len(args) >= 4 {
+        const target = parseCompilerOutputTarget(args)
+        match target {
+            None: {
+                return .None
+            }
+            Some(value): {
+                return .Some(runCompilerEmitApplicationHost(
+                        compilerArgument(args, 1),
+                        compilerArgument(args, 3),
+                        value))
+            }
+        }
+    }
+    if command == "emit-llvm" && len(args) == 4 &&
+        compilerArgument(args, 2) == "-o" {
+        return .Some(runCompilerEmitLlvm(
+                compilerArgument(args, 1),
+                compilerArgument(args, 3)))
+    }
+    if command == "build" && len(args) >= 4 {
+        var options = newCompilerNativeOptions()
+        var output Option<String> = .None
+        if !parseCompilerBuildArguments(args, &options, &output) return .None
+        match output {
+            None: {
+                return .None
+            }
+            Some(value): {
+                return .Some(runCompilerBuild(
+                        compilerArgument(args, 1), value, &options))
+            }
+        }
+    }
+    if command == "run" && len(args) >= 2 {
+        var options = newCompilerNativeOptions()
+        var programArguments = newArena<String>()
+        if !parseCompilerRunArguments(
+            args,
+            &options,
+            &programArguments
+        ) {
             return .None
         }
-        Some(value): {
-            value
-        }
+        return .Some(runCompilerRun(
+                compilerArgument(args, 1),
+                &options,
+                &programArguments))
     }
-    if found.len() != 0 {
-        writeCompilerDiagnostics($found, &loaded.sources, input)
+    if command == "test" && len(args) >= 2 {
+        var options = newCompilerNativeOptions()
+        if !parseCompilerTestArguments(args, &options) return .None
+        return .Some(runCompilerTests(compilerArgument(args, 1), &options))
     }
-    if loadFailed return .None
-
-    const analysis = analyzeProgram(
-        &loaded.program,
-        analyzeOptions { requireMain = true retainInvalidModel = false }
-    )
-    const semanticAnalysis { model diagnostics as semanticDiagnostics } = analysis
-    const analysisFailed = semanticDiagnostics.hasErrors()
-    if semanticDiagnostics.len() != 0 {
-        writeCompilerDiagnostics(
-            $semanticDiagnostics, &loaded.sources, input)
-    } else {
-        discard semanticDiagnostics
-    }
-    if analysisFailed return .None
-    match model {
-        None: .None
-        Some(model): .Some(own checkedProgram {
-            loaded = loaded
-            model = model
-        })
-    }
-}
-
-fn runCompilerCheck(input String) i32 {
-    const selected = loadCheckedProgram(input)
-    match selected {
-        None: 1
-        Some(value): {
-            discard value
-            0
-        }
-    }
-}
-
-fn runCompilerEmitC(input String, outputPath String) i32 {
-    const selected = loadCheckedProgram(input)
-    var checked = match selected {
-        None: {
-            return 1
-        }
-        Some(value): value
-    }
-    const checkedProgram { loaded model } = checked
-    var project = loaded
-    var semantic = model
-    var lowered = lowerProgram(&project.program, &semantic)
-    const output = emitSelfHostedC(&lowered, input)
-    match fs.WriteTextAtomic(outputPath, output, 1073741824) {
-        Ok: 0
-        Err(error): {
-            discard error
-            discard io.WriteStderrText(
-                "foundationc-selfhost: cannot write " + outputPath + "\n")
-            1
-        }
-    }
+    .None
 }
 
 fn main(args [String]) i32 {
-    if len(args) == 2 && args[0] == "check" {
-        return runCompilerCheck(text.Copy(args[1]))
+    match runCompilerCommand(args) {
+        Some(status): status
+        None: {
+            discard io.WriteStderrText(compilerUsage())
+            2
+        }
     }
-    if len(args) == 4 && args[0] == "emit-c" && args[2] == "-o" {
-        return runCompilerEmitC(text.Copy(args[1]), args[3])
-    }
-    discard io.WriteStderrText(compilerUsage())
-    2
 }

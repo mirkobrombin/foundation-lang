@@ -1,0 +1,725 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn llvmSyntheticDropParameter(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    parameter u64
+) void {
+    var valueType = llvmLocalTypeAt(&function, parameter)
+    if valueType.kind.Matches("View") || valueType.kind.Matches("Edit") return
+    llvmEmitLocalDrop(&builder, &module, &program,
+        &function, &state, parameter)
+}
+
+fn llvmSyntheticReturn(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    resultAddress String
+) void {
+    const result = llvmLoad(&builder, &state,
+        &function.returnType, resultAddress)
+    llvmEmitFrameLeave(&builder, &module, &state)
+    llvmInstruction(&builder, &state, "ret " +
+        llvmTypeName(&function.returnType) + " " + result)
+    state.terminated = true
+}
+
+fn llvmEmitStateTransitionBody(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &transition firStateTransitionFunction
+) void {
+    if function.parameters.len() == 0 ||
+        !function.returnType.kind.Matches("EnumValue") ||
+        function.returnType.declaration >= program.enums.len() {
+        panic("invalid LLVM state transition function")
+    }
+    const receiverLocal = cU64At(&function.parameters, 0)
+    var receiverType = llvmLocalTypeAt(&function, receiverLocal)
+    if !receiverType.kind.Matches("Edit") ||
+        receiverType.arguments.len() != 1 {
+        panic("invalid LLVM state transition receiver")
+    }
+    var machineType = semanticTypeArgument(&receiverType, 0)
+    if !machineType.kind.Matches("EnumValue") {
+        panic("invalid LLVM state transition receiver")
+    }
+    const receiverAddress = llvmLocal(&state, receiverLocal)
+    const receiver = llvmLoad(
+        &builder, &state, &receiverType, receiverAddress)
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = alloca " +
+        llvmTypeName(&function.returnType))
+    llvmStore(&builder, &state, &function.returnType,
+        "zeroinitializer", result)
+    const machineTagAddress = llvmEnumTagAddress(
+        &builder, &state, receiver, &machineType)
+    var tagType = i32SemanticType()
+    const machineTag = llvmLoad(
+        &builder, &state, &tagType, machineTagAddress)
+    var allowed = "0"
+    var index u64 = 0
+    while index < transition.sourceVariants.len() {
+        const selected = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, selected + " = icmp eq i32 " +
+            machineTag + ", " +
+            format.U64(cU64At(&transition.sourceVariants, index)))
+        if index == 0 {
+            allowed = selected
+        } else {
+            const combined = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, combined + " = or i1 " +
+                allowed + ", " + selected)
+            allowed = combined
+        }
+        index += 1
+    }
+    const successBlock = llvmNextBlock(&state, "transition.success")
+    const errorBlock = llvmNextBlock(&state, "transition.error")
+    const endBlock = llvmNextBlock(&state, "transition.end")
+    const resultTag = llvmEnumTagAddress(&builder, &state,
+        result, &function.returnType)
+    llvmConditionalBranch(
+        &builder, &state, allowed, successBlock, errorBlock)
+    llvmBlock(&builder, &state, successBlock)
+    llvmEmitDropAddress(&builder, &module, &program,
+        &state, &machineType, receiver)
+    llvmStore(&builder, &state, &tagType,
+        format.U64(transition.destinationVariant), machineTagAddress)
+    match transition.destinationParameter {
+        None: {}
+        Some(parameter): {
+            var payloadType = cEnumPayloadType(&program,
+                machineType.declaration, transition.destinationVariant)
+            if payloadType.kind.Matches("Invalid") {
+                panic("LLVM state transition payload is missing")
+            }
+            const payload = llvmEnumPayloadAddress(&builder, &state,
+                receiver, &machineType, transition.destinationVariant)
+            const parameterAddress = llvmLocal(&state, parameter)
+            const value = llvmLoad(
+                &builder, &state, &payloadType, parameterAddress)
+            llvmStore(&builder, &state, &payloadType, value, payload)
+            if llvmTypeRequiresDrop(&program, &payloadType) {
+                const empty = llvmZeroValue(&payloadType)
+                llvmStore(&builder, &state, &payloadType,
+                    empty, parameterAddress)
+                match llvmActiveLocal(&state, parameter) {
+                    None: {}
+                    Some(active): {
+                        var boolean = boolSemanticType()
+                        llvmStore(&builder, &state, &boolean, "0", active)
+                    }
+                }
+            }
+        }
+    }
+    index = 1
+    while index < function.parameters.len() {
+        const parameter = cU64At(&function.parameters, index)
+        var destination = false
+        match transition.destinationParameter {
+            None: {}
+            Some(found): {
+                destination = found == parameter
+            }
+        }
+        if !destination && !firBoolAt(&function.readParameters, index) {
+            llvmSyntheticDropParameter(&builder, &module, &program,
+                &function, &state, parameter)
+        }
+        index += 1
+    }
+    llvmStore(&builder, &state, &tagType, "0", resultTag)
+    llvmBranch(&builder, &state, endBlock)
+    llvmBlock(&builder, &state, errorBlock)
+    index = 1
+    while index < function.parameters.len() {
+        const parameter = cU64At(&function.parameters, index)
+        if !firBoolAt(&function.readParameters, index) {
+            llvmSyntheticDropParameter(&builder, &module, &program,
+                &function, &state, parameter)
+        }
+        index += 1
+    }
+    var errorType = cEnumPayloadType(
+        &program, function.returnType.declaration, 1)
+    if errorType.kind.Matches("Invalid") {
+        panic("invalid LLVM state transition function")
+    }
+    const errorPayload = llvmEnumPayloadAddress(&builder, &state,
+        result, &function.returnType, 1)
+    llvmStore(&builder, &state, &errorType,
+        "zeroinitializer", errorPayload)
+    const errorTag = llvmEnumTagAddress(
+        &builder, &state, errorPayload, &errorType)
+    llvmStore(&builder, &state, &tagType, "0", errorTag)
+    llvmStore(&builder, &state, &tagType, "1", resultTag)
+    llvmBranch(&builder, &state, endBlock)
+    llvmBlock(&builder, &state, endBlock)
+    llvmSyntheticReturn(
+        &builder, &module, &function, &state, result)
+}
+
+fn llvmEmitStateTimeoutBody(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &timeoutValue firStateTimeoutFunction
+) void {
+    if function.parameters.len() != 1 ||
+        !function.returnType.kind.Matches("EnumValue") {
+        panic("invalid LLVM state timeout function")
+    }
+    const stateLocal = cU64At(&function.parameters, 0)
+    var stateType = llvmLocalTypeAt(&function, stateLocal)
+    const borrowed = stateType.kind.Matches("View") &&
+        stateType.arguments.len() == 1
+    var machineType = if borrowed {
+        semanticTypeArgument(&stateType, 0)
+    } else { copySemanticType(&stateType) }
+    if !machineType.kind.Matches("EnumValue") {
+        panic("invalid LLVM state timeout parameter")
+    }
+    const stateAddress = if borrowed {
+        const localAddress = llvmLocal(&state, stateLocal)
+        llvmLoad(&builder, &state, &stateType, localAddress)
+    } else { llvmLocal(&state, stateLocal) }
+    const tagAddress = llvmEnumTagAddress(
+        &builder, &state, stateAddress, &machineType)
+    var tagType = i32SemanticType()
+    const tag = llvmLoad(&builder, &state, &tagType, tagAddress)
+    var selected = "0"
+    var index u64 = 0
+    while index < timeoutValue.sourceVariants.len() {
+        const matches = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state, matches + " = icmp eq i32 " +
+            tag + ", " +
+            format.U64(cU64At(&timeoutValue.sourceVariants, index)))
+        if index == 0 {
+            selected = matches
+        } else {
+            const combined = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, combined + " = or i1 " +
+                selected + ", " + matches)
+            selected = combined
+        }
+        index += 1
+    }
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = alloca " +
+        llvmTypeName(&function.returnType))
+    llvmStore(&builder, &state, &function.returnType,
+        "zeroinitializer", result)
+    const timeoutBlock = llvmNextBlock(&state, "timeout.some")
+    const noneBlock = llvmNextBlock(&state, "timeout.none")
+    const endBlock = llvmNextBlock(&state, "timeout.end")
+    const resultTag = llvmEnumTagAddress(&builder, &state,
+        result, &function.returnType)
+    llvmConditionalBranch(
+        &builder, &state, selected, timeoutBlock, noneBlock)
+    llvmBlock(&builder, &state, timeoutBlock)
+    llvmStore(&builder, &state, &tagType, "1", resultTag)
+    var durationType = cEnumPayloadType(
+        &program, function.returnType.declaration, 1)
+    const duration = llvmEnumPayloadAddress(&builder, &state,
+        result, &function.returnType, 1)
+    llvmStore(&builder, &state, &durationType,
+        format.U64(timeoutValue.nanoseconds), duration)
+    llvmBranch(&builder, &state, endBlock)
+    llvmBlock(&builder, &state, noneBlock)
+    llvmStore(&builder, &state, &tagType, "0", resultTag)
+    llvmBranch(&builder, &state, endBlock)
+    llvmBlock(&builder, &state, endBlock)
+    llvmSyntheticReturn(
+        &builder, &module, &function, &state, result)
+}
+
+fn llvmWorkflowTarget(
+    &step firWorkflowStep,
+    compensation bool
+) u64 {
+    if !compensation return step.function
+    match step.compensation {
+        None: panic("LLVM workflow compensation is missing")
+        Some(found): found
+    }
+}
+
+fn llvmEmitWorkflowCall(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &step firWorkflowStep,
+    argumentAddress String,
+    &argumentType semanticType,
+    compensation bool
+) String {
+    const targetID = llvmWorkflowTarget(&step, compensation)
+    var target = cFunctionAt(&program, targetID)
+    if target.parameters.len() != 1 ||
+        !target.returnType.kind.Matches("EnumValue") {
+        panic("LLVM workflow target has invalid signature")
+    }
+    const parameter = cU64At(&target.parameters, 0)
+    var parameterType = llvmLocalTypeAt(&target, parameter)
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = alloca " +
+        llvmTypeName(&target.returnType))
+    llvmStore(&builder, &state, &target.returnType,
+        "zeroinitializer", result)
+    const attempt = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, attempt + " = alloca i32")
+    var attemptType = i32SemanticType()
+    llvmStore(&builder, &state, &attemptType, "0", attempt)
+    const callBlock = llvmNextBlock(&state, "workflow.call")
+    const retryBlock = llvmNextBlock(&state, "workflow.retry")
+    const endBlock = llvmNextBlock(&state, "workflow.call.end")
+    llvmBranch(&builder, &state, callBlock)
+    llvmBlock(&builder, &state, callBlock)
+    const argument = if parameterType.kind.Matches("View") ||
+        parameterType.kind.Matches("Edit") {
+        "" + argumentAddress
+    } else {
+        llvmLoad(&builder, &state, &argumentType, argumentAddress)
+    }
+    const callResult = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, callResult + " = call " +
+        llvmTypeName(&target.returnType) + " @" +
+        llvmCallTargetSymbol(&program, targetID) + "(" +
+        llvmTypeName(&parameterType) + " " + argument + ")")
+    llvmStore(&builder, &state, &target.returnType, callResult, result)
+    const tagAddress = llvmEnumTagAddress(
+        &builder, &state, result, &target.returnType)
+    var tagType = i32SemanticType()
+    const tag = llvmLoad(&builder, &state, &tagType, tagAddress)
+    const succeeded = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        succeeded + " = icmp eq i32 " + tag + ", 0")
+    const currentAttempt = llvmLoad(
+        &builder, &state, &attemptType, attempt)
+    const nextAttempt = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        nextAttempt + " = add i32 " + currentAttempt + ", 1")
+    const attempts u64 = if compensation { 1 } else { step.attempts }
+    const exhausted = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, exhausted +
+        " = icmp uge i32 " + nextAttempt + ", " + format.U64(attempts))
+    const done = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        done + " = or i1 " + succeeded + ", " + exhausted)
+    llvmConditionalBranch(&builder, &state, done, endBlock, retryBlock)
+    llvmBlock(&builder, &state, retryBlock)
+    llvmEmitDropAddress(&builder, &module, &program,
+        &state, &target.returnType, result)
+    llvmRequireExternal(&module, "fdn_retry_wait",
+        "void @fdn_retry_wait(i32)")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_retry_wait(i32 " + currentAttempt + ")")
+    llvmStore(&builder, &state, &attemptType, nextAttempt, attempt)
+    llvmBranch(&builder, &state, callBlock)
+    llvmBlock(&builder, &state, endBlock)
+    result
+}
+
+fn llvmMoveEnumPayload(
+    &builder text.Builder,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    source String,
+    &sourceType semanticType,
+    sourceVariant u64,
+    target String,
+    &targetType semanticType,
+    targetVariant u64
+) void {
+    var payloadType = cEnumPayloadType(
+        &program, sourceType.declaration, sourceVariant)
+    if payloadType.kind.Matches("Invalid") return
+    const sourcePayload = llvmEnumPayloadAddress(
+        &builder, &state, source, &sourceType, sourceVariant)
+    const targetPayload = llvmEnumPayloadAddress(
+        &builder, &state, target, &targetType, targetVariant)
+    const value = llvmLoad(&builder, &state, &payloadType, sourcePayload)
+    llvmStore(&builder, &state, &payloadType, value, targetPayload)
+    if llvmTypeRequiresDrop(&program, &payloadType) {
+        const empty = llvmZeroValue(&payloadType)
+        llvmStore(&builder, &state, &payloadType,
+            empty, sourcePayload)
+    }
+}
+
+fn llvmWorkflowInput(
+    &builder text.Builder,
+    &function firFunction,
+    &state llvmFunctionEmission
+) llvmEmittedValue {
+    if function.parameters.len() != 1 {
+        panic("LLVM workflow function has invalid parameters")
+    }
+    const input = cU64At(&function.parameters, 0)
+    var inputType = llvmLocalTypeAt(&function, input)
+    if inputType.kind.Matches("View") || inputType.kind.Matches("Edit") {
+        if inputType.arguments.len() != 1 {
+            panic("LLVM workflow input has invalid borrowed type")
+        }
+        var target = semanticTypeArgument(&inputType, 0)
+        const localAddress = llvmLocal(&state, input)
+        const address = llvmLoad(
+            &builder, &state, &inputType, localAddress)
+        return llvmEmitted(address, $target, true, false)
+    }
+    llvmEmitted(llvmLocal(&state, input), $inputType, true, false)
+}
+
+fn llvmWorkflowReturnResult(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    stepResult String,
+    &stepType semanticType,
+    success bool
+) void {
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = alloca " +
+        llvmTypeName(&function.returnType))
+    llvmStore(&builder, &state, &function.returnType,
+        "zeroinitializer", result)
+    const variant u64 = if success { 0 } else { 1 }
+    llvmMoveEnumPayload(&builder, &program, &state,
+        stepResult, &stepType, variant,
+        result, &function.returnType, variant)
+    const tag = llvmEnumTagAddress(&builder, &state,
+        result, &function.returnType)
+    var tagType = i32SemanticType()
+    llvmStore(&builder, &state, &tagType, format.U64(variant), tag)
+    llvmSyntheticReturn(&builder, &module, &function, &state, result)
+}
+
+fn llvmEmitPipelineBody(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &workflow firWorkflowFunction
+) void {
+    if workflow.steps.len() == 0 {
+        panic("LLVM pipeline has no steps")
+    }
+    var current = llvmWorkflowInput(&builder, &function, &state)
+    var currentOwned = false
+    var index u64 = 0
+    while index < workflow.steps.len() {
+        var step = cWorkflowStepAt(&workflow, index)
+        var target = cFunctionAt(&program, step.function)
+        const currentAddress = "" + current.value
+        var currentType = copySemanticType(&current.type)
+        const result = llvmEmitWorkflowCall(&builder, &module, &program,
+            &state, &step, currentAddress, &currentType, false)
+        if currentOwned {
+            llvmEmitDropAddress(&builder, &module, &program,
+                &state, &currentType, currentAddress)
+        }
+        const tagAddress = llvmEnumTagAddress(
+            &builder, &state, result, &target.returnType)
+        var tagType = i32SemanticType()
+        const tag = llvmLoad(&builder, &state, &tagType, tagAddress)
+        const failed = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            failed + " = icmp eq i32 " + tag + ", 1")
+        const errorBlock = llvmNextBlock(&state, "pipeline.error")
+        const successBlock = llvmNextBlock(&state, "pipeline.success")
+        llvmConditionalBranch(
+            &builder, &state, failed, errorBlock, successBlock)
+        llvmBlock(&builder, &state, errorBlock)
+        llvmWorkflowReturnResult(&builder, &module, &program,
+            &function, &state, result, &target.returnType, false)
+        llvmBlock(&builder, &state, successBlock)
+        const last = index + 1 == workflow.steps.len()
+        if last {
+            llvmWorkflowReturnResult(&builder, &module, &program,
+                &function, &state, result, &target.returnType, true)
+            return
+        }
+        var successType = cEnumPayloadType(
+            &program, target.returnType.declaration, 0)
+        if successType.kind.Matches("Invalid") {
+            panic("LLVM non-final pipeline step has no output")
+        }
+        const next = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            next + " = alloca " + llvmTypeName(&successType))
+        const payload = llvmEnumPayloadAddress(&builder, &state,
+            result, &target.returnType, 0)
+        const value = llvmLoad(&builder, &state, &successType, payload)
+        llvmStore(&builder, &state, &successType, value, next)
+        if llvmTypeRequiresDrop(&program, &successType) {
+            const empty = llvmZeroValue(&successType)
+            llvmStore(&builder, &state, &successType,
+                empty, payload)
+        }
+        current = llvmEmitted(next, $successType, true, false)
+        currentOwned = true
+        index += 1
+    }
+}
+
+fn llvmStructFieldType(
+    &program firProgram,
+    &structure semanticType,
+    field u64
+) semanticType {
+    if !structure.kind.Matches("StructValue") ||
+        structure.declaration >= program.structs.len() {
+        panic("LLVM workflow detail type is invalid")
+    }
+    var declaration = cStructAt(&program, structure.declaration)
+    var selected = match declaration.fields.take(field) {
+        None: panic("LLVM workflow detail field is invalid")
+        Some(found): found
+    }
+    const result = copySemanticType(&selected.type)
+    declaration.fields.restore(field, $selected)
+    result
+}
+
+fn llvmMoveAddressValue(
+    &builder text.Builder,
+    &program firProgram,
+    &state llvmFunctionEmission,
+    &valueType semanticType,
+    source String,
+    target String
+) void {
+    const value = llvmLoad(&builder, &state, &valueType, source)
+    llvmStore(&builder, &state, &valueType, value, target)
+    if llvmTypeRequiresDrop(&program, &valueType) {
+        const empty = llvmZeroValue(&valueType)
+        llvmStore(&builder, &state, &valueType,
+            empty, source)
+    }
+}
+
+fn llvmEmitSagaFailure(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &workflow firWorkflowFunction,
+    failed u64,
+    failedResult String,
+    argumentAddress String,
+    &argumentType semanticType
+) void {
+    var failedStep = cWorkflowStepAt(&workflow, failed)
+    var failedFunction = cFunctionAt(&program, failedStep.function)
+    var originalType = cEnumPayloadType(
+        &program, failedFunction.returnType.declaration, 1)
+    const original = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        original + " = alloca " + llvmTypeName(&originalType))
+    const failedPayload = llvmEnumPayloadAddress(&builder, &state,
+        failedResult, &failedFunction.returnType, 1)
+    llvmMoveAddressValue(&builder, &program, &state,
+        &originalType, failedPayload, original)
+    const details = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, details + " = alloca " +
+        llvmTypeName(&workflow.failureDetailsType))
+    llvmStore(&builder, &state, &workflow.failureDetailsType,
+        "zeroinitializer", details)
+    const count = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, count + " = alloca i64")
+    var usizeType = usizeSemanticType()
+    llvmStore(&builder, &state, &usizeType, "0", count)
+    var current = failed
+    while current != 0 {
+        current -= 1
+        var completed = cWorkflowStepAt(&workflow, current)
+        match completed.compensation {
+            None: { continue }
+            Some(compensation): {
+                const result = llvmEmitWorkflowCall(&builder, &module,
+                    &program, &state, &completed, argumentAddress,
+                    &argumentType, true)
+                var target = cFunctionAt(&program, compensation)
+                const tagAddress = llvmEnumTagAddress(
+                    &builder, &state, result, &target.returnType)
+                var tagType = i32SemanticType()
+                const tag = llvmLoad(
+                    &builder, &state, &tagType, tagAddress)
+                const failedCompensation = llvmNextTemporary(&state)
+                llvmInstruction(&builder, &state, failedCompensation +
+                    " = icmp eq i32 " + tag + ", 1")
+                const failedBlock = llvmNextBlock(
+                    &state, "saga.compensation.error")
+                const endBlock = llvmNextBlock(
+                    &state, "saga.compensation.end")
+                llvmConditionalBranch(&builder, &state,
+                    failedCompensation, failedBlock, endBlock)
+                llvmBlock(&builder, &state, failedBlock)
+                var failuresType = llvmStructFieldType(
+                    &program, &workflow.failureDetailsType, 2)
+                if !failuresType.kind.Matches("Array") ||
+                    failuresType.arguments.len() != 1 {
+                    panic("LLVM saga compensation failures are not an array")
+                }
+                const failures = llvmStructFieldAddress(&builder, &program,
+                    &state, details, &workflow.failureDetailsType, 2)
+                const failureIndex = llvmLoad(
+                    &builder, &state, &usizeType, count)
+                const destination = llvmArrayElementAddress(&builder, &state,
+                    failures, &failuresType, failureIndex)
+                const source = llvmEnumPayloadAddress(&builder, &state,
+                    result, &target.returnType, 1)
+                llvmMoveAddressValue(&builder, &program, &state,
+                    &originalType, source, destination)
+                const next = llvmNextTemporary(&state)
+                llvmInstruction(&builder, &state,
+                    next + " = add i64 " + failureIndex + ", 1")
+                llvmStore(&builder, &state, &usizeType, next, count)
+                llvmBranch(&builder, &state, endBlock)
+                llvmBlock(&builder, &state, endBlock)
+                llvmEmitDropAddress(&builder, &module, &program,
+                    &state, &target.returnType, result)
+            }
+        }
+    }
+    const failure = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, failure + " = alloca " +
+        llvmTypeName(&workflow.failureType))
+    llvmStore(&builder, &state, &workflow.failureType,
+        "zeroinitializer", failure)
+    const failureCount = llvmLoad(
+        &builder, &state, &usizeType, count)
+    const clean = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state,
+        clean + " = icmp eq i64 " + failureCount + ", 0")
+    const originalBlock = llvmNextBlock(&state, "saga.original")
+    const compensatedBlock = llvmNextBlock(&state, "saga.compensated")
+    const failureEnd = llvmNextBlock(&state, "saga.failure")
+    llvmConditionalBranch(&builder, &state,
+        clean, originalBlock, compensatedBlock)
+    var tagType = i32SemanticType()
+    llvmBlock(&builder, &state, originalBlock)
+    const originalPayload = llvmEnumPayloadAddress(&builder, &state,
+        failure, &workflow.failureType, 0)
+    llvmMoveAddressValue(&builder, &program, &state,
+        &originalType, original, originalPayload)
+    const originalTag = llvmEnumTagAddress(
+        &builder, &state, failure, &workflow.failureType)
+    llvmStore(&builder, &state, &tagType, "0", originalTag)
+    llvmBranch(&builder, &state, failureEnd)
+    llvmBlock(&builder, &state, compensatedBlock)
+    const detailsOriginal = llvmStructFieldAddress(&builder, &program,
+        &state, details, &workflow.failureDetailsType, 0)
+    llvmMoveAddressValue(&builder, &program, &state,
+        &originalType, original, detailsOriginal)
+    const detailsCount = llvmStructFieldAddress(&builder, &program,
+        &state, details, &workflow.failureDetailsType, 1)
+    var countType = llvmStructFieldType(
+        &program, &workflow.failureDetailsType, 1)
+    llvmStore(&builder, &state, &countType, failureCount, detailsCount)
+    const detailsPayload = llvmEnumPayloadAddress(&builder, &state,
+        failure, &workflow.failureType, 1)
+    llvmMoveAddressValue(&builder, &program, &state,
+        &workflow.failureDetailsType, details, detailsPayload)
+    const detailsTag = llvmEnumTagAddress(
+        &builder, &state, failure, &workflow.failureType)
+    llvmStore(&builder, &state, &tagType, "1", detailsTag)
+    llvmBranch(&builder, &state, failureEnd)
+    llvmBlock(&builder, &state, failureEnd)
+    const result = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, result + " = alloca " +
+        llvmTypeName(&function.returnType))
+    llvmStore(&builder, &state, &function.returnType,
+        "zeroinitializer", result)
+    const resultPayload = llvmEnumPayloadAddress(&builder, &state,
+        result, &function.returnType, 1)
+    llvmMoveAddressValue(&builder, &program, &state,
+        &workflow.failureType, failure, resultPayload)
+    const resultTag = llvmEnumTagAddress(
+        &builder, &state, result, &function.returnType)
+    llvmStore(&builder, &state, &tagType, "1", resultTag)
+    llvmSyntheticReturn(&builder, &module, &function, &state, result)
+}
+
+fn llvmEmitSagaBody(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &workflow firWorkflowFunction
+) void {
+    if workflow.steps.len() == 0 {
+        panic("LLVM saga has no steps")
+    }
+    var input = llvmWorkflowInput(&builder, &function, &state)
+    var index u64 = 0
+    while index < workflow.steps.len() {
+        var step = cWorkflowStepAt(&workflow, index)
+        var target = cFunctionAt(&program, step.function)
+        const inputAddress = "" + input.value
+        var inputType = copySemanticType(&input.type)
+        const result = llvmEmitWorkflowCall(&builder, &module, &program,
+            &state, &step, inputAddress, &inputType, false)
+        const tagAddress = llvmEnumTagAddress(
+            &builder, &state, result, &target.returnType)
+        var tagType = i32SemanticType()
+        const tag = llvmLoad(&builder, &state, &tagType, tagAddress)
+        const failed = llvmNextTemporary(&state)
+        llvmInstruction(&builder, &state,
+            failed + " = icmp eq i32 " + tag + ", 1")
+        const errorBlock = llvmNextBlock(&state, "saga.error")
+        const successBlock = llvmNextBlock(&state, "saga.success")
+        llvmConditionalBranch(
+            &builder, &state, failed, errorBlock, successBlock)
+        llvmBlock(&builder, &state, errorBlock)
+        llvmEmitSagaFailure(&builder, &module, &program,
+            &function, &state, &workflow, index, result,
+            inputAddress, &inputType)
+        llvmBlock(&builder, &state, successBlock)
+        if index + 1 == workflow.steps.len() {
+            llvmWorkflowReturnResult(&builder, &module, &program,
+                &function, &state, result, &target.returnType, true)
+            return
+        }
+        llvmEmitDropAddress(&builder, &module, &program,
+            &state, &target.returnType, result)
+        index += 1
+    }
+}
+
+fn llvmEmitWorkflowBody(
+    &builder text.Builder,
+    &module llvmModuleEmission,
+    &program firProgram,
+    &function firFunction,
+    &state llvmFunctionEmission,
+    &workflow firWorkflowFunction
+) void {
+    match workflow.kind {
+        Pipeline: llvmEmitPipelineBody(&builder, &module, &program,
+            &function, &state, &workflow)
+        Saga: llvmEmitSagaBody(&builder, &module, &program,
+            &function, &state, &workflow)
+    }
+}

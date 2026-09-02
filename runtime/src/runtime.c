@@ -3050,7 +3050,7 @@ static int32_t fdn_posix_write_root_file(fdn_fs_root *root,
                                          const fdn_string *path,
                                          uint64_t bytes_handle,
                                          uint32_t permissions) {
-    static atomic_uint_fast64_t sequence = ATOMIC_VAR_INIT(0);
+    static atomic_uint_fast64_t sequence = 0;
     const uint8_t *data;
     size_t length;
     char *copy;

@@ -111,27 +111,38 @@ fn lowerSemanticExpression(
             expressionValue.Name(payload)
         }
         Unary(payload): {
-            const operand = lowerSemanticExpression(
-                &source,
-                &model,
-                &function,
-                &expressionMap,
-                &statementMap,
-                &blockMap,
-                payload.operand
-            )
-            var operation = lowerUnaryOperator(payload.operation)
             if lowerBoolValue(&model.emptyTests, expression) {
-                operation = .Empty
+                lowered = lowerSemanticEmptyExpression(
+                    &source,
+                    &model,
+                    &function,
+                    &expressionMap,
+                    &statementMap,
+                    &blockMap,
+                    expression,
+                    payload.operand,
+                    span
+                )
+            } else {
+                const operand = lowerSemanticExpression(
+                    &source,
+                    &model,
+                    &function,
+                    &expressionMap,
+                    &statementMap,
+                    &blockMap,
+                    payload.operand
+                )
+                lowered = addFirExpression(
+                    &function,
+                    $firExpressionValue.Unary(firUnaryExpression {
+                    operation = lowerUnaryOperator(payload.operation)
+                    operand = operand
+                }),
+                    lowerExpressionType(&model, expression),
+                    span
+                )
             }
-            lowered = addFirExpression(
-                &function,
-                $firExpressionValue.Unary(firUnaryExpression {
-                operation = operation operand = operand
-            }),
-                lowerExpressionType(&model, expression),
-                span
-            )
             expressionValue.Unary(payload)
         }
         Ownership(payload): {
@@ -365,6 +376,85 @@ fn lowerSemanticExpression(
         value = restored span = span
     })
     setLowerMap(&expressionMap, expression, lowered)
+    lowered
+}
+
+fn lowerSemanticEmptyExpression(
+    &source program,
+    &model semanticModel,
+    &function firFunction,
+    &expressionMap arena<Option<u64>>,
+    &statementMap arena<Option<u64>>,
+    &blockMap arena<Option<u64>>,
+    expression u64,
+    operand u64,
+    span sourceSpan
+) u64 {
+    const selected = model.callTargets.take(expression)
+    const optional = match selected {
+        None: panic("empty test target slot is empty")
+        Some(optional): optional
+    }
+    var target = match optional {
+        None: panic("empty test has no target")
+        Some(target): target
+    }
+    var receiver = lowerSemanticExpression(
+        &source, &model, &function, &expressionMap,
+        &statementMap, &blockMap, operand)
+    if target.kind.Matches("Len") {
+        var restored Option<callTarget> = .Some(target)
+        model.callTargets.restore(expression, $restored)
+        return addFirExpression(
+            &function,
+            $firExpressionValue.Unary(firUnaryExpression {
+            operation = .Empty operand = receiver
+        }),
+            lowerExpressionType(&model, expression),
+            span
+        )
+    }
+    if (target.kind.Matches("Method") ||
+        target.kind.Matches("ConstrainedMethod")) &&
+        target.receiverType.kind.Matches("View") {
+        receiver = addFirExpression(
+            &function,
+            $firExpressionValue.Ownership(firOwnershipExpression {
+            operation = .View operand = receiver implicitRead = true
+        }),
+            copySemanticType(&target.receiverType),
+            span
+        )
+    }
+    var arguments = newArena<u64>()
+    discard arguments.add(receiver)
+    var argumentParameters = newArena<u64>()
+    discard argumentParameters.add(0)
+    const kind = if target.kind.Matches("ContractMethod") {
+        firCallKind.ContractValue
+    } else {
+        if target.kind.Matches("ConstrainedMethod") {
+            firCallKind.Constrained
+        } else {
+            firCallKind.Function
+        }
+    }
+    const value = firExpressionValue.Call(firCallExpression {
+        kind = kind
+        function = target.function
+        typeArguments = copySemanticTypeArena(&target.typeArguments)
+        arguments = arguments
+        argumentDrops = newArena<bool>()
+        contractID = target.contractID
+        method = target.method
+        local = 0
+        argumentParameters = argumentParameters
+        constrainedType = copySemanticType(&target.constrainedType)
+    })
+    const lowered = addFirExpression(
+        &function, $value, lowerExpressionType(&model, expression), span)
+    var restored Option<callTarget> = .Some(target)
+    model.callTargets.restore(expression, $restored)
     lowered
 }
 
