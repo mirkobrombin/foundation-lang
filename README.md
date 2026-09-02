@@ -158,4 +158,8 @@ Compiler changes should include accepted or rejected fixtures for observable lan
 
 ## License
 
-Foundation is distributed under the [MIT License](LICENSE).
+Foundation is distributed under either the [MIT License](LICENSE-MIT) or the
+[Apache License 2.0](LICENSE-APACHE), at your option.
+
+Unless explicitly stated otherwise, contributions intentionally submitted for inclusion are
+licensed under the same terms.
