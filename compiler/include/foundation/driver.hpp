@@ -85,7 +85,8 @@ enum class LibraryKind {
     const std::filesystem::path &source, const std::filesystem::path &output,
     const std::optional<std::string> &machine, StateMachineDiagramFormat format);
 [[nodiscard]] int emitDocumentationFile(const std::filesystem::path &source,
-                                        const std::filesystem::path &output);
+                                        const std::filesystem::path &output,
+                                        TargetPlatform target = hostTargetPlatform());
 [[nodiscard]] int emitApplicationPlanFile(const std::filesystem::path &source,
                                           const std::filesystem::path &output);
 [[nodiscard]] int emitOpenAPIFile(

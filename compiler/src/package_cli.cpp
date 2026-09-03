@@ -7,9 +7,11 @@
 #include <atomic>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <vector>
 
 #ifdef _WIN32
@@ -43,13 +45,16 @@ struct PackageSnapshotOptions {
     std::filesystem::path output;
 };
 
-void usage(std::ostream &output) {
+void usage(std::ostream& output) {
     output << "usage:\n"
            << "  foundationc package init <project> <package-name>\n"
            << "  foundationc package resolve <project> [--target <platform>] "
               "[--registry <identity>=<path>]...\n"
            << "  foundationc package fetch <project> [--cache <path>] "
               "[--registry <identity>=<path>]...\n"
+           << "  foundationc package requirements <project> [--target <platform>]\n"
+           << "  foundationc package locked <project>\n"
+           << "  foundationc package select <requirement> <version>...\n"
            << "  foundationc package check <project> [--target <platform>]\n"
            << "  foundationc package verify <project> [--cache <path>]\n"
            << "  foundationc package inspect <project>\n"
@@ -60,32 +65,32 @@ void usage(std::ostream &output) {
               " [--backend <llvm|c>] [--native <input>]...\n";
 }
 
-void addError(std::vector<PackageError> &errors, const std::filesystem::path &path,
+void addError(std::vector<PackageError>& errors, const std::filesystem::path& path,
               std::string code, std::string message) {
     errors.push_back({path, 1, 1, std::move(code), std::move(message)});
 }
 
-int printErrors(const std::vector<PackageError> &errors) {
-    for (const auto &error : errors) {
+int printErrors(const std::vector<PackageError>& errors) {
+    for (const auto& error : errors) {
         std::cerr << renderPackageError(error);
     }
     return 1;
 }
 
-void printChanges(const std::vector<std::filesystem::path> &changed) {
-    for (const auto &path : changed) {
+void printChanges(const std::vector<std::filesystem::path>& changed) {
+    for (const auto& path : changed) {
         std::cout << "changed " << path.generic_string() << '\n';
     }
 }
 
-int printChangesAndErrors(const std::vector<std::filesystem::path> &changed,
-                          const std::vector<PackageError> &errors) {
+int printChangesAndErrors(const std::vector<std::filesystem::path>& changed,
+                          const std::vector<PackageError>& errors) {
     printChanges(changed);
     return printErrors(errors);
 }
 
-bool publishWithoutReplacement(const std::filesystem::path &source,
-                               const std::filesystem::path &destination) {
+bool publishWithoutReplacement(const std::filesystem::path& source,
+                               const std::filesystem::path& destination) {
 #ifdef _WIN32
     return MoveFileExW(source.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH) != 0;
 #else
@@ -93,7 +98,7 @@ bool publishWithoutReplacement(const std::filesystem::path &source,
 #endif
 }
 
-bool parseOptions(int argc, char **argv, int start, PackageOptions &options) {
+bool parseOptions(int argc, char** argv, int start, PackageOptions& options) {
     for (auto index = start; index < argc; index += 2) {
         if (index + 1 >= argc) {
             return false;
@@ -119,9 +124,8 @@ bool parseOptions(int argc, char **argv, int start, PackageOptions &options) {
                 separator + 1 == value.size()) {
                 return false;
             }
-            options.registries.push_back(
-                {std::string(value.substr(0, separator)),
-                 std::filesystem::path{value.substr(separator + 1)}});
+            options.registries.push_back({std::string(value.substr(0, separator)),
+                                          std::filesystem::path{value.substr(separator + 1)}});
         } else {
             return false;
         }
@@ -129,8 +133,7 @@ bool parseOptions(int argc, char **argv, int start, PackageOptions &options) {
     return true;
 }
 
-bool parseExportOptions(int argc, char **argv, int start,
-                        PackageExportOptions &options) {
+bool parseExportOptions(int argc, char** argv, int start, PackageExportOptions& options) {
     auto outputSeen = false;
     auto backendSeen = false;
     for (auto index = start; index < argc; index += 2) {
@@ -163,9 +166,8 @@ bool parseExportOptions(int argc, char **argv, int start,
     return outputSeen && options.format.has_value();
 }
 
-bool parseSnapshotOptions(int argc, char **argv, PackageSnapshotOptions &options) {
-    if (argc != 6 || std::string_view(argv[4]) != "-o" ||
-        std::string_view(argv[5]).empty()) {
+bool parseSnapshotOptions(int argc, char** argv, PackageSnapshotOptions& options) {
+    if (argc != 6 || std::string_view(argv[4]) != "-o" || std::string_view(argv[5]).empty()) {
         return false;
     }
     options.project = std::filesystem::path{argv[3]};
@@ -173,18 +175,17 @@ bool parseSnapshotOptions(int argc, char **argv, PackageSnapshotOptions &options
     return true;
 }
 
-std::filesystem::path manifestPath(const std::filesystem::path &project) {
-    return project.filename() == "foundation.package" ? project
-                                                       : project / "foundation.package";
+std::filesystem::path manifestPath(const std::filesystem::path& project) {
+    return project.filename() == "foundation.package" ? project : project / "foundation.package";
 }
 
-std::filesystem::path lockPath(const std::filesystem::path &project) {
+std::filesystem::path lockPath(const std::filesystem::path& project) {
     const auto manifest = manifestPath(project);
     return manifest.parent_path() / "foundation.lock";
 }
 
-std::optional<std::filesystem::path> cachePath(const PackageOptions &options,
-                                               std::vector<PackageError> &errors) {
+std::optional<std::filesystem::path> cachePath(const PackageOptions& options,
+                                               std::vector<PackageError>& errors) {
     if (options.cache.has_value()) {
         return options.cache;
     }
@@ -196,7 +197,7 @@ std::optional<std::filesystem::path> cachePath(const PackageOptions &options,
     return cache;
 }
 
-PackageParseResult<PackageResolution> resolve(const PackageOptions &options,
+PackageParseResult<PackageResolution> resolve(const PackageOptions& options,
                                               TargetPlatform target) {
     const auto path = manifestPath(options.project);
     const auto manifest = readPackageManifest(path);
@@ -207,7 +208,108 @@ PackageParseResult<PackageResolution> resolve(const PackageOptions &options,
     return resolveProjectPackages(path, *manifest.value, sdk, target, options.registries);
 }
 
-int initialize(const std::filesystem::path &project, std::string_view name) {
+int requirementsCommand(const PackageOptions& options) {
+    const auto path = manifestPath(options.project);
+    const auto manifest = readPackageManifest(path);
+    if (!manifest.value.has_value()) {
+        return printErrors(manifest.errors);
+    }
+    const auto target = options.target.value_or(hostTargetPlatform());
+    const auto sdk = *parsePackageVersion("0.1.0");
+    const auto catalog = collectPackageCatalog(path, *manifest.value, sdk, target,
+                                               std::span<const PackageRegistryRoot>{});
+    if (!catalog.value.has_value()) {
+        return printErrors(catalog.errors);
+    }
+    std::set<std::tuple<std::string, std::string, std::string>> requirements;
+    const auto collect = [&](const PackageManifest& value) {
+        for (const auto& dependency : value.dependencies) {
+            if (dependency.kind != PackageLocationKind::Registry ||
+                (dependency.target.has_value() && *dependency.target != target)) {
+                continue;
+            }
+            requirements.emplace(dependency.location, dependency.name,
+                                 dependency.requirement.string());
+        }
+    };
+    collect(catalog.value->root);
+    for (const auto& candidate : catalog.value->candidates) {
+        collect(candidate.manifest);
+    }
+    std::cout << "format foundation.package.requirements/v1\n";
+    for (const auto& [registry, name, requirement] : requirements) {
+        std::cout << "registry " << registry << ' ' << name << ' ' << requirement << '\n';
+    }
+    return 0;
+}
+
+int lockedCommand(const PackageOptions& options) {
+    std::error_code error;
+    const auto path = lockPath(options.project);
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (error == std::errc::no_such_file_or_directory ||
+        (!error && status.type() == std::filesystem::file_type::not_found)) {
+        std::cout << "format foundation.package.locked/v1\n";
+        std::cout << "absent\n";
+        return 0;
+    }
+    if (error) {
+        std::vector<PackageError> errors;
+        addError(errors, path, "FDN4105", "cannot inspect package lock");
+        return printErrors(errors);
+    }
+    const auto lock = readPackageLock(path);
+    if (!lock.value.has_value()) {
+        return printErrors(lock.errors);
+    }
+    std::cout << "format foundation.package.locked/v1\n";
+    std::cout << "target " << targetPlatformName(lock.value->target) << '\n';
+    auto packages = lock.value->packages;
+    std::sort(packages.begin(), packages.end(), [](const auto& left, const auto& right) {
+        return left.name < right.name;
+    });
+    for (const auto& package : packages) {
+        if (package.kind != PackageLocationKind::Registry) {
+            continue;
+        }
+        std::cout << "registry " << package.location << ' ' << package.name << ' '
+                  << package.version.string() << ' ' << package.digest << '\n';
+    }
+    return 0;
+}
+
+int selectPackageVersion(int argc, char** argv) {
+    if (argc < 5 || argc > 4100) {
+        usage(std::cerr);
+        return 2;
+    }
+    const auto requirement = parsePackageRequirement(argv[3]);
+    if (!requirement.has_value()) {
+        usage(std::cerr);
+        return 2;
+    }
+    std::optional<PackageVersion> selected;
+    for (auto index = 4; index < argc; ++index) {
+        const auto candidate = parsePackageVersion(argv[index]);
+        if (!candidate.has_value()) {
+            usage(std::cerr);
+            return 2;
+        }
+        if (requirement->accepts(*candidate) && (!selected.has_value() || *selected < *candidate)) {
+            selected = *candidate;
+        }
+    }
+    if (!selected.has_value()) {
+        std::vector<PackageError> errors;
+        addError(errors, "foundation.package", "FDN4054",
+                 "no package version satisfies " + requirement->string());
+        return printErrors(errors);
+    }
+    std::cout << selected->string() << '\n';
+    return 0;
+}
+
+int initialize(const std::filesystem::path& project, std::string_view name) {
     std::vector<PackageError> errors;
     if (!isValidPackageName(name)) {
         addError(errors, project, "FDN4101", "package name is invalid");
@@ -325,7 +427,7 @@ int initialize(const std::filesystem::path &project, std::string_view name) {
     return 0;
 }
 
-int resolveCommand(const PackageOptions &options) {
+int resolveCommand(const PackageOptions& options) {
     const auto target = options.target.value_or(hostTargetPlatform());
     const auto resolution = resolve(options, target);
     if (!resolution.value.has_value()) {
@@ -339,7 +441,7 @@ int resolveCommand(const PackageOptions &options) {
     if (written.changed.empty()) {
         std::cout << "unchanged " << path.generic_string() << '\n';
     } else {
-        for (const auto &changed : written.changed) {
+        for (const auto& changed : written.changed) {
             std::cout << "changed " << changed.generic_string() << '\n';
         }
     }
@@ -347,11 +449,11 @@ int resolveCommand(const PackageOptions &options) {
     return 0;
 }
 
-bool sameLock(const PackageLock &left, const PackageLock &right) {
+bool sameLock(const PackageLock& left, const PackageLock& right) {
     return renderPackageLock(left) == renderPackageLock(right);
 }
 
-int fetchCommand(const PackageOptions &options) {
+int fetchCommand(const PackageOptions& options) {
     const auto existing = readPackageLock(lockPath(options.project));
     if (!existing.value.has_value()) {
         return printErrors(existing.errors);
@@ -377,7 +479,7 @@ int fetchCommand(const PackageOptions &options) {
     if (!cache.has_value()) {
         return printErrors(errors);
     }
-    for (const auto &candidate : resolution.value->packages) {
+    for (const auto& candidate : resolution.value->packages) {
         if (candidate.kind != PackageLocationKind::Registry) {
             continue;
         }
@@ -389,9 +491,7 @@ int fetchCommand(const PackageOptions &options) {
             continue;
         }
         const auto absent = std::all_of(cached.errors.begin(), cached.errors.end(),
-                                        [](const auto &error) {
-                                            return error.code == "FDN4070";
-                                        });
+                                        [](const auto& error) { return error.code == "FDN4070"; });
         if (!absent) {
             return printErrors(cached.errors);
         }
@@ -404,7 +504,7 @@ int fetchCommand(const PackageOptions &options) {
     return 0;
 }
 
-int verifyCommand(const PackageOptions &options) {
+int verifyCommand(const PackageOptions& options) {
     const auto manifest = readPackageManifest(manifestPath(options.project));
     if (!manifest.value.has_value()) {
         return printErrors(manifest.errors);
@@ -426,7 +526,7 @@ int verifyCommand(const PackageOptions &options) {
         return printErrors(errors);
     }
     const auto root = manifestPath(options.project).parent_path();
-    for (const auto &package : lock.value->packages) {
+    for (const auto& package : lock.value->packages) {
         if (package.kind == PackageLocationKind::Registry) {
             const auto verified = verifyPackageInCache(*cache, package);
             if (!verified.value.has_value()) {
@@ -436,8 +536,7 @@ int verifyCommand(const PackageOptions &options) {
             continue;
         }
         const auto packageRoot = root / package.location;
-        const auto dependencyManifest =
-            readPackageManifest(packageRoot / "foundation.package");
+        const auto dependencyManifest = readPackageManifest(packageRoot / "foundation.package");
         if (!dependencyManifest.value.has_value()) {
             return printErrors(dependencyManifest.errors);
         }
@@ -461,7 +560,7 @@ int verifyCommand(const PackageOptions &options) {
     return 0;
 }
 
-int inspectCommand(const PackageOptions &options) {
+int inspectCommand(const PackageOptions& options) {
     const auto manifest = readPackageManifest(manifestPath(options.project));
     if (!manifest.value.has_value()) {
         return printErrors(manifest.errors);
@@ -480,7 +579,7 @@ int inspectCommand(const PackageOptions &options) {
     return 0;
 }
 
-int snapshotCommand(const PackageSnapshotOptions &options) {
+int snapshotCommand(const PackageSnapshotOptions& options) {
     const auto sourceManifestPath = manifestPath(options.project);
     const auto manifest = readPackageManifest(sourceManifestPath);
     if (!manifest.value.has_value()) {
@@ -520,9 +619,9 @@ int snapshotCommand(const PackageSnapshotOptions &options) {
 #else
     const auto pid = static_cast<long>(getpid());
 #endif
-    const auto staging = parent /
-                         ('.' + options.output.filename().string() + ".tmp-" +
-                          std::to_string(pid) + '-' + std::to_string(sequence.fetch_add(1)));
+    const auto staging =
+        parent / ('.' + options.output.filename().string() + ".tmp-" + std::to_string(pid) + '-' +
+                  std::to_string(sequence.fetch_add(1)));
     if (!std::filesystem::create_directory(staging, error)) {
         addError(errors, staging, "FDN4114", "cannot create package snapshot staging directory");
         return printErrors(errors);
@@ -542,7 +641,7 @@ int snapshotCommand(const PackageSnapshotOptions &options) {
             return printErrors(errors);
         }
     }
-    for (const auto &file : snapshot.value->files) {
+    for (const auto& file : snapshot.value->files) {
         const auto source = projectRoot / file.path;
         const auto destination = staging / file.path;
         std::filesystem::create_directories(destination.parent_path(), error);
@@ -576,7 +675,7 @@ int snapshotCommand(const PackageSnapshotOptions &options) {
     return 0;
 }
 
-int pruneCommand(const PackageOptions &options) {
+int pruneCommand(const PackageOptions& options) {
     const auto lock = readPackageLock(lockPath(options.project));
     if (!lock.value.has_value()) {
         return printErrors(lock.errors);
@@ -587,7 +686,7 @@ int pruneCommand(const PackageOptions &options) {
         return printErrors(errors);
     }
     std::vector<std::string> keep;
-    for (const auto &package : lock.value->packages) {
+    for (const auto& package : lock.value->packages) {
         if (package.kind == PackageLocationKind::Registry) {
             keep.push_back(package.digest);
         }
@@ -599,7 +698,7 @@ int pruneCommand(const PackageOptions &options) {
     if (pruned.changed.empty()) {
         std::cout << "unchanged " << cache->generic_string() << '\n';
     } else {
-        for (const auto &changed : pruned.changed) {
+        for (const auto& changed : pruned.changed) {
             std::cout << "changed " << changed.generic_string() << '\n';
         }
     }
@@ -608,13 +707,16 @@ int pruneCommand(const PackageOptions &options) {
 
 } // namespace
 
-int runPackageCommand(int argc, char **argv) {
+int runPackageCommand(int argc, char** argv) {
     if (argc == 5 && std::string_view(argv[2]) == "init") {
         return initialize(std::filesystem::path{argv[3]}, argv[4]);
     }
     if (argc < 4) {
         usage(std::cerr);
         return 2;
+    }
+    if (std::string_view(argv[2]) == "select") {
+        return selectPackageVersion(argc, argv);
     }
     if (std::string_view(argv[2]) == "export") {
         PackageExportOptions options;
@@ -623,8 +725,8 @@ int runPackageCommand(int argc, char **argv) {
             usage(std::cerr);
             return 2;
         }
-        return exportPackage(options.project, options.output, *options.format,
-                             options.nativeInputs, options.backend);
+        return exportPackage(options.project, options.output, *options.format, options.nativeInputs,
+                             options.backend);
     }
     if (std::string_view(argv[2]) == "snapshot") {
         PackageSnapshotOptions options;
@@ -647,9 +749,14 @@ int runPackageCommand(int argc, char **argv) {
     if (command == "fetch") {
         return fetchCommand(options);
     }
+    if (command == "requirements") {
+        return requirementsCommand(options);
+    }
+    if (command == "locked") {
+        return lockedCommand(options);
+    }
     if (command == "check") {
-        return checkPackage(options.project,
-                            options.target.value_or(hostTargetPlatform()));
+        return checkPackage(options.project, options.target.value_or(hostTargetPlatform()));
     }
     if (command == "verify") {
         return verifyCommand(options);

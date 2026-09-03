@@ -51,8 +51,9 @@ rejected fixtures exercise that boundary through the compiler entry point; this 
 duplicate an exhaustive feature inventory.
 
 Package-scope `@target(linux)`, `@target(macos)`, and `@target(windows)` declarations are selected
-before linking. `check`, `emit-c`, `emit-c-header`, and `emit-metadata` accept an explicit target
-that must match the package lock. Native build, run, and test commands remain host-targeted.
+before linking. `check`, `documentation`, `emit-c`, `emit-c-header`, and `emit-metadata` accept an
+explicit target that must match the package lock. Native build, run, and test commands remain
+host-targeted.
 
 Package-defined attributes carry typed constant metadata. The compiler checks visibility, target,
 arguments, repetition, and metadata-safe value types. Resolved applications survive in FIR, and
@@ -122,3 +123,13 @@ Package publishers use this boundary instead of interpreting manifest directorie
 
 `foundationc package check <project> [--target <platform>]` checks a package without requiring an
 application entry point. The same command accepts library and executable packages.
+
+`foundationc package requirements <project> [--target <platform>]` reports registry requirements
+from the root package and its local path dependencies. The stable line-oriented output begins with
+`format foundation.package.requirements/v1`. `foundationc package select <requirement>
+<version>...` selects the highest accepted semantic version. Package clients use these commands
+without implementing manifest parsing or version selection.
+
+`foundationc package locked <project>` emits the target and registry releases selected by the
+current lock in the stable `foundation.package.locked/v1` format. It reports an absent lock without
+resolving one.

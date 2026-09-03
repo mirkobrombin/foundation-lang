@@ -22,7 +22,7 @@ fn compilerUsage() String {
         "[--backend <llvm|c>] [--native <input>] " +
         "[--native-link <library>]...\n" +
         "  foundationc-selfhost package " +
-        "<init|resolve|fetch|check|verify|inspect|prune> ...\n" +
+        "<init|resolve|fetch|requirements|locked|select|check|verify|inspect|prune> ...\n" +
         "  foundationc-selfhost version\n"
 }
 

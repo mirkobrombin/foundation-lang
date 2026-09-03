@@ -562,6 +562,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
 #if defined(__APPLE__)
     arguments.push_back("-Wl,-no_uuid");
     arguments.push_back("-Wl,-no_adhoc_codesign");
+    arguments.push_back("-Wl,-S");
 #else
     arguments.push_back("-ldl");
 #endif
@@ -1253,12 +1254,14 @@ int emitStateMachineDiagramFile(const std::filesystem::path &source,
 }
 
 int emitDocumentationFile(const std::filesystem::path &source,
-                          const std::filesystem::path &output) {
+                          const std::filesystem::path &output,
+                          TargetPlatform target) {
     if (output.extension() != ".md") {
         std::cerr << "foundationc: documentation output must use the .md extension\n";
         return 2;
     }
-    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false});
+    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false},
+                                   ProjectMode::Production, target);
     Compilation result;
     result.sources = analysis.sources;
     result.diagnostics = analysis.diagnostics;

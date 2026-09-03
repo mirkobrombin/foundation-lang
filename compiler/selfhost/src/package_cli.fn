@@ -13,6 +13,12 @@ struct packageOptions {
     registries own arena<packageRegistryRoot>
 }
 
+struct packageRegistryRequirement {
+    registry String
+    name String
+    requirement String
+}
+
 fn newPackageOptions(project String) own packageOptions {
     own packageOptions {
         project = text.Copy(project)
@@ -29,6 +35,9 @@ fn packageUsage() String {
         "[--registry <identity>=<path>]...\n" +
         "  foundationc package fetch <project> [--cache <path>] " +
         "[--registry <identity>=<path>]...\n" +
+        "  foundationc package requirements <project> [--target <platform>]\n" +
+        "  foundationc package locked <project>\n" +
+        "  foundationc package select <requirement> <version>...\n" +
         "  foundationc package check <project> [--target <platform>]\n" +
         "  foundationc package verify <project> [--cache <path>]\n" +
         "  foundationc package inspect <project>\n" +
@@ -602,6 +611,207 @@ fn inspectPackageCommand(&options packageOptions) i32 {
     0
 }
 
+fn comparePackageRegistryRequirement(
+    left packageRegistryRequirement,
+    right packageRegistryRequirement
+) i32 {
+    var compared = text.Compare(left.registry, right.registry)
+    if compared != 0 return compared
+    compared = text.Compare(left.name, right.name)
+    if compared != 0 return compared
+    text.Compare(left.requirement, right.requirement)
+}
+
+fn collectPackageRegistryRequirements(
+    &result arena<packageRegistryRequirement>,
+    &manifest packageManifest,
+    target targetPlatform
+) void {
+    var index u64 = 0
+    while index < manifest.dependencies.len() {
+        const dependency = match manifest.dependencies.take(index) {
+            None: panic("package dependency slot is empty")
+            Some(value): value
+        }
+        if !isPathLocation(dependency.kind) &&
+            packageDependencyActive(dependency, target) {
+            discard result.add(packageRegistryRequirement {
+                registry = text.Copy(dependency.location)
+                name = text.Copy(dependency.name)
+                requirement = packageRequirementString(dependency.requirement)
+            })
+        }
+        manifest.dependencies.restore(index, $dependency)
+        index += 1
+    }
+}
+
+fn packageRequirementsCommand(&options packageOptions) i32 {
+    const manifestPath = packageManifestPath(options.project)
+    var parsed = readPackageManifest(manifestPath)
+    var manifest = match replace parsed.value with .None {
+        None: {
+            return printPackageErrors(&parsed.errors)
+        }
+        Some(value): value
+    }
+    const target = match options.target {
+        None: hostTargetPlatform()
+        Some(value): value
+    }
+    var registries = newArena<packageRegistryRoot>()
+    var collected = collectPackageCatalog(
+        manifestPath,
+        &manifest,
+        packageSDKVersion(),
+        target,
+        &registries
+    )
+    var catalog = match replace collected.value with .None {
+        None: {
+            return printPackageErrors(&collected.errors)
+        }
+        Some(value): value
+    }
+    var requirements = newArena<packageRegistryRequirement>()
+    collectPackageRegistryRequirements(&requirements, &catalog.root, target)
+    var candidateIndex u64 = 0
+    while candidateIndex < catalog.candidates.len() {
+        var candidate = match catalog.candidates.take(candidateIndex) {
+            None: panic("package candidate slot is empty")
+            Some(value): value
+        }
+        collectPackageRegistryRequirements(
+            &requirements,
+            &candidate.manifest,
+            target
+        )
+        catalog.candidates.restore(candidateIndex, $candidate)
+        candidateIndex += 1
+    }
+    sortArena<packageRegistryRequirement>(
+        &requirements,
+        comparePackageRegistryRequirement
+    )
+    discard io.WriteStdoutText("format foundation.package.requirements/v1\n")
+    var index u64 = 0
+    var previous = ""
+    while index < requirements.len() {
+        const value = match requirements.take(index) {
+            None: panic("package registry requirement slot is empty")
+            Some(value): value
+        }
+        const line = "registry " + value.registry + " " + value.name + " " +
+            value.requirement
+        if line != previous {
+            discard io.WriteStdoutText(line + "\n")
+            previous = text.Copy(line)
+        }
+        requirements.restore(index, $value)
+        index += 1
+    }
+    0
+}
+
+fn packageLockedCommand(&options packageOptions) i32 {
+    const lockPath = packageLockPath(options.project)
+    const kind = fs.Kind(lockPath) else error {
+        discard error
+        var failed = readPackageLock(lockPath)
+        return printPackageErrors(&failed.errors)
+    }
+    match kind {
+        Missing: {
+            discard io.WriteStdoutText("format foundation.package.locked/v1\n")
+            discard io.WriteStdoutText("absent\n")
+            return 0
+        }
+        _: {}
+    }
+    var parsed = readPackageLock(lockPath)
+    var lock = match replace parsed.value with .None {
+        None: {
+            return printPackageErrors(&parsed.errors)
+        }
+        Some(value): value
+    }
+    discard io.WriteStdoutText("format foundation.package.locked/v1\n")
+    sortArena<lockedPackage>(&lock.packages, compareLockedPackage)
+    discard io.WriteStdoutText("target " + targetPlatformName(lock.target) + "\n")
+    var index u64 = 0
+    while index < lock.packages.len() {
+        const locked = match lock.packages.take(index) {
+            None: panic("locked package slot is empty")
+            Some(value): value
+        }
+        if !isPathLocation(locked.kind) {
+            discard io.WriteStdoutText(
+                "registry " + locked.location + " " + locked.name + " " +
+                packageVersionString(locked.version) + " " + locked.digest + "\n"
+            )
+        }
+        lock.packages.restore(index, $locked)
+        index += 1
+    }
+    0
+}
+
+fn selectPackageVersionCommand(&arguments arena<String>) i32 {
+    if arguments.len() < 3 || arguments.len() > 4098 {
+        discard io.WriteStderrText(packageUsage())
+        return 2
+    }
+    const requirementText = packageArgument(&arguments, 1)
+    const requirement = match parsePackageRequirement(requirementText) {
+        None: {
+            discard io.WriteStderrText(packageUsage())
+            return 2
+        }
+        Some(value): value
+    }
+    var selected Option<packageVersion> = .None
+    var index u64 = 2
+    while index < arguments.len() {
+        const candidate = match parsePackageVersion(packageArgument(&arguments, index)) {
+            None: {
+                discard io.WriteStderrText(packageUsage())
+                return 2
+            }
+            Some(value): value
+        }
+        if packageRequirementAccepts(requirement, candidate) {
+            const previous = replace selected with .None
+            selected = match previous {
+                None: .Some(candidate)
+                Some(current): if comparePackageVersion(current, candidate) < 0 {
+                    .Some(candidate)
+                } else {
+                    .Some(current)
+                }
+            }
+        }
+        index += 1
+    }
+    match selected {
+        None: {
+            var errors = newPackageErrors()
+            addPackageError(
+                &errors,
+                "foundation.package",
+                1,
+                1,
+                "FDN4054",
+                "no package version satisfies " + requirementText
+            )
+            printPackageErrors(&errors)
+        }
+        Some(value): {
+            discard io.WriteStdoutText(packageVersionString(value) + "\n")
+            0
+        }
+    }
+}
+
 fn checkPackageCommand(&options packageOptions) i32 {
     const target = match options.target {
         None: hostTargetPlatform()
@@ -672,6 +882,7 @@ fn runPackageCommand(&arguments arena<String>) i32 {
         return 2
     }
     const command = packageArgument(&arguments, 0)
+    if command == "select" return selectPackageVersionCommand(&arguments)
     var options = newPackageOptions(packageArgument(&arguments, 1))
     if !parsePackageOptions(&arguments, 2, &options) {
         discard io.WriteStderrText(packageUsage())
@@ -679,6 +890,8 @@ fn runPackageCommand(&arguments arena<String>) i32 {
     }
     if command == "resolve" return resolvePackageCommand(&options)
     if command == "fetch" return fetchPackageCommand(&options)
+    if command == "requirements" return packageRequirementsCommand(&options)
+    if command == "locked" return packageLockedCommand(&options)
     if command == "check" return checkPackageCommand(&options)
     if command == "verify" return verifyPackageCommand(&options)
     if command == "inspect" return inspectPackageCommand(&options)

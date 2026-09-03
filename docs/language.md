@@ -1595,6 +1595,16 @@ transport may consume this tree without implementing a second manifest parser or
 `foundationc package check <project> [--target <platform>]` performs semantic checking without
 requiring `main`, so the same command accepts library and application packages.
 
+`foundationc package requirements <project> [--target <platform>]` emits active registry
+requirements from the project and its local path graph. Its first line is `format
+foundation.package.requirements/v1`; each remaining line is `registry <identity> <name>
+<requirement>`. `foundationc package select <requirement> <version>...` applies the compiler's
+semantic-version rules and prints the highest accepted candidate.
+
+`foundationc package locked <project>` emits the target and registry releases selected by the
+current lock in the stable `foundation.package.locked/v1` format. It reports an absent lock without
+resolving one.
+
 `go-source` is a distinct source translation mode. It emits `go.mod`, one Go source file, and the
 same canonical PII, but no native directory. It exports normal public Foundation functions and does
 not require `native_library c`, `native_name`, or `extern c` declarations. The current accepted

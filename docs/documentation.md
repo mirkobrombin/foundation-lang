@@ -1,8 +1,9 @@
 # API documentation
 
-`foundationc documentation <source-or-project> -o <output.md>` validates the source graph and
-writes one deterministic Markdown API reference. Documentation does not require an executable
-`main` function, so the command works for reusable packages.
+`foundationc documentation <source-or-project> -o <output.md> [--target <platform>]` validates the
+source graph and writes one deterministic Markdown API reference. The optional target must match
+the package lock. Documentation does not require an executable `main` function, so the command
+works for reusable packages.
 
 The reference contains only exported declarations owned by the root project. Standard-library,
 Foundation framework, dependency, test-only, and compiler-derived declarations do not appear as

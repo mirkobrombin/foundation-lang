@@ -7,6 +7,30 @@ set(REGISTRY "default=${WORK}/fixture/registry")
 set(PACKAGE_CACHE "${WORK}/cache")
 
 execute_process(
+    COMMAND "${PROGRAM}" package requirements "${PROJECT}" --target linux
+    RESULT_VARIABLE requirements_result
+    OUTPUT_VARIABLE requirements_output
+    ERROR_VARIABLE requirements_error
+)
+if(NOT requirements_result EQUAL 0 OR
+   NOT requirements_output STREQUAL
+       "format foundation.package.requirements/v1\nregistry default example.greeting ^1.0.0\n")
+    message(FATAL_ERROR
+        "package requirements report is invalid: ${requirements_error}${requirements_output}")
+endif()
+
+execute_process(
+    COMMAND "${PROGRAM}" package select "^1.0.0" "1.0.0" "2.0.0" "1.4.2"
+    RESULT_VARIABLE select_result
+    OUTPUT_VARIABLE select_output
+    ERROR_VARIABLE select_error
+)
+if(NOT select_result EQUAL 0 OR NOT select_output STREQUAL "1.4.2\n")
+    message(FATAL_ERROR
+        "package version selection failed: ${select_error}${select_output}")
+endif()
+
+execute_process(
     COMMAND "${PROGRAM}" package resolve "${PROJECT}" --registry "${REGISTRY}"
     RESULT_VARIABLE resolve_result
     OUTPUT_VARIABLE resolve_output
@@ -18,6 +42,22 @@ endif()
 if(NOT resolve_output MATCHES "changed .*foundation.lock" OR
    NOT resolve_output MATCHES "resolved 2 packages")
     message(FATAL_ERROR "package resolve did not report its mutation: ${resolve_output}")
+endif()
+
+execute_process(
+    COMMAND "${PROGRAM}" package locked "${PROJECT}"
+    RESULT_VARIABLE locked_result
+    OUTPUT_VARIABLE locked_output
+    ERROR_VARIABLE locked_error
+)
+string(CONCAT expected_locked_output
+    "format foundation.package.locked/v1\n"
+    "target linux\n"
+    "registry default example.greeting 1.0.0 "
+    "sha256:0bc682288bc50e8572e3deba8ff889750aeabcb836ab65dd5e0e1ccd121daa71\n")
+if(NOT locked_result EQUAL 0 OR NOT locked_output STREQUAL expected_locked_output)
+    message(FATAL_ERROR
+        "package lock report is invalid: ${locked_error}${locked_output}")
 endif()
 
 execute_process(
@@ -224,6 +264,17 @@ if(NOT init_result EQUAL 0)
 endif()
 if(NOT init_output MATCHES "changed .*foundation.package")
     message(FATAL_ERROR "package init omitted its manifest mutation: ${init_output}")
+endif()
+execute_process(
+    COMMAND "${PROGRAM}" package locked "${WORK}/initialized"
+    RESULT_VARIABLE absent_lock_result
+    OUTPUT_VARIABLE absent_lock_output
+    ERROR_VARIABLE absent_lock_error
+)
+if(NOT absent_lock_result EQUAL 0 OR NOT absent_lock_output STREQUAL
+   "format foundation.package.locked/v1\nabsent\n")
+    message(FATAL_ERROR
+        "absent package lock report is invalid: ${absent_lock_error}${absent_lock_output}")
 endif()
 file(READ "${WORK}/initialized/foundation.package" initialized_manifest)
 if(NOT initialized_manifest MATCHES "language 1")

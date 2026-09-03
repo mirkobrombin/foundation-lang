@@ -10,7 +10,7 @@
 
 namespace {
 
-void printUsage(std::ostream &output) {
+void printUsage(std::ostream& output) {
     output << "usage:\n"
            << "  foundationc check <source-or-project> [--target <platform>]\n"
            << "  foundationc lint <source-or-project> [--profile <valid|standard|strict>]"
@@ -31,7 +31,8 @@ void printUsage(std::ostream &output) {
            << "  foundationc emit-pii <project> -o <output.json>\n"
            << "  foundationc emit-fsm <source-or-project> -o <output>"
               " --format <mermaid|graphviz> [--machine <name>]\n"
-           << "  foundationc documentation <source-or-project> -o <output.md>\n"
+           << "  foundationc documentation <source-or-project> -o <output.md>"
+              " [--target <platform>]\n"
            << "  foundationc emit-app-plan <source-or-project> -o <output.json>\n"
            << "  foundationc emit-openapi <source-or-project> -o <output.json>"
               " [--title <title>] [--version <version>]\n"
@@ -45,12 +46,15 @@ void printUsage(std::ostream &output) {
               " [--native <input>] [--native-link <library>]... [-- <argument>...]\n"
            << "  foundationc test <source-or-project> [--backend <llvm|c>]"
               " [--native <input>] [--native-link <library>]...\n"
-           << "  foundationc package <init|resolve|fetch|check|verify|inspect|snapshot|prune|export> ...\n"
+           << "  foundationc package "
+              "<init|resolve|fetch|requirements|locked|select|check|verify|inspect|snapshot|prune|export> "
+              "...\n"
            << "  foundationc version\n";
 }
 
-bool parseLintArguments(int argc, char **argv, std::optional<foundation::CodeStandardProfile> &profile,
-                        std::vector<foundation::CodeStandardRuleSetting> &settings) {
+bool parseLintArguments(int argc, char** argv,
+                        std::optional<foundation::CodeStandardProfile>& profile,
+                        std::vector<foundation::CodeStandardRuleSetting>& settings) {
     for (auto index = 3; index < argc; index += 2) {
         if (index + 1 >= argc) {
             return false;
@@ -70,7 +74,8 @@ bool parseLintArguments(int argc, char **argv, std::optional<foundation::CodeSta
                 !foundation::configurableCodeStandardRule(value.substr(0, separator))) {
                 return false;
             }
-            const auto severity = foundation::parseCodeStandardSeverity(value.substr(separator + 1));
+            const auto severity =
+                foundation::parseCodeStandardSeverity(value.substr(separator + 1));
             if (!severity.has_value()) {
                 return false;
             }
@@ -82,12 +87,11 @@ bool parseLintArguments(int argc, char **argv, std::optional<foundation::CodeSta
     return true;
 }
 
-bool outputArgumentsAreValid(int argc, char **argv) {
+bool outputArgumentsAreValid(int argc, char** argv) {
     return argc == 5 && std::string_view(argv[3]) == "-o";
 }
 
-std::optional<foundation::TargetPlatform> parseTargetArguments(int argc, char **argv,
-                                                               int start) {
+std::optional<foundation::TargetPlatform> parseTargetArguments(int argc, char** argv, int start) {
     if (argc == start) {
         return foundation::hostTargetPlatform();
     }
@@ -97,15 +101,15 @@ std::optional<foundation::TargetPlatform> parseTargetArguments(int argc, char **
     return foundation::parseTargetPlatform(argv[start + 1]);
 }
 
-std::optional<foundation::TargetPlatform> parseOutputTargetArguments(int argc, char **argv) {
+std::optional<foundation::TargetPlatform> parseOutputTargetArguments(int argc, char** argv) {
     if (argc < 5 || std::string_view(argv[3]) != "-o") {
         return std::nullopt;
     }
     return parseTargetArguments(argc, argv, 5);
 }
 
-bool parseOpenAPIArguments(int argc, char **argv, std::optional<std::string> &title,
-                           std::optional<std::string> &version) {
+bool parseOpenAPIArguments(int argc, char** argv, std::optional<std::string>& title,
+                           std::optional<std::string>& version) {
     if (argc < 5 || std::string_view(argv[3]) != "-o") {
         return false;
     }
@@ -125,9 +129,8 @@ bool parseOpenAPIArguments(int argc, char **argv, std::optional<std::string> &ti
     return true;
 }
 
-bool parseStateMachineArguments(int argc, char **argv,
-                                std::optional<std::string> &machine,
-                                foundation::StateMachineDiagramFormat &format) {
+bool parseStateMachineArguments(int argc, char** argv, std::optional<std::string>& machine,
+                                foundation::StateMachineDiagramFormat& format) {
     if (argc < 7 || std::string_view(argv[3]) != "-o") {
         return false;
     }
@@ -157,10 +160,10 @@ bool parseStateMachineArguments(int argc, char **argv,
 }
 
 bool validNativeLink(std::string_view value) {
-    if (value.empty()) return false;
+    if (value.empty())
+        return false;
     for (const auto character : value) {
-        if (!((character >= 'a' && character <= 'z') ||
-              (character >= 'A' && character <= 'Z') ||
+        if (!((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
               (character >= '0' && character <= '9') || character == '_')) {
             return false;
         }
@@ -168,10 +171,9 @@ bool validNativeLink(std::string_view value) {
     return true;
 }
 
-bool parseNativeArguments(int argc, char **argv, int start,
-                          std::vector<std::filesystem::path> &inputs,
-                          std::vector<std::string> &links,
-                          foundation::BackendKind &backend) {
+bool parseNativeArguments(int argc, char** argv, int start,
+                          std::vector<std::filesystem::path>& inputs,
+                          std::vector<std::string>& links, foundation::BackendKind& backend) {
     auto backendSeen = false;
     for (auto index = start; index < argc; index += 2) {
         if (index + 1 >= argc) {
@@ -196,11 +198,9 @@ bool parseNativeArguments(int argc, char **argv, int start,
     return true;
 }
 
-bool parseBuildArguments(int argc, char **argv, int start,
-                         std::filesystem::path &output,
-                         std::vector<std::filesystem::path> &nativeInputs,
-                         std::vector<std::string> &nativeLinks,
-                         foundation::BackendKind &backend) {
+bool parseBuildArguments(int argc, char** argv, int start, std::filesystem::path& output,
+                         std::vector<std::filesystem::path>& nativeInputs,
+                         std::vector<std::string>& nativeLinks, foundation::BackendKind& backend) {
     auto outputSeen = false;
     auto backendSeen = false;
     for (auto index = start; index < argc; index += 2) {
@@ -229,12 +229,10 @@ bool parseBuildArguments(int argc, char **argv, int start,
     return outputSeen;
 }
 
-bool parseLibraryArguments(int argc, char **argv, int start,
-                           std::filesystem::path &output,
-                           foundation::LibraryKind &kind,
-                           std::vector<std::filesystem::path> &nativeInputs,
-                           foundation::BackendKind &backend,
-                           bool &positionIndependent) {
+bool parseLibraryArguments(int argc, char** argv, int start, std::filesystem::path& output,
+                           foundation::LibraryKind& kind,
+                           std::vector<std::filesystem::path>& nativeInputs,
+                           foundation::BackendKind& backend, bool& positionIndependent) {
     auto outputSeen = false;
     auto kindSeen = false;
     auto backendSeen = false;
@@ -281,11 +279,10 @@ bool parseLibraryArguments(int argc, char **argv, int start,
            !(positionIndependent && kind == foundation::LibraryKind::Shared);
 }
 
-bool parseRunArguments(int argc, char **argv, int start,
-                       std::vector<std::filesystem::path> &nativeInputs,
-                       std::vector<std::string> &nativeLinks,
-                       std::vector<std::string> &arguments,
-                       foundation::BackendKind &backend) {
+bool parseRunArguments(int argc, char** argv, int start,
+                       std::vector<std::filesystem::path>& nativeInputs,
+                       std::vector<std::string>& nativeLinks, std::vector<std::string>& arguments,
+                       foundation::BackendKind& backend) {
     auto index = start;
     auto backendSeen = false;
     while (index < argc) {
@@ -322,7 +319,7 @@ bool parseRunArguments(int argc, char **argv, int start,
 
 } // namespace
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
     if (argc == 2) {
         const std::string_view command = argv[1];
         if (command == "version" || command == "--version") {
@@ -430,12 +427,16 @@ int main(int argc, char **argv) {
                 return 2;
             }
             return foundation::emitStateMachineDiagramFile(
-                std::filesystem::path(argv[2]), std::filesystem::path(argv[4]), machine,
-                format);
+                std::filesystem::path(argv[2]), std::filesystem::path(argv[4]), machine, format);
         }
-        if (command == "documentation" && outputArgumentsAreValid(argc, argv)) {
+        if (command == "documentation") {
+            const auto target = parseOutputTargetArguments(argc, argv);
+            if (!target.has_value()) {
+                printUsage(std::cerr);
+                return 2;
+            }
             return foundation::emitDocumentationFile(std::filesystem::path(argv[2]),
-                                                     std::filesystem::path(argv[4]));
+                                                     std::filesystem::path(argv[4]), *target);
         }
         if (command == "emit-app-plan" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitApplicationPlanFile(std::filesystem::path(argv[2]),
@@ -449,8 +450,7 @@ int main(int argc, char **argv) {
                 return 2;
             }
             return foundation::emitOpenAPIFile(std::filesystem::path(argv[2]),
-                                               std::filesystem::path(argv[4]), title,
-                                               version);
+                                               std::filesystem::path(argv[4]), title, version);
         }
         if (command == "emit-app-host" && outputArgumentsAreValid(argc, argv)) {
             return foundation::emitApplicationHostFile(std::filesystem::path(argv[2]),
@@ -465,8 +465,8 @@ int main(int argc, char **argv) {
                 printUsage(std::cerr);
                 return 2;
             }
-            return foundation::buildFile(std::filesystem::path(argv[2]), output, nativeInputs, nativeLinks,
-                                         backend);
+            return foundation::buildFile(std::filesystem::path(argv[2]), output, nativeInputs,
+                                         nativeLinks, backend);
         }
         if (command == "build-library" && argc >= 7) {
             std::filesystem::path output;

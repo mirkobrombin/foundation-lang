@@ -8,7 +8,7 @@ set(FIRST "${WORK}/reference.md")
 set(SECOND "${WORK}/reference-second.md")
 
 execute_process(
-    COMMAND "${COMPILER}" documentation "${SOURCE}" -o "${FIRST}"
+    COMMAND "${COMPILER}" documentation "${SOURCE}" -o "${FIRST}" --target linux
     RESULT_VARIABLE first_result
     OUTPUT_VARIABLE first_stdout
     ERROR_VARIABLE first_stderr
@@ -18,7 +18,7 @@ if(NOT first_result EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${COMPILER}" documentation "${SOURCE}" -o "${SECOND}"
+    COMMAND "${COMPILER}" documentation "${SOURCE}" -o "${SECOND}" --target linux
     RESULT_VARIABLE second_result
     OUTPUT_VARIABLE second_stdout
     ERROR_VARIABLE second_stderr
