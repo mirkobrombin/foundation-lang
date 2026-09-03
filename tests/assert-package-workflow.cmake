@@ -158,6 +158,38 @@ if(NOT inspect_result EQUAL 0 OR
     message(FATAL_ERROR "package inspect failed: ${inspect_error}${inspect_output}")
 endif()
 
+set(SNAPSHOT "${WORK}/snapshot")
+execute_process(
+    COMMAND "${PROGRAM}" package snapshot "${PROJECT}" -o "${SNAPSHOT}"
+    RESULT_VARIABLE snapshot_result
+    OUTPUT_VARIABLE snapshot_output
+    ERROR_VARIABLE snapshot_error
+)
+if(NOT snapshot_result EQUAL 0 OR
+   NOT snapshot_output MATCHES "name example.app" OR
+   NOT snapshot_output MATCHES "version 1.0.0" OR
+   NOT snapshot_output MATCHES "digest sha256:" OR
+   NOT snapshot_output MATCHES "files 2")
+    message(FATAL_ERROR "package snapshot failed: ${snapshot_error}${snapshot_output}")
+endif()
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E compare_files
+            "${PROJECT}/src/main.fn" "${SNAPSHOT}/src/main.fn"
+    RESULT_VARIABLE snapshot_source_result
+)
+if(NOT snapshot_source_result EQUAL 0 OR NOT EXISTS "${SNAPSHOT}/foundation.package" OR
+   EXISTS "${SNAPSHOT}/foundation.lock")
+    message(FATAL_ERROR "package snapshot did not preserve the canonical source set")
+endif()
+execute_process(
+    COMMAND "${PROGRAM}" package snapshot "${PROJECT}" -o "${SNAPSHOT}"
+    RESULT_VARIABLE repeated_snapshot_result
+    ERROR_VARIABLE repeated_snapshot_error
+)
+if(repeated_snapshot_result EQUAL 0 OR NOT repeated_snapshot_error MATCHES "FDN4114")
+    message(FATAL_ERROR "package snapshot replaced an existing output")
+endif()
+
 execute_process(
     COMMAND "${PROGRAM}" package init "${WORK}/initialized" example.initialized
     RESULT_VARIABLE init_result

@@ -45,7 +45,7 @@ void printUsage(std::ostream &output) {
               " [--native <input>] [--native-link <library>]... [-- <argument>...]\n"
            << "  foundationc test <source-or-project> [--backend <llvm|c>]"
               " [--native <input>] [--native-link <library>]...\n"
-           << "  foundationc package <init|resolve|fetch|verify|inspect|prune|export> ...\n"
+           << "  foundationc package <init|resolve|fetch|verify|inspect|snapshot|prune|export> ...\n"
            << "  foundationc version\n";
 }
 

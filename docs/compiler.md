@@ -113,3 +113,9 @@ beside the executable or through `FOUNDATION_SDK_ROOT`. External packages resolv
 manifests and the exact target lock. A `language 1` manifest selects source semantics independently
 of the toolchain version; legacy `sdk` requirements continue to select a toolchain range. Public
 library and plugin compatibility follows [the compatibility contract](compatibility.md).
+
+`foundationc package snapshot <project> -o <directory>` writes a new package tree containing the
+canonical manifest and the exact source and test-source files covered by the package digest. It
+rejects symbolic links, non-portable paths, source changes during the copy, and an output path that
+already exists. Its line-oriented report includes the package name, version, digest, and file count.
+Package publishers use this boundary instead of interpreting manifest directories.

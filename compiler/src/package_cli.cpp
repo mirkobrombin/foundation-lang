@@ -38,6 +38,11 @@ struct PackageExportOptions {
     BackendKind backend{defaultBackendKind()};
 };
 
+struct PackageSnapshotOptions {
+    std::filesystem::path project;
+    std::filesystem::path output;
+};
+
 void usage(std::ostream &output) {
     output << "usage:\n"
            << "  foundationc package init <project> <package-name>\n"
@@ -47,6 +52,7 @@ void usage(std::ostream &output) {
               "[--registry <identity>=<path>]...\n"
            << "  foundationc package verify <project> [--cache <path>]\n"
            << "  foundationc package inspect <project>\n"
+           << "  foundationc package snapshot <project> -o <directory>\n"
            << "  foundationc package prune <project> [--cache <path>]\n"
            << "  foundationc package export <project> -o <directory>"
               " --format <zig|rust|go-cgo|go-dynamic|go-source>"
@@ -154,6 +160,16 @@ bool parseExportOptions(int argc, char **argv, int start,
         }
     }
     return outputSeen && options.format.has_value();
+}
+
+bool parseSnapshotOptions(int argc, char **argv, PackageSnapshotOptions &options) {
+    if (argc != 6 || std::string_view(argv[4]) != "-o" ||
+        std::string_view(argv[5]).empty()) {
+        return false;
+    }
+    options.project = std::filesystem::path{argv[3]};
+    options.output = std::filesystem::path{argv[5]};
+    return true;
 }
 
 std::filesystem::path manifestPath(const std::filesystem::path &project) {
@@ -463,6 +479,102 @@ int inspectCommand(const PackageOptions &options) {
     return 0;
 }
 
+int snapshotCommand(const PackageSnapshotOptions &options) {
+    const auto sourceManifestPath = manifestPath(options.project);
+    const auto manifest = readPackageManifest(sourceManifestPath);
+    if (!manifest.value.has_value()) {
+        return printErrors(manifest.errors);
+    }
+    const auto projectRoot = sourceManifestPath.parent_path();
+    const auto snapshot = inspectPackageSource(projectRoot, *manifest.value);
+    if (!snapshot.value.has_value()) {
+        return printErrors(snapshot.errors);
+    }
+
+    std::vector<PackageError> errors;
+    std::error_code error;
+    const auto outputStatus = std::filesystem::symlink_status(options.output, error);
+    if (!error && outputStatus.type() != std::filesystem::file_type::not_found) {
+        addError(errors, options.output, "FDN4114", "package snapshot output already exists");
+        return printErrors(errors);
+    }
+    if (error && error != std::errc::no_such_file_or_directory) {
+        addError(errors, options.output, "FDN4114", "cannot inspect package snapshot output");
+        return printErrors(errors);
+    }
+    error.clear();
+    auto parent = options.output.parent_path();
+    if (parent.empty()) {
+        parent = ".";
+    }
+    std::filesystem::create_directories(parent, error);
+    if (error) {
+        addError(errors, parent, "FDN4114", "cannot create package snapshot parent");
+        return printErrors(errors);
+    }
+
+    static std::atomic<unsigned long> sequence{};
+#ifdef _WIN32
+    const auto pid = static_cast<long>(_getpid());
+#else
+    const auto pid = static_cast<long>(getpid());
+#endif
+    const auto staging = parent /
+                         ('.' + options.output.filename().string() + ".tmp-" +
+                          std::to_string(pid) + '-' + std::to_string(sequence.fetch_add(1)));
+    if (!std::filesystem::create_directory(staging, error)) {
+        addError(errors, staging, "FDN4114", "cannot create package snapshot staging directory");
+        return printErrors(errors);
+    }
+    const auto cleanup = [&]() {
+        std::error_code ignored;
+        std::filesystem::remove_all(staging, ignored);
+    };
+    {
+        std::ofstream output(staging / "foundation.package", std::ios::binary);
+        output << renderPackageManifest(*manifest.value);
+        output.flush();
+        if (!output) {
+            cleanup();
+            addError(errors, staging / "foundation.package", "FDN4114",
+                     "cannot write package snapshot manifest");
+            return printErrors(errors);
+        }
+    }
+    for (const auto &file : snapshot.value->files) {
+        const auto source = projectRoot / file.path;
+        const auto destination = staging / file.path;
+        std::filesystem::create_directories(destination.parent_path(), error);
+        if (error || !std::filesystem::copy_file(source, destination, error)) {
+            cleanup();
+            addError(errors, source, "FDN4114", "cannot copy package snapshot source");
+            return printErrors(errors);
+        }
+    }
+    const auto copied = inspectPackageSource(staging, *manifest.value);
+    if (!copied.value.has_value() || copied.value->digest != snapshot.value->digest) {
+        cleanup();
+        if (!copied.value.has_value()) {
+            return printErrors(copied.errors);
+        }
+        addError(errors, options.project, "FDN4114",
+                 "package source changed while the snapshot was copied");
+        return printErrors(errors);
+    }
+    std::filesystem::rename(staging, options.output, error);
+    if (error) {
+        cleanup();
+        addError(errors, options.output, "FDN4114", "cannot publish package snapshot");
+        return printErrors(errors);
+    }
+    std::cout << "snapshot " << options.output.generic_string() << '\n'
+              << "name " << manifest.value->name << '\n'
+              << "version " << manifest.value->version.string() << '\n'
+              << "digest " << snapshot.value->digest << '\n'
+              << "files " << snapshot.value->files.size() + 1 << '\n';
+    return 0;
+}
+
 int pruneCommand(const PackageOptions &options) {
     const auto lock = readPackageLock(lockPath(options.project));
     if (!lock.value.has_value()) {
@@ -512,6 +624,14 @@ int runPackageCommand(int argc, char **argv) {
         }
         return exportPackage(options.project, options.output, *options.format,
                              options.nativeInputs, options.backend);
+    }
+    if (std::string_view(argv[2]) == "snapshot") {
+        PackageSnapshotOptions options;
+        if (!parseSnapshotOptions(argc, argv, options)) {
+            usage(std::cerr);
+            return 2;
+        }
+        return snapshotCommand(options);
     }
     PackageOptions options;
     options.project = std::filesystem::path{argv[3]};
