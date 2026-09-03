@@ -1,6 +1,6 @@
 # Architecture
 
-Status: current repository implementation for the Foundation 1.0 target. Release state is
+Status: current repository implementation for Foundation Language 1. Release state is
 maintained in the [README](../README.md#status).
 
 ## Compilation path
@@ -107,9 +107,11 @@ Native inputs compile beside generated C and include the generated `foundation_a
 or C++ type crosses that header.
 
 Native plugins use the separate versioned `foundation/plugin.h` table. Dynamic loading resolves one
-query symbol, validates ABI, SDK, target, contract hash, UTF-8 data, and callback presence, then
+query symbol, validates ABI, target, contract hash, UTF-8 data, and callback presence, then
 creates the opaque plugin context. The Foundation framework owns lifecycle order and rollback;
 the runtime owns only table validation, library handles, allocator exchange, and callback entry.
+The descriptor records its producing SDK for diagnostics, but SDK identity is not a compatibility
+gate.
 
 External process plugins use a separate runtime adapter. It builds an argument vector without a
 shell, owns stdin and stdout control pipes, bounds the JSONL ready line, applies monotonic start and

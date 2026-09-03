@@ -1,6 +1,6 @@
 # Foundation Code Standard
 
-Status: Foundation Code Standard 0.1 for the pre-1.0 compiler and SDK. Release and implementation
+Status: Foundation Code Standard 0.1 for the 0.1 compiler and SDK. Release and implementation
 state is maintained in the [README](../README.md#status).
 
 The enforcement table separates deterministic mechanical checks from review policy. Advisory rules
@@ -30,7 +30,7 @@ The package manifest selects a profile with a lowercase directive:
 format foundation.package/v1
 name example.app
 version 1.0.0
-sdk ^0.1.0
+language 1
 fcs standard
 fcs_rule FCS1001 error
 source src
@@ -98,7 +98,7 @@ The formatter does not convert one accepted form into another merely to impose o
 ## Bindings and names
 
 Use `const` unless a binding is reassigned or is the editable root of an `&` borrow. Use `var` only
-for those two cases. `let` is not Foundation 1.0 syntax.
+for those two cases. `let` is not Foundation Language 1 syntax.
 
 Package declarations, locals, parameters, and fields use `lowerCamelCase`. Types and exported
 declarations use `UpperCamelCase`. An uppercase initial exports a package or type member; a

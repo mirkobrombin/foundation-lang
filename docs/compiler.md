@@ -1,6 +1,6 @@
 # Compiler implementation
 
-Status: current repository implementation for the Foundation 1.0 target. Release state is
+Status: current repository implementation for Foundation Language 1. Release state is
 maintained in the [README](../README.md#status).
 
 The repository contains a Foundation compiler and its C++20 stage0. The Foundation implementation
@@ -110,4 +110,6 @@ Foundation. Each intrinsic requires:
 
 Development builds receive fallback SDK roots at build time. Installed compilers locate the SDK
 beside the executable or through `FOUNDATION_SDK_ROOT`. External packages resolve through versioned
-manifests and the exact target lock.
+manifests and the exact target lock. A `language 1` manifest selects source semantics independently
+of the toolchain version; legacy `sdk` requirements continue to select a toolchain range. Public
+library and plugin compatibility follows [the compatibility contract](compatibility.md).

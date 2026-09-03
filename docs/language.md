@@ -1,8 +1,8 @@
 # Language specification
 
-Status: Foundation 1.0 target specification. The compiler and SDK remain pre-1.0; implementation
-state is maintained in the [README](../README.md#status). Accepted and rejected conformance
-fixtures exercise executable rules through the compiler entry point.
+Status: Foundation Language 1 specification. The compiler and SDK remain on the 0.1 toolchain
+line; implementation state is maintained in the [README](../README.md#status). Accepted and
+rejected conformance fixtures exercise executable rules through the compiler entry point.
 
 ## Source text
 
@@ -147,9 +147,9 @@ boolean          = "true" | "false" ;
 Struct fields and initializers do not use commas. A field declaration is `name Type`; an
 initializer is `name = expression`.
 
-## Foundation 1.0 source surface
+## Foundation Language 1 source surface
 
-The source forms below define the Foundation 1.0 grammar. They do not make an ownership-invalid or
+The source forms below define the Foundation Language 1 grammar. They do not make an ownership-invalid or
 type-invalid program valid, and implementation support requires passing conformance tests.
 
 The 1.0 grammar replaces retired `let`, word ownership markers, and inline-only methods with
@@ -394,6 +394,11 @@ requires a package declaration. The complete executable graph declares exactly o
 Diagnostics name stable root, `packages/`, or `std/` paths, and fatal traces retain package,
 function, file, line, and column.
 
+A package manifest selects one compatibility mode. `language 1` selects the permanent Language 1
+source contract without tying the package to a compiler release. The pre-release
+`sdk <requirement>` form remains accepted with its original toolchain-range behavior. A manifest
+cannot contain both directives. `foundationc package init` writes `language 1`.
+
 The optional manifest directive `fcs valid|standard|strict` selects compiler-backed source checks
 for `foundationc lint` and the language server. It defaults to `standard`; the lint command can
 override it for one invocation with `--profile`. Style findings are warnings and do not change
@@ -591,7 +596,7 @@ type. Blocks may be split across package files and form the same method set as i
 receiver is written `self`, `&self`, or `$self` and cannot be renamed. A plain `self` method reads
 the receiver. An `&self` method requires an editable value or edit loan. A `$self` method consumes
 the receiver, and every later use of that binding is rejected. Methods inherit the struct type
-parameters and cannot declare additional method-local type parameters in Foundation 1.0.
+parameters and cannot declare additional method-local type parameters in Language 1.
 
 A contract declares method requirements and may extend more than one contract. Parent methods are
 flattened in declared depth-first order, followed by new child methods. Equal signatures reached
@@ -756,7 +761,7 @@ can add an explicit `[native]` boundary frame.
 
 ## Target bindings, conditionals, and empty tests
 
-Foundation 1.0 has two binding declarations. `const` creates an immutable binding and `var` creates
+Foundation Language 1 has two binding declarations. `const` creates an immutable binding and `var` creates
 a reassignable or editable binding. Local storage duration, escape analysis, and constant folding
 do not require a third binding keyword. The retired spelling `let` is rejected with a
 targeted diagnostic.
@@ -1367,15 +1372,16 @@ remain library and attribute features built on the same declaration.
 Attributes emit typed compile-time metadata and never run arbitrary compiler plugins. Runtime
 reflection is opt-in and limited to metadata explicitly retained by the program. A dynamically
 loaded plugin cannot add a type to code that is already compiled. It implements an ABI-declared
-contract, publishes a versioned metadata descriptor, and is rejected before activation when SDK,
-target, contract layout, ownership, or ABI hashes differ.
+contract, publishes a versioned metadata descriptor, and is rejected before activation when its
+target, contract, descriptor, or ABI is incompatible.
 
 The native plugin entry point is `foundation_plugin_query_v1`. Query only describes the plugin.
 The runtime validates the descriptor before calling its create callback, so a rejected plugin does
 not own persistent host resources. The descriptor contains explicit ABI and SDK versions, target
 OS and architecture, a lifecycle contract hash, a bounded UTF-8 name, and create, start, stop, and
 destroy callbacks. Plugin state remains behind one opaque context. Names and callback errors are
-borrowed at the C boundary and copied by the host.
+borrowed at the C boundary and copied by the host. SDK fields identify the producing toolchain for
+diagnostics; plugin compatibility does not require an exact SDK match.
 
 `foundation.plugin.NativePlugin` owns the library, context, and lifecycle state. Start and stop are
 idempotent. `Registry` starts in registration order, rolls back a failed startup in reverse order,
@@ -1415,7 +1421,7 @@ exception unwinding, or implicit propagation operator. Language revisions may ex
 regions and partial moves, but cannot make owner copying, implicit null owners, panic unwinding,
 or fallible destructors valid.
 
-Foundation 1.0 has no weak-reference value. Read and edit loans are transient and cannot be stored
+Foundation Language 1 has no weak-reference value. Read and edit loans are transient and cannot be stored
 in fields or collections. A cyclic graph that needs non-owning edges stores stable application
 handles or IDs and resolves them through an explicitly owned lifetime manager. This keeps object
 destruction deterministic and prevents a hidden second ownership model. Match guards and wildcard
@@ -1555,7 +1561,8 @@ source locations, specialized imports and exports, ownership, ABI conventions, a
 provenance. ABI minor 1 models compiler-owned `@callback` imports with the
 `foundation_reactor_v1` protocol, completion status, once lifetime, reactor context, and optional
 cancel symbol. ABI minor 2 adds target-specific native links, checked nominal C layouts, and direct
-C function-pointer types. Layout values remain pointer-only at the boundary.
+C function-pointer types. ABI minor 3 records the Foundation language level. Layout values remain
+pointer-only at the boundary.
 
 `foundationc build-library <project> -o <directory> --kind static|shared` builds the same checked
 interface as a native distribution bundle. LLVM is the default object backend and `--backend c`
@@ -1570,6 +1577,11 @@ small public ABI support header. Library compilation does not synthesize an exec
 The manifest directive `native_link <library> [target <platform>]` declares transitive native
 libraries without accepting raw linker flags. Shared builds apply entries active for the selected
 target. Static consumers must apply the same requirements from the emitted PII.
+
+`foundation/library.h` publishes Foundation library ABI 1. A stable toolchain keeps that ABI
+available so a compatible precompiled library can link with future toolchains on the same platform
+C ABI. Package authors still version changes to their own exported symbols and layouts. The full
+source, library, and plugin guarantees are in [compatibility.md](compatibility.md).
 
 `foundationc package export <project> -o <directory> --format <format>` derives ecosystem packages
 from that checked interface. `zig`, `rust`, and `go-cgo` include a static native artifact.

@@ -112,12 +112,14 @@ builds.
 
 ## Status
 
-Foundation 1.0 is the language design target. The compiler, SDK, and package manifest remain on the
-0.1 release line. There is no public binary release or compatibility promise yet.
+Foundation 1 is the current language level and its permanent compatibility line. A project that
+declares `language 1` is not tied to one compiler release. The compiler and SDK remain on the 0.1
+toolchain line until the first tagged binary release; source builds are the current installation
+path.
 
 Documentation uses three state labels. `Implemented` means the repository contains the feature and
 its tests. `Optional` means the implementation exists but needs an external dependency or host
-toolchain. `Specified` means the 1.0 target defines the behavior but the compiler or SDK does not
+toolchain. `Specified` means Language 1 defines the behavior but the compiler or SDK does not
 provide it yet.
 
 | Area | State | Repository evidence |
@@ -128,7 +130,7 @@ provide it yet.
 | LLVM and C11 native output | Implemented | Build, run, library, and backend test suites |
 | C ABI, Zig, Rust, and Go package export | Implemented | Generated consumer and deterministic-output tests |
 | OpenSSL and WAMR providers | Optional | Disabled by default; CMake enforces their dependency pins |
-| Default parameter values | Specified | Defined by the 1.0 target grammar; not accepted by the current parser |
+| Default parameter values | Specified | Defined by Language 1; not accepted by the current parser |
 | Integrated cross-target build, run, and test | Specified | Target selection works; native commands remain host-targeted |
 
 ## Quick start
@@ -157,12 +159,16 @@ cmake --build --preset dev --target foundation_selfhost_bootstrap
 - [Standard library](docs/stdlib/)
 - [Foundation application packages](docs/framework/)
 - [C and language interoperability](docs/language.md#c-abi)
+- [Compatibility contract](docs/compatibility.md)
 - [API documentation](docs/documentation.md)
 - [Compiler architecture](docs/architecture.md)
+- [Governance and releases](docs/governance.md)
 
 ## Contributing
 
-Compiler changes should include accepted or rejected fixtures for observable language behavior.
+The complete build, test, language-change, compatibility, and release workflow is in
+[CONTRIBUTING.md](CONTRIBUTING.md). Security reports use the private process in
+[SECURITY.md](SECURITY.md).
 
 ## License
 
