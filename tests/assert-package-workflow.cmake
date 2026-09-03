@@ -52,7 +52,7 @@ execute_process(
 )
 string(CONCAT expected_locked_output
     "format foundation.package.locked/v1\n"
-    "target linux\n"
+    "target ${HOST_TARGET}\n"
     "registry default example.greeting 1.0.0 "
     "sha256:0bc682288bc50e8572e3deba8ff889750aeabcb836ab65dd5e0e1ccd121daa71\n")
 if(NOT locked_result EQUAL 0 OR NOT locked_output STREQUAL expected_locked_output)

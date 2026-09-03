@@ -1780,6 +1780,7 @@ if(BUILD_TESTING)
             -DPROGRAM=$<TARGET_FILE:foundationc>
             -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/tests/package-workflow
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/package-workflow-test
+            -DHOST_TARGET=${FOUNDATION_SELFHOST_TARGET}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-package-workflow.cmake
     )
     add_test(
