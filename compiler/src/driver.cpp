@@ -538,7 +538,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
         }
         arguments.push_back("bcrypt.lib");
         arguments.push_back("ws2_32.lib");
-        arguments.insert(arguments.end(), {"/link", "/STACK:8388608"});
+        arguments.insert(arguments.end(), {"/link", "/Brepro", "/STACK:8388608"});
         return arguments;
     }
 
@@ -559,7 +559,10 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
     }
 #ifndef _WIN32
     arguments.push_back("-pthread");
-#if !defined(__APPLE__)
+#if defined(__APPLE__)
+    arguments.push_back("-Wl,-no_uuid");
+    arguments.push_back("-Wl,-no_adhoc_codesign");
+#else
     arguments.push_back("-ldl");
 #endif
 #endif
