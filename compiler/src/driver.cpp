@@ -978,6 +978,18 @@ int checkFile(const std::filesystem::path &path, TargetPlatform target) {
     return report(path, compilation);
 }
 
+int checkPackage(const std::filesystem::path &path, TargetPlatform target) {
+    auto analysis = analyzeProject(path, {}, AnalyzeOptions{.requireMain = false},
+                                   ProjectMode::Production, target);
+    Compilation compilation;
+    compilation.sources = std::move(analysis.sources);
+    compilation.diagnostics = std::move(analysis.diagnostics);
+    if (analysis.semantic.has_value()) {
+        compilation.fir = lower(analysis.program, *analysis.semantic);
+    }
+    return report(path, compilation);
+}
+
 int formatPath(const std::filesystem::path &path, FormatMode mode) {
     const auto sources = formatterSources(path);
     if (!sources.has_value()) {

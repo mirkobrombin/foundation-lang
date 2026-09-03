@@ -60,6 +60,8 @@ enum class LibraryKind {
                                   TargetPlatform target = hostTargetPlatform());
 [[nodiscard]] int checkFile(const std::filesystem::path &path,
                             TargetPlatform target = hostTargetPlatform());
+[[nodiscard]] int checkPackage(const std::filesystem::path &path,
+                               TargetPlatform target = hostTargetPlatform());
 [[nodiscard]] int lintFile(
     const std::filesystem::path &path,
     std::optional<CodeStandardProfile> profile = std::nullopt,

@@ -119,3 +119,6 @@ canonical manifest and the exact source and test-source files covered by the pac
 rejects symbolic links, non-portable paths, source changes during the copy, and an output path that
 already exists. Its line-oriented report includes the package name, version, digest, and file count.
 Package publishers use this boundary instead of interpreting manifest directories.
+
+`foundationc package check <project> [--target <platform>]` checks a package without requiring an
+application entry point. The same command accepts library and executable packages.

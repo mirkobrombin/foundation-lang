@@ -87,6 +87,29 @@ if(NOT verify_output MATCHES "verified .*sha256/" OR
 endif()
 
 execute_process(
+    COMMAND "${PROGRAM}" package resolve
+            "${WORK}/fixture/registry/example.greeting/1.0.0" --target linux
+    RESULT_VARIABLE package_check_resolve_result
+    OUTPUT_VARIABLE package_check_resolve_output
+    ERROR_VARIABLE package_check_resolve_error
+)
+if(NOT package_check_resolve_result EQUAL 0)
+    message(FATAL_ERROR
+        "library package resolve failed: ${package_check_resolve_error}${package_check_resolve_output}")
+endif()
+execute_process(
+    COMMAND "${PROGRAM}" package check
+            "${WORK}/fixture/registry/example.greeting/1.0.0" --target linux
+    RESULT_VARIABLE package_check_result
+    OUTPUT_VARIABLE package_check_output
+    ERROR_VARIABLE package_check_error
+)
+if(NOT package_check_result EQUAL 0)
+    message(FATAL_ERROR
+        "library package check failed: ${package_check_error}${package_check_output}")
+endif()
+
+execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env "FOUNDATION_PACKAGE_CACHE=${PACKAGE_CACHE}"
             "${PROGRAM}" check "${PROJECT}"
     RESULT_VARIABLE check_result

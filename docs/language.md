@@ -1592,6 +1592,9 @@ layout, callback, and link requirements recorded by PII.
 the source files covered by the compiler package digest. The destination must not exist. Package
 transport may consume this tree without implementing a second manifest parser or source selector.
 
+`foundationc package check <project> [--target <platform>]` performs semantic checking without
+requiring `main`, so the same command accepts library and application packages.
+
 `go-source` is a distinct source translation mode. It emits `go.mod`, one Go source file, and the
 same canonical PII, but no native directory. It exports normal public Foundation functions and does
 not require `native_library c`, `native_name`, or `extern c` declarations. The current accepted

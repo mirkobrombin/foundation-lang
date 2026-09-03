@@ -50,6 +50,7 @@ void usage(std::ostream &output) {
               "[--registry <identity>=<path>]...\n"
            << "  foundationc package fetch <project> [--cache <path>] "
               "[--registry <identity>=<path>]...\n"
+           << "  foundationc package check <project> [--target <platform>]\n"
            << "  foundationc package verify <project> [--cache <path>]\n"
            << "  foundationc package inspect <project>\n"
            << "  foundationc package snapshot <project> -o <directory>\n"
@@ -645,6 +646,10 @@ int runPackageCommand(int argc, char **argv) {
     }
     if (command == "fetch") {
         return fetchCommand(options);
+    }
+    if (command == "check") {
+        return checkPackage(options.project,
+                            options.target.value_or(hostTargetPlatform()));
     }
     if (command == "verify") {
         return verifyCommand(options);

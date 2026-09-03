@@ -29,6 +29,7 @@ fn packageUsage() String {
         "[--registry <identity>=<path>]...\n" +
         "  foundationc package fetch <project> [--cache <path>] " +
         "[--registry <identity>=<path>]...\n" +
+        "  foundationc package check <project> [--target <platform>]\n" +
         "  foundationc package verify <project> [--cache <path>]\n" +
         "  foundationc package inspect <project>\n" +
         "  foundationc package prune <project> [--cache <path>]\n"
@@ -601,6 +602,26 @@ fn inspectPackageCommand(&options packageOptions) i32 {
     0
 }
 
+fn checkPackageCommand(&options packageOptions) i32 {
+    const target = match options.target {
+        None: hostTargetPlatform()
+        Some(value): value
+    }
+    const selected = loadLoweredProgram(
+        options.project,
+        false,
+        .Production,
+        target
+    )
+    match selected {
+        None: 1
+        Some(value): {
+            discard value
+            0
+        }
+    }
+}
+
 fn prunePackageCommand(&options packageOptions) i32 {
     var lockResult = readPackageLock(packageLockPath(options.project))
     var lock = match replace lockResult.value with .None {
@@ -658,6 +679,7 @@ fn runPackageCommand(&arguments arena<String>) i32 {
     }
     if command == "resolve" return resolvePackageCommand(&options)
     if command == "fetch" return fetchPackageCommand(&options)
+    if command == "check" return checkPackageCommand(&options)
     if command == "verify" return verifyPackageCommand(&options)
     if command == "inspect" return inspectPackageCommand(&options)
     if command == "prune" return prunePackageCommand(&options)
