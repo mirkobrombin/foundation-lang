@@ -5,6 +5,7 @@
 #include "foundation/fir.hpp"
 #include "foundation/package.hpp"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -146,9 +147,10 @@ struct PiiLinkLibrary {
 struct PackageInterface {
     unsigned int format{1};
     unsigned int abiMajor{1};
-    unsigned int abiMinor{2};
+    unsigned int abiMinor{3};
     std::string package;
     PackageVersion version;
+    std::uint32_t language{1};
     PackageRequirement sdk;
     std::string library;
     unsigned int soVersion{};

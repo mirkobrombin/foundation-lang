@@ -8,6 +8,7 @@
         { "include": "#dependency" },
         { "include": "#name" },
         { "include": "#version" },
+        { "include": "#language" },
         { "include": "#sdk" },
         { "include": "#fcs" },
         { "include": "#fcsRule" },
@@ -59,6 +60,17 @@
                     "captures": {
                         "1": { "name": "keyword.declaration.version.foundation.package" },
                         "2": { "name": "constant.numeric.version.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "language": {
+            "patterns": [
+                {
+                    "match": "^\\s*(language)\\s+(1)\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.language.foundation.package" },
+                        "2": { "name": "constant.numeric.language.foundation.package" }
                     }
                 }
             ]

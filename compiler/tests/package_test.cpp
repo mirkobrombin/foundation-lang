@@ -68,7 +68,7 @@ void manifestsRoundTripCanonically() {
     constexpr std::string_view source = R"(format foundation.package/v1
 name sample.app
 version 1.0.0
-sdk ^0.1.0
+language 1
 fcs strict
 fcs_rule FCS1001 error
 fcs_rule FCS3001 off
@@ -100,6 +100,9 @@ dependency sample.platform ~3.1.0 registry default scope test target linux
                rendered.find("fcs_rule FCS3001 off") != std::string::npos &&
                parsed.value->codeStandardRules.size() == 2,
            "FCS rule severities render canonically");
+    expect(parsed.value->languageExplicit && parsed.value->language == 1 &&
+               parsed.value->sdk.accepts(*foundation::parsePackageVersion("99.0.0")),
+           "language 1 does not bind a package to one toolchain release");
 
     constexpr std::string_view legacy = R"(format foundation.package/v1
 name sample.legacy
@@ -111,6 +114,36 @@ source src
     expect(legacyParsed.value.has_value() &&
                foundation::renderPackageManifest(*legacyParsed.value) == legacy,
            "implicit Standard profile preserves legacy manifest bytes");
+}
+
+void manifestsSelectOneCompatibilityLevel() {
+    constexpr std::string_view unsupported = R"(format foundation.package/v1
+name sample.future
+version 1.0.0
+language 2
+source src
+)";
+    constexpr std::string_view ambiguous = R"(format foundation.package/v1
+name sample.ambiguous
+version 1.0.0
+language 1
+sdk ^0.1.0
+source src
+)";
+    constexpr std::string_view missing = R"(format foundation.package/v1
+name sample.missing
+version 1.0.0
+source src
+)";
+    expect(hasCode(foundation::parsePackageManifest("foundation.package", unsupported).errors,
+                   "FDN4007"),
+           "unsupported language levels are rejected");
+    expect(hasCode(foundation::parsePackageManifest("foundation.package", ambiguous).errors,
+                   "FDN4007"),
+           "language and SDK compatibility cannot both be selected");
+    expect(hasCode(foundation::parsePackageManifest("foundation.package", missing).errors,
+                   "FDN4007"),
+           "package manifests require one compatibility selection");
 }
 
 void manifestsRequireSeparatedTestSources() {
@@ -345,7 +378,8 @@ void packageInterfacesRenderCanonically() {
          "sha256:test", foundation::TargetPlatform::Linux, foundation::PiiAbi::C11});
     const auto first = foundation::renderPackageInterfaceJson(packageInterface);
     const auto second = foundation::renderPackageInterfaceJson(packageInterface);
-    expect(first == second && first.find("\"abi_minor\":2") != std::string::npos &&
+    expect(first == second && first.find("\"abi_minor\":3") != std::string::npos &&
+               first.find("\"language\":1") != std::string::npos &&
                first.find("\"links\":[{\"name\":\"m\",\"target\":\"linux\"}]") !=
                    std::string::npos &&
                first.find("\"kind\":\"path\"") != std::string::npos &&
@@ -410,6 +444,7 @@ int main() {
     versionsFollowSemanticOrdering();
     requirementsUseBoundedRanges();
     manifestsRoundTripCanonically();
+    manifestsSelectOneCompatibilityLevel();
     manifestsRejectAmbiguousInput();
     manifestsRequireSeparatedTestSources();
     manifestsRejectInvalidCodeStandardRules();

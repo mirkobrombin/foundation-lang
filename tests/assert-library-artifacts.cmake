@@ -194,6 +194,15 @@ if(NOT SYSTEM_NAME STREQUAL "Windows")
 endif()
 
 file(READ "${shared_dist}/include/sample_native.h" header)
+file(READ "${shared_dist}/include/foundation/library.h" support_header)
+foreach(expected IN ITEMS
+        "FOUNDATION_LIBRARY_ABI_MAJOR"
+        "FOUNDATION_LIBRARY_ABI_MINOR")
+    string(FIND "${support_header}" "${expected}" found)
+    if(found EQUAL -1)
+        message(FATAL_ERROR "native library support header is missing ${expected}")
+    endif()
+endforeach()
 foreach(expected IN ITEMS
         "FOUNDATION_LIBRARY_API"
         "FOUNDATION_SAMPLE_NATIVE_C_ABI_H"
@@ -221,6 +230,15 @@ file(READ "${static_dist}/share/foundation/sample_native.pii.json" static_pii)
 if(NOT shared_pii STREQUAL static_pii)
     message(FATAL_ERROR "native library kinds produced different Package Interface IR")
 endif()
+foreach(expected IN ITEMS
+        "\"abi_major\":1"
+        "\"abi_minor\":3"
+        "\"language\":1")
+    string(FIND "${shared_pii}" "${expected}" found)
+    if(found EQUAL -1)
+        message(FATAL_ERROR "Package Interface IR is missing ${expected}")
+    endif()
+endforeach()
 
 set(consumer "${project}/consumer.c")
 set(cpp_consumer "${project}/consumer.cpp")

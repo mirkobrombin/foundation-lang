@@ -295,7 +295,9 @@ fn initializePackageProject(project String, name String) i32 {
     var manifest = newPackageManifest()
     manifest.name = text.Copy(name)
     manifest.version = packageSDKVersion()
-    manifest.sdk = match parsePackageRequirement("^0.1.0") {
+    manifest.language = 1
+    manifest.languageExplicit = true
+    manifest.sdk = match parsePackageRequirement("*") {
         None: panic("compiler SDK requirement is invalid")
         Some(value): value
     }

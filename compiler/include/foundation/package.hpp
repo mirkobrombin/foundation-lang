@@ -73,6 +73,8 @@ struct PackageDependency {
 struct PackageManifest {
     std::string name;
     PackageVersion version;
+    std::uint32_t language{1};
+    bool languageExplicit{};
     PackageRequirement sdk;
     CodeStandardProfile codeStandard{CodeStandardProfile::Standard};
     bool codeStandardExplicit{};

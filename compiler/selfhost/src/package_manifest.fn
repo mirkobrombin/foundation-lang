@@ -78,6 +78,8 @@ fn copyPackageManifest(&manifest packageManifest) own packageManifest {
     var result = newPackageManifest()
     result.name = text.Copy(manifest.name)
     result.version = copyPackageVersion(manifest.version)
+    result.language = manifest.language
+    result.languageExplicit = manifest.languageExplicit
     result.sdk = copyPackageRequirement(manifest.sdk)
     result.codeStandard = manifest.codeStandard
     result.codeStandardExplicit = manifest.codeStandardExplicit
@@ -322,8 +324,8 @@ fn manifestHasForeign(
 }
 
 fn knownPackageManifestDirective(value String) bool {
-    value == "format" || value == "name" || value == "version" || value == "sdk" ||
-        value == "fcs" || value == "fcs_rule" || value == "source" ||
+    value == "format" || value == "name" || value == "version" || value == "language" ||
+        value == "sdk" || value == "fcs" || value == "fcs_rule" || value == "source" ||
         value == "test_source" || value == "native_library" || value == "native_name" ||
         value == "native_soversion" || value == "native_link" || value == "foreign" ||
         value == "dependency"
@@ -341,6 +343,7 @@ fn parsePackageManifest(
     var formatSeen = false
     var nameSeen = false
     var versionSeen = false
+    var languageSeen = false
     var sdkSeen = false
     var codeStandardSeen = false
     var sourceSeen = false
@@ -413,6 +416,30 @@ fn parsePackageManifest(
                             }
                         }
                         versionSeen = true
+                    }
+                    if directive == "language" {
+                        const parsed = if tokens.values.len() == 2 {
+                            parsePackageNumber(packageToken(&tokens.values, 1))
+                        } else {.None }
+                        match parsed {
+                            None: addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4007", "expected one supported language level")
+                            Some(value): {
+                                if value != 1 || languageSeen {
+                                    addPackageError(&result.errors, filePath, lineNumber, 1,
+                                        "FDN4007", "expected one supported language level")
+                                } else {
+                                    manifest.language = 1
+                                    manifest.languageExplicit = true
+                                    manifest.sdk = packageRequirement {
+                                        kind = .Any
+                                        version = emptyPackageVersion()
+                                    }
+                                }
+                                discard languageSeen
+                            }
+                        }
+                        languageSeen = true
                     }
                     if directive == "sdk" {
                         const parsed = if tokens.values.len() == 2 {
@@ -651,9 +678,14 @@ fn parsePackageManifest(
         addPackageError(&result.errors, filePath, 1, 1, "FDN4006",
             "missing package version")
     }
-    if !sdkSeen {
+    if !languageSeen && !sdkSeen {
         addPackageError(&result.errors, filePath, 1, 1, "FDN4007",
-            "missing SDK requirement")
+            "missing language or SDK requirement")
+    } else {
+        if languageSeen && sdkSeen {
+            addPackageError(&result.errors, filePath, 1, 1, "FDN4007",
+                "package manifest must select either language or SDK")
+        }
     }
     if !sourceSeen {
         addPackageError(&result.errors, filePath, 1, 1, "FDN4008",
@@ -918,8 +950,13 @@ fn renderPackageManifest(&source packageManifest) String {
     discard packageBuilderWrite(&builder, "name " + manifest.name + "\n")
     discard packageBuilderWrite(&builder,
         "version " + packageVersionString(manifest.version) + "\n")
-    discard packageBuilderWrite(&builder,
-        "sdk " + packageRequirementString(manifest.sdk) + "\n")
+    if manifest.languageExplicit {
+        discard packageBuilderWrite(&builder,
+            "language " + packageU32(manifest.language) + "\n")
+    } else {
+        discard packageBuilderWrite(&builder,
+            "sdk " + packageRequirementString(manifest.sdk) + "\n")
+    }
     if manifest.codeStandardExplicit {
         discard packageBuilderWrite(&builder,
             "fcs " + codeStandardProfileName(manifest.codeStandard) + "\n")

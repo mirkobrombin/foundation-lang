@@ -538,6 +538,7 @@ std::string renderPackageInterfaceJson(PackageInterface value) {
     out << "{\"format\":" << value.format << ",\"abi_major\":" << value.abiMajor
         << ",\"abi_minor\":" << value.abiMinor << ",\"package\":" << quote(value.package)
         << ",\"version\":" << quote(value.version.string())
+        << ",\"language\":" << value.language
         << ",\"sdk\":" << quote(value.sdk.string()) << ",\"library\":" << quote(value.library)
         << ",\"soversion\":" << value.soVersion
         << ",\"target\":" << quote(targetPlatformName(value.target)) << ",\"links\":[";
@@ -584,6 +585,7 @@ std::optional<PackageInterface> buildPackageInterface(const FirProgram& source,
     PackageInterface result;
     result.package = manifest.name;
     result.version = manifest.version;
+    result.language = manifest.language;
     result.sdk = manifest.sdk;
     result.library = manifest.nativeName.value_or(manifest.name);
     result.soVersion = manifest.nativeSOVersion.value_or(0);

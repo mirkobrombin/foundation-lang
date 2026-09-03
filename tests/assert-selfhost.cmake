@@ -79,4 +79,13 @@ if(NOT command_output MATCHES "format foundation.package/v1" OR
     message(FATAL_ERROR "package inspect output is incomplete:\n${command_output}")
 endif()
 
+set(initialized "${OUTPUT_DIRECTORY}/package-init")
+file(REMOVE_RECURSE "${initialized}")
+run_checked("package init" "${COMPILER}" package init "${initialized}" selfhost.initialized)
+file(READ "${initialized}/foundation.package" initialized_manifest)
+if(NOT initialized_manifest MATCHES "language 1")
+    message(FATAL_ERROR "self-hosted package init omitted Language 1")
+endif()
+run_checked("package resolve" "${COMPILER}" package resolve "${initialized}")
+
 message(STATUS "self-hosted compiler commands passed")

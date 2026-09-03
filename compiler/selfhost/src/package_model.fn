@@ -75,6 +75,8 @@ struct packageForeign {
 struct packageManifest {
     name String
     version packageVersion
+    language u32
+    languageExplicit bool
     sdk packageRequirement
     codeStandard codeStandardProfile
     codeStandardExplicit bool
@@ -196,6 +198,8 @@ fn newPackageManifest() own packageManifest {
     own packageManifest {
         name = ""
         version = emptyPackageVersion()
+        language = 1
+        languageExplicit = false
         sdk = emptyPackageRequirement()
         codeStandard = .Standard
         codeStandardExplicit = false

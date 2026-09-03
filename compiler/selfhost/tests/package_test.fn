@@ -30,7 +30,7 @@ test "package manifest parser renders canonical source" {
         "format foundation.package/v1\n" +
         "name sample.app\n" +
         "version 1.2.3\n" +
-        "sdk ^0.1.0\n" +
+        "language 1\n" +
         "fcs strict\n" +
         "fcs_rule FCS7004 error\n" +
         "source src\n" +
@@ -45,17 +45,63 @@ test "package manifest parser renders canonical source" {
     }
     expect(manifest.name == "sample.app")
     expect(manifest.dependencies.len() == 2)
+    expect(manifest.languageExplicit)
+    expect(manifest.language == 1)
+    expect(packageRequirementAccepts(manifest.sdk, requiredPackageVersion("99.0.0")))
     expect(renderPackageManifest(&manifest) ==
         "format foundation.package/v1\n" +
         "name sample.app\n" +
         "version 1.2.3\n" +
-        "sdk ^0.1.0\n" +
+        "language 1\n" +
         "fcs strict\n" +
         "fcs_rule FCS7004 error\n" +
         "source src\n" +
         "test_source tests\n" +
         "dependency sample.core ^2.0.0 registry local target linux\n" +
         "dependency sample.test ~1.0.0 path ../test scope test\n")
+}
+
+test "package manifest selects one compatibility level" {
+    var legacy = parsePackageManifest(
+        "foundation.package",
+        "format foundation.package/v1\n" +
+        "name sample.legacy\n" +
+        "version 1.0.0\n" +
+        "sdk ^0.1.0\n" +
+        "source src\n"
+    )
+    expect(legacy.errors.len() == 0)
+    var legacyManifest = match replace legacy.value with .None {
+        None: panic("expected legacy package manifest")
+        Some(value): value
+    }
+    expect(renderPackageManifest(&legacyManifest) ==
+        "format foundation.package/v1\n" +
+        "name sample.legacy\n" +
+        "version 1.0.0\n" +
+        "sdk ^0.1.0\n" +
+        "source src\n")
+
+    var unsupported = parsePackageManifest(
+        "foundation.package",
+        "format foundation.package/v1\n" +
+        "name sample.future\n" +
+        "version 1.0.0\n" +
+        "language 2\n" +
+        "source src\n"
+    )
+    expect(packageErrorsContain(&unsupported.errors, "FDN4007"))
+
+    var ambiguous = parsePackageManifest(
+        "foundation.package",
+        "format foundation.package/v1\n" +
+        "name sample.ambiguous\n" +
+        "version 1.0.0\n" +
+        "language 1\n" +
+        "sdk ^0.1.0\n" +
+        "source src\n"
+    )
+    expect(packageErrorsContain(&ambiguous.errors, "FDN4007"))
 }
 
 test "package manifest rejects duplicate and overlapping declarations" {
@@ -162,7 +208,7 @@ test "package resolver backtracks to one compatible graph" {
         "format foundation.package/v1\n" +
         "name sample.app\n" +
         "version 1.0.0\n" +
-        "sdk ^0.1.0\n" +
+        "language 1\n" +
         "source src\n" +
         "dependency sample.a * registry local\n" +
         "dependency sample.b ^1.0.0 registry local\n"
@@ -185,7 +231,7 @@ test "package resolver backtracks to one compatible graph" {
     var resolved = resolvePackageGraph(
         "foundation.package",
         &root,
-        packageSDKVersion(),
+        requiredPackageVersion("99.0.0"),
         .Linux,
         &catalog
     )
@@ -298,7 +344,7 @@ fn packageCandidateFor(
             "format foundation.package/v1\n" +
             "name " + name + "\n" +
             "version " + version + "\n" +
-            "sdk ^0.1.0\n" +
+            "language 1\n" +
             "source src\n" + dependencies
         )
         digest = packageDigest(digit)

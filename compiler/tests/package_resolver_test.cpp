@@ -138,6 +138,18 @@ void cyclesAndSdkMismatchAreRejected() {
     expect(hasCode(mismatch.errors, "FDN4050"), "SDK mismatch has a stable diagnostic");
 }
 
+void languageLevelDoesNotPinTheToolchain() {
+    auto root = manifest("sample.language", "1.0.0");
+    root.language = 1;
+    root.languageExplicit = true;
+    root.sdk = requirement("*");
+    const auto resolved = foundation::resolvePackageGraph(
+        "foundation.package", root, *foundation::parsePackageVersion("99.0.0"),
+        foundation::TargetPlatform::Linux, {});
+    expect(resolved.value.has_value(),
+           "Language 1 package resolves on a future toolchain version");
+}
+
 void cyclesAcrossPreviouslySelectedPackagesAreRejected() {
     auto root = manifest("sample.app", "1.0.0");
     root.dependencies.push_back(dependency("sample.a", "*"));
@@ -276,6 +288,7 @@ int runPackageResolverTests() {
     resolutionBacktracksAndIsDeterministic();
     targetDependenciesAndConflictsAreChecked();
     cyclesAndSdkMismatchAreRejected();
+    languageLevelDoesNotPinTheToolchain();
     cyclesAcrossPreviouslySelectedPackagesAreRejected();
     malformedCatalogCandidateIsRejected();
     testDependenciesAreRootScoped();

@@ -165,6 +165,9 @@ test("recognizes package and lock directives with dedicated scopes", () => {
         packageGrammar.repository.testSource.patterns[0].captures[1].name,
         "keyword.declaration.test-source.foundation.package"
     );
+    const language = new RegExp(packageGrammar.repository.language.patterns[0].match)
+        .exec("language 1");
+    assert.deepEqual(language?.slice(1), ["language", "1"]);
     const dependencyTargetScope = new RegExp(
         packageGrammar.repository.dependency.patterns[0].match
     ).exec("dependency example.profile ^1.2.3 path ../profile target linux scope test");

@@ -602,6 +602,7 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
     auto formatSeen = false;
     auto nameSeen = false;
     auto versionSeen = false;
+    auto languageSeen = false;
     auto sdkSeen = false;
     auto codeStandardSeen = false;
     std::set<std::string> codeStandardRules;
@@ -636,6 +637,17 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                 manifest.version = *parsed;
             }
             versionSeen = true;
+        } else if (directive == "language") {
+            const auto parsed = tokens.size() == 2 ? number(tokens[1]) : std::nullopt;
+            if (!parsed.has_value() || *parsed != 1 || languageSeen) {
+                addError(result.errors, path, line, 1, "FDN4007",
+                         "expected one supported language level");
+            } else {
+                manifest.language = 1;
+                manifest.languageExplicit = true;
+                manifest.sdk = PackageRequirement{PackageRequirementKind::Any, {}};
+            }
+            languageSeen = true;
         } else if (directive == "sdk") {
             const auto parsed = tokens.size() == 2 ? parsePackageRequirement(tokens[1])
                                                    : std::nullopt;
@@ -824,8 +836,12 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
     if (!versionSeen) {
         addError(result.errors, path, 1, 1, "FDN4006", "missing package version");
     }
-    if (!sdkSeen) {
-        addError(result.errors, path, 1, 1, "FDN4007", "missing SDK requirement");
+    if (!languageSeen && !sdkSeen) {
+        addError(result.errors, path, 1, 1, "FDN4007",
+                 "missing language or SDK requirement");
+    } else if (languageSeen && sdkSeen) {
+        addError(result.errors, path, 1, 1, "FDN4007",
+                 "package manifest must select either language or SDK");
     }
     if (!sourceSeen) {
         addError(result.errors, path, 1, 1, "FDN4008", "missing source directory");
@@ -883,8 +899,12 @@ std::string renderPackageManifest(const PackageManifest &manifest) {
     std::ostringstream output;
     output << "format foundation.package/v1\n"
            << "name " << manifest.name << '\n'
-           << "version " << manifest.version.string() << '\n'
-           << "sdk " << manifest.sdk.string() << '\n';
+           << "version " << manifest.version.string() << '\n';
+    if (manifest.languageExplicit) {
+        output << "language " << manifest.language << '\n';
+    } else {
+        output << "sdk " << manifest.sdk.string() << '\n';
+    }
     if (manifest.codeStandardExplicit) {
         output << "fcs " << codeStandardProfileName(manifest.codeStandard) << '\n';
     }

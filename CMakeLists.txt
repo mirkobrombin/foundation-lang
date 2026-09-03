@@ -1378,7 +1378,7 @@ if(BUILD_TESTING)
     target_compile_definitions(foundation_plugin_start_fail PRIVATE
         FDN_PLUGIN_FIXTURE_START_FAIL=1
     )
-    foreach(plugin_failure IN ITEMS query sdk target contract descriptor create)
+    foreach(plugin_failure IN ITEMS query target contract descriptor create)
         add_library(foundation_plugin_${plugin_failure}_failure SHARED
             tests/fixtures/plugin_fixture.c
         )
@@ -1389,8 +1389,10 @@ if(BUILD_TESTING)
     target_compile_definitions(foundation_plugin_query_failure PRIVATE
         FDN_PLUGIN_FIXTURE_QUERY_FAIL=1
     )
-    target_compile_definitions(foundation_plugin_sdk_failure PRIVATE
-        FDN_PLUGIN_FIXTURE_SDK_MISMATCH=1
+    add_library(foundation_plugin_sdk_compat SHARED tests/fixtures/plugin_fixture.c)
+    target_include_directories(foundation_plugin_sdk_compat PRIVATE runtime/include)
+    target_compile_definitions(foundation_plugin_sdk_compat PRIVATE
+        FDN_PLUGIN_FIXTURE_OTHER_SDK=1
     )
     target_compile_definitions(foundation_plugin_target_failure PRIVATE
         FDN_PLUGIN_FIXTURE_TARGET_MISMATCH=1
@@ -1436,7 +1438,7 @@ if(BUILD_TESTING)
         foundation_plugin_abi_mismatch
         foundation_plugin_start_fail
         foundation_plugin_query_failure
-        foundation_plugin_sdk_failure
+        foundation_plugin_sdk_compat
         foundation_plugin_target_failure
         foundation_plugin_contract_failure
         foundation_plugin_descriptor_failure
@@ -1472,7 +1474,7 @@ if(BUILD_TESTING)
         foundation_plugin_abi_mismatch
         foundation_plugin_start_fail
         foundation_plugin_query_failure
-        foundation_plugin_sdk_failure
+        foundation_plugin_sdk_compat
         foundation_plugin_target_failure
         foundation_plugin_contract_failure
         foundation_plugin_descriptor_failure
@@ -1812,7 +1814,7 @@ if(BUILD_TESTING)
             $<TARGET_FILE:foundation_plugin_abi_mismatch>
             $<TARGET_FILE:foundation_plugin_start_fail>
             $<TARGET_FILE:foundation_plugin_query_failure>
-            $<TARGET_FILE:foundation_plugin_sdk_failure>
+            $<TARGET_FILE:foundation_plugin_sdk_compat>
             $<TARGET_FILE:foundation_plugin_target_failure>
             $<TARGET_FILE:foundation_plugin_contract_failure>
             $<TARGET_FILE:foundation_plugin_descriptor_failure>

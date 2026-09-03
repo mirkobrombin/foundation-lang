@@ -93,7 +93,7 @@ FDN_PLUGIN_EXPORT int32_t FDN_PLUGIN_CALL foundation_plugin_query_v1(
     descriptor->abi_minor = FDN_PLUGIN_ABI_MINOR;
     descriptor->sdk_major = FDN_PLUGIN_SDK_MAJOR;
     descriptor->sdk_minor = FDN_PLUGIN_SDK_MINOR;
-#if defined(FDN_PLUGIN_FIXTURE_SDK_MISMATCH)
+#if defined(FDN_PLUGIN_FIXTURE_OTHER_SDK)
     descriptor->sdk_minor += 1;
 #endif
     descriptor->contract_hash = FDN_PLUGIN_LIFECYCLE_CONTRACT_HASH;

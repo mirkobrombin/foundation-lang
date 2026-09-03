@@ -246,7 +246,9 @@ int initialize(const std::filesystem::path &project, std::string_view name) {
     PackageManifest value;
     value.name = std::string(name);
     value.version = *parsePackageVersion("0.1.0");
-    value.sdk = *parsePackageRequirement("^0.1.0");
+    value.language = 1;
+    value.languageExplicit = true;
+    value.sdk = *parsePackageRequirement("*");
     value.codeStandardExplicit = true;
     value.source = "src";
 

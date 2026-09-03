@@ -37,6 +37,7 @@ enum {
     FDN_PLUGIN_MISSING_QUERY = 3,
     FDN_PLUGIN_QUERY_FAILED = 4,
     FDN_PLUGIN_ABI_MISMATCH = 5,
+    /* Reserved by plugin ABI v1; SDK identity is now diagnostic metadata. */
     FDN_PLUGIN_SDK_MISMATCH = 6,
     FDN_PLUGIN_TARGET_MISMATCH = 7,
     FDN_PLUGIN_CONTRACT_MISMATCH = 8,
@@ -247,12 +248,6 @@ static int32_t fdn_plugin_validate(const fdn_plugin_host_v1 *host,
         fdn_plugin_set_detail(detail, fdn_plugin_text("plugin ABI mismatch"),
                               "plugin ABI mismatch");
         return FDN_PLUGIN_ABI_MISMATCH;
-    }
-    if (descriptor->sdk_major != host->sdk_major ||
-        descriptor->sdk_minor != host->sdk_minor) {
-        fdn_plugin_set_detail(detail, fdn_plugin_text("plugin SDK mismatch"),
-                              "plugin SDK mismatch");
-        return FDN_PLUGIN_SDK_MISMATCH;
     }
     if (!fdn_plugin_text_valid(descriptor->target_os, 32, 0) ||
         !fdn_plugin_text_valid(descriptor->target_arch, 32, 0)) {

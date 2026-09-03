@@ -4,6 +4,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define FOUNDATION_LIBRARY_ABI_MAJOR UINT32_C(1)
+#define FOUNDATION_LIBRARY_ABI_MINOR UINT32_C(0)
+
 #ifdef __cplusplus
 extern "C" {
 #endif

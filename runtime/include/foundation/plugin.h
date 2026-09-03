@@ -69,6 +69,7 @@ typedef struct fdn_plugin_host_v1 {
     uint32_t struct_size;
     uint32_t abi_major;
     uint32_t abi_minor;
+    /* Producing SDK version for diagnostics. It is not a compatibility gate. */
     uint32_t sdk_major;
     uint32_t sdk_minor;
     fdn_plugin_text_v1 target_os;
@@ -81,6 +82,7 @@ typedef struct fdn_plugin_descriptor_v1 {
     uint32_t struct_size;
     uint32_t abi_major;
     uint32_t abi_minor;
+    /* Producing SDK version for diagnostics. It is not a compatibility gate. */
     uint32_t sdk_major;
     uint32_t sdk_minor;
     uint64_t contract_hash;

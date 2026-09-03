@@ -11,7 +11,6 @@ enum {
     PLUGIN_MISSING_QUERY = 3,
     PLUGIN_QUERY_FAILED = 4,
     PLUGIN_ABI_MISMATCH = 5,
-    PLUGIN_SDK_MISMATCH = 6,
     PLUGIN_TARGET_MISMATCH = 7,
     PLUGIN_CONTRACT_MISMATCH = 8,
     PLUGIN_INVALID_DESCRIPTOR = 9,
@@ -84,9 +83,17 @@ int main(int argc, char **argv) {
     if (!open_failure(argv[5], PLUGIN_QUERY_FAILED, "fixture query rejected")) {
         return 13;
     }
-    if (!open_failure(argv[6], PLUGIN_SDK_MISMATCH, "plugin SDK mismatch")) {
+    if (open_plugin(argv[6], &handle, &name, &detail) != PLUGIN_OK || handle == 0 ||
+        !text_is(name, "sample-native") ||
+        foundation_runtime_plugin_live_handles() != 1) {
         return 14;
     }
+    if (foundation_runtime_plugin_close(&handle, &detail) != PLUGIN_OK || handle != 0 ||
+        foundation_runtime_plugin_live_handles() != 0) {
+        return 14;
+    }
+    fdn_string_drop(&name);
+    fdn_string_drop(&detail);
     if (!open_failure(argv[7], PLUGIN_TARGET_MISMATCH, "plugin target mismatch")) {
         return 15;
     }
