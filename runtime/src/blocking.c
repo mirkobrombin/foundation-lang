@@ -196,7 +196,6 @@ static void fdn_blocking_stop(fdn_blocking_executor *executor) {
         }
 #endif
     }
-    fdn_blocking_destroy(executor);
 }
 
 static bool fdn_blocking_wake_completed(void *context) {
@@ -290,10 +289,11 @@ bool fdn_blocking_poll(fdn_blocking_job **slot, void *context,
         fdn_blocking_unlock(executor);
         fdn_dealloc(job);
         if (stop) {
+            fdn_blocking_stop(executor);
             fdn_task_external_source_close(executor->source);
             executor->source = NULL;
             fdn_blocking_current = NULL;
-            fdn_blocking_stop(executor);
+            fdn_blocking_destroy(executor);
         }
         return true;
     }
