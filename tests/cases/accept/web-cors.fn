@@ -220,7 +220,7 @@ fn main() i32 {
         return 4
     }
     if !hasHeader(preflightHeaders, "Access-Control-Allow-Origin", "https://one.example") ||
-        !hasHeader(preflightHeaders, "Content-Length", "0") ||
+        hasHeader(preflightHeaders, "Content-Length", "0") ||
         !hasHeader(
         preflightHeaders,
         "Access-Control-Allow-Methods",

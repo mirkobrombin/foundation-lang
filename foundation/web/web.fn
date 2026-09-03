@@ -1764,14 +1764,19 @@ fn serializeResponseHead(
     var activeHeaders = headers
     while !activeHeaders.IsEmpty() {
         const header = headerValue(activeHeaders.PopFront())
-        writeText(&builder, header.Name)
-        writeText(&builder, ": ")
-        writeText(&builder, header.Value)
+        if status != 204 || !equalFoldAscii(header.Name, "Content-Length") {
+            writeText(&builder, header.Name)
+            writeText(&builder, ": ")
+            writeText(&builder, header.Value)
+            writeText(&builder, "\r\n")
+        }
+    }
+    if status != 204 {
+        writeText(&builder, "Content-Length: ")
+        writeText(&builder, format.U64(byteLength(body)))
         writeText(&builder, "\r\n")
     }
-    writeText(&builder, "Content-Length: ")
-    writeText(&builder, format.U64(byteLength(body)))
-    writeText(&builder, "\r\nConnection: close\r\n\r\n")
+    writeText(&builder, "Connection: close\r\n\r\n")
     const result = builder.Finish() else error {
         discard error
         panic("HTTP response builder invariant failed")
