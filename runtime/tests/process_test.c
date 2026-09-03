@@ -103,8 +103,8 @@ static int child_main(int argc, char **argv) {
 #if defined(_WIN32)
     if (argc >= 3 && strcmp(argv[2], "handle") == 0 && argc == 4) {
         const uintptr_t value = (uintptr_t)strtoull(argv[3], NULL, 10);
-        DWORD flags = 0;
-        return GetHandleInformation((HANDLE)value, &flags) != 0 ? 9 : 0;
+        (void)SetEvent((HANDLE)value);
+        return 0;
     }
 #endif
     return 1;
@@ -140,7 +140,8 @@ static int inherited_handle_is_confined(const char *program) {
         foundation_runtime_process_run(process, &exit_code, &stdout_handle,
                                        &stderr_handle) == 0 &&
         exit_code == 0 && bytes_are(stdout_handle, "") &&
-        bytes_are(stderr_handle, "")) {
+        bytes_are(stderr_handle, "") &&
+        WaitForSingleObject(sentinel, 0) == WAIT_TIMEOUT) {
         status = 0;
     }
     foundation_runtime_bytes_close(&stdout_handle);
