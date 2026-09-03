@@ -1,0 +1,242 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare draft
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Validate tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release tags must use vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          version="${TAG#v}"
+          grep -Fq "project(foundation_lang VERSION $version " CMakeLists.txt
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
+              --generate-notes --title "Foundation ${GITHUB_REF_NAME#v}"
+          fi
+
+  build:
+    name: ${{ matrix.name }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-24.04
+            platform: linux
+            cc: gcc
+            cxx: g++
+          - name: macOS
+            os: macos-15
+            platform: macos
+            cc: clang
+            cxx: clang++
+          - name: Windows x86_64
+            os: windows-2025
+            platform: windows
+            cc: cl
+            cxx: cl
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout Foundation v2 baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: mirkobrombin/go-foundation
+          ref: 06679f06495151fbd0d491e76121ba98b939a291
+          path: build/go-foundation-v2
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.25.x
+          cache: false
+
+      - name: Install LLVM 21 on Linux
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          sudo apt-get install --no-install-recommends -y llvm-21-dev
+          echo "LLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm" >> "$GITHUB_ENV"
+
+      - name: Install LLVM 21 on macOS
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          brew install llvm@21 lld@21
+          echo "LLVM_DIR=$(brew --prefix llvm@21)/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "$(brew --prefix llvm@21)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld@21)/bin" >> "$GITHUB_PATH"
+
+      - name: Install LLVM 21 on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "llvm-21.1.8-windows.tar.xz"
+          $root = Join-Path $env:RUNNER_TEMP "llvm-21.1.8"
+          Invoke-WebRequest -Uri https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz -OutFile $archive
+          $digest = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne "749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47") {
+            throw "LLVM archive checksum mismatch"
+          }
+          New-Item -ItemType Directory -Force $root | Out-Null
+          tar -xJf $archive -C $root --strip-components=1
+          "LLVM_DIR=$root\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Configure Unix
+        if: runner.os != 'Windows'
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: >-
+          cmake -S . -B build/release -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+          -DFOUNDATION_WARNINGS_AS_ERRORS=ON
+          -DLLVM_DIR="$LLVM_DIR"
+          -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
+
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          cmake -S . -B build/release -A x64
+          -DBUILD_TESTING=ON
+          -DFOUNDATION_WARNINGS_AS_ERRORS=ON
+          "-DLLVM_DIR=$env:LLVM_DIR"
+          -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
+
+      - name: Build
+        run: cmake --build build/release --config Release
+
+      - name: Verify self-hosted compiler
+        run: >-
+          cmake --build build/release --config Release
+          --target foundation_selfhost_verify
+
+      - name: Prepare package locks
+        if: runner.os != 'Windows'
+        run: >-
+          cmake
+          -DCOMPILER=${{ github.workspace }}/build/release/foundationc
+          -DROOT=${{ github.workspace }}
+          -P tests/prepare-host-locks.cmake
+
+      - name: Prepare package locks on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          cmake
+          "-DCOMPILER=${{ github.workspace }}/build/release/Release/foundationc.exe"
+          "-DROOT=${{ github.workspace }}"
+          -P tests/prepare-host-locks.cmake
+
+      - name: Test
+        run: ctest --test-dir build/release -C Release --output-on-failure --parallel 4
+
+      - name: Package Unix SDK
+        if: runner.os != 'Windows'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$RUNNER_ARCH" in
+            X64) architecture=x86_64 ;;
+            ARM64) architecture=aarch64 ;;
+            *) echo "unsupported runner architecture $RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          cmake \
+            -DBUILD_DIRECTORY="$GITHUB_WORKSPACE/build/release" \
+            -DOUTPUT_DIRECTORY="$GITHUB_WORKSPACE/build/release-assets" \
+            -DARCHIVE_NAME="foundation-${TAG#v}-${PLATFORM}-${architecture}" \
+            -DEXECUTABLE_SUFFIX= \
+            -P tools/release/package-sdk.cmake
+
+      - name: Package Windows SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ($env:RUNNER_ARCH -ne "X64") {
+            throw "unsupported runner architecture $env:RUNNER_ARCH"
+          }
+          $version = $env:TAG.Substring(1)
+          cmake `
+            "-DBUILD_DIRECTORY=$env:GITHUB_WORKSPACE/build/release" `
+            "-DOUTPUT_DIRECTORY=$env:GITHUB_WORKSPACE/build/release-assets" `
+            "-DARCHIVE_NAME=foundation-$version-windows-x86_64" `
+            -DEXECUTABLE_SUFFIX=.exe `
+            -DCONFIG=Release `
+            -P tools/release/package-sdk.cmake
+
+      - name: Upload Unix assets
+        if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$GITHUB_REF_NAME" build/release-assets/* --clobber
+
+      - name: Upload Windows assets
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          Get-ChildItem build/release-assets/* | ForEach-Object {
+            gh release upload $env:GITHUB_REF_NAME $_.FullName --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish complete draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          test "$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | length')" = 6
+          gh release edit "$GITHUB_REF_NAME" --draft=false

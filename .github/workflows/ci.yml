@@ -100,6 +100,15 @@ jobs:
           ctest --preset dev --parallel 4
           ctest --preset dev --parallel 4
 
+      - name: Package SDK
+        run: >-
+          cmake
+          -DBUILD_DIRECTORY=${{ github.workspace }}/build/dev
+          -DOUTPUT_DIRECTORY=${{ github.workspace }}/build/ci-release-assets
+          -DARCHIVE_NAME=foundation-ci-${{ runner.os }}-${{ runner.arch }}
+          -DEXECUTABLE_SUFFIX=
+          -P tools/release/package-sdk.cmake
+
   windows:
     name: Windows MSVC
     runs-on: windows-2025
@@ -171,6 +180,22 @@ jobs:
           ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4 || exit /b 1
           ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4 || exit /b 1
           ctest --test-dir build/windows -C Debug --output-on-failure --parallel 4 || exit /b 1
+
+      - name: Build release language server
+        run: >-
+          cmake --build build/windows --config Release
+          --target foundation-ls
+
+      - name: Package SDK
+        shell: pwsh
+        run: >-
+          cmake
+          "-DBUILD_DIRECTORY=${{ github.workspace }}/build/windows"
+          "-DOUTPUT_DIRECTORY=${{ github.workspace }}/build/ci-release-assets"
+          -DARCHIVE_NAME=foundation-ci-${{ runner.os }}-${{ runner.arch }}
+          -DEXECUTABLE_SUFFIX=.exe
+          -DCONFIG=Release
+          -P tools/release/package-sdk.cmake
 
   fuzz:
     name: Parser fuzz and sanitizers
