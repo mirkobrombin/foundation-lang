@@ -196,8 +196,8 @@ endif()
 file(READ "${shared_dist}/include/sample_native.h" header)
 file(READ "${shared_dist}/include/foundation/library.h" support_header)
 foreach(expected IN ITEMS
-        "FOUNDATION_LIBRARY_ABI_MAJOR"
-        "FOUNDATION_LIBRARY_ABI_MINOR")
+        "FOUNDATION_LIBRARY_ABI_MAJOR UINT32_C(1)"
+        "FOUNDATION_LIBRARY_ABI_MINOR UINT32_C(0)")
     string(FIND "${support_header}" "${expected}" found)
     if(found EQUAL -1)
         message(FATAL_ERROR "native library support header is missing ${expected}")
