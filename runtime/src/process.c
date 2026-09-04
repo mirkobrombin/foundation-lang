@@ -11,6 +11,7 @@
 #define _WIN32_WINNT 0x0601
 #endif
 
+#include "foundation/process_internal.h"
 #include "foundation/runtime.h"
 #include "bytes_internal.h"
 
@@ -47,7 +48,7 @@ enum {
     FDN_PROCESS_CLOSED = 9,
 };
 
-typedef struct fdn_process {
+struct fdn_process {
     fdn_string program;
     fdn_string working_directory;
     fdn_string *arguments;
@@ -59,7 +60,7 @@ typedef struct fdn_process {
     size_t output_limit;
     bool has_working_directory;
     bool inherit_environment;
-} fdn_process;
+};
 
 typedef struct fdn_process_capture {
     uint8_t *data;
@@ -108,6 +109,14 @@ uint64_t foundation_runtime_process_live_handles(void) {
 #else
     return atomic_load_explicit(&fdn_live_process_count, memory_order_relaxed);
 #endif
+}
+
+const fdn_process *fdn_process_from_handle(uint64_t handle) {
+    return (const fdn_process *)(uintptr_t)handle;
+}
+
+bool fdn_process_environment_block_required(const fdn_process *process) {
+    return !process->inherit_environment || process->environment_count != 0;
 }
 
 static int fdn_process_text_valid(const fdn_string *value, bool allow_empty) {
@@ -273,7 +282,7 @@ int32_t foundation_runtime_process_add_environment(uint64_t handle,
     if (process == NULL) {
         return FDN_PROCESS_CLOSED;
     }
-    if (process->inherit_environment || !fdn_process_environment_valid(entry)) {
+    if (!fdn_process_environment_valid(entry)) {
         return FDN_PROCESS_INVALID_ENVIRONMENT;
     }
     for (index = 0; index < process->environment_count; ++index) {
@@ -369,7 +378,7 @@ static int32_t fdn_process_finish_capture(fdn_process_capture *capture,
 }
 
 #if defined(_WIN32)
-static int32_t fdn_process_windows_status(DWORD error) {
+int32_t fdn_process_windows_status(DWORD error) {
     if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
         return FDN_PROCESS_NOT_FOUND;
     }
@@ -407,6 +416,10 @@ static wchar_t *fdn_process_windows_text(const fdn_string *value) {
     }
     result[length] = L'\0';
     return result;
+}
+
+wchar_t *fdn_process_windows_program(const fdn_process *process) {
+    return fdn_process_windows_text(&process->program);
 }
 
 typedef struct fdn_wide_builder {
@@ -520,7 +533,7 @@ static int fdn_wide_argument(fdn_wide_builder *builder, const wchar_t *value) {
     return fdn_wide_append(builder, L'"');
 }
 
-static wchar_t *fdn_process_windows_command(const fdn_process *process) {
+wchar_t *fdn_process_windows_command(const fdn_process *process) {
     fdn_wide_builder builder = {NULL, 0, 0};
     wchar_t *value = fdn_process_windows_text(&process->program);
     size_t index;
@@ -553,53 +566,145 @@ static int fdn_wide_compare(const void *left, const void *right) {
     return _wcsicmp(*left_value, *right_value);
 }
 
-static wchar_t *fdn_process_windows_environment(const fdn_process *process) {
-    wchar_t **entries;
+static size_t fdn_wide_environment_name_length(const wchar_t *value) {
+    size_t length = value[0] == L'=' ? 1 : 0;
+    while (value[length] != L'\0' && value[length] != L'=') {
+        ++length;
+    }
+    return length;
+}
+
+static int fdn_wide_environment_name_equal(const wchar_t *left,
+                                           const wchar_t *right) {
+    const size_t left_length = fdn_wide_environment_name_length(left);
+    const size_t right_length = fdn_wide_environment_name_length(right);
+    return left_length == right_length && _wcsnicmp(left, right, left_length) == 0;
+}
+
+static void fdn_wide_environment_entries_close(wchar_t **entries, size_t count) {
+    size_t index;
+    for (index = 0; index < count; ++index) {
+        fdn_dealloc(entries[index]);
+    }
+    fdn_dealloc(entries);
+}
+
+wchar_t *fdn_process_windows_environment(const fdn_process *process) {
+    wchar_t **entries = NULL;
+    wchar_t **overrides = NULL;
+    wchar_t *inherited = NULL;
     wchar_t *block;
-    size_t total = process->environment_count == 0 ? 2 : 1;
+    size_t inherited_count = 0;
+    size_t entry_count = 0;
+    size_t total = 1;
     size_t offset = 0;
     size_t index;
-    if (process->inherit_environment) {
+    if (process->inherit_environment && process->environment_count == 0) {
         return NULL;
     }
-    entries = process->environment_count == 0
-                  ? NULL
-                  : fdn_alloc(process->environment_count * sizeof(*entries));
+    if (process->environment_count != 0) {
+        overrides = fdn_alloc(process->environment_count * sizeof(*overrides));
+    }
     for (index = 0; index < process->environment_count; ++index) {
-        entries[index] = fdn_process_windows_text(&process->environment[index]);
-        if (entries[index] == NULL ||
-            wcslen(entries[index]) > SIZE_MAX - total - 1) {
-            size_t clean;
-            for (clean = 0; clean <= index; ++clean) {
-                fdn_dealloc(entries[clean]);
-            }
-            fdn_dealloc(entries);
+        overrides[index] = fdn_process_windows_text(&process->environment[index]);
+        if (overrides[index] == NULL) {
+            fdn_wide_environment_entries_close(overrides, index);
             return NULL;
         }
-        total += wcslen(entries[index]) + 1;
     }
-    if (process->environment_count > 1) {
-        qsort(entries, process->environment_count, sizeof(*entries),
-              fdn_wide_compare);
+    if (process->inherit_environment) {
+        wchar_t *cursor;
+        inherited = GetEnvironmentStringsW();
+        if (inherited == NULL) {
+            fdn_wide_environment_entries_close(overrides, process->environment_count);
+            return NULL;
+        }
+        cursor = inherited;
+        while (*cursor != L'\0') {
+            ++inherited_count;
+            cursor += wcslen(cursor) + 1;
+        }
+    }
+    if (inherited_count > SIZE_MAX - process->environment_count) {
+        if (inherited != NULL) {
+            (void)FreeEnvironmentStringsW(inherited);
+        }
+        fdn_wide_environment_entries_close(overrides, process->environment_count);
+        return NULL;
+    }
+    if (inherited_count + process->environment_count >
+        SIZE_MAX / sizeof(*entries)) {
+        if (inherited != NULL) {
+            (void)FreeEnvironmentStringsW(inherited);
+        }
+        fdn_wide_environment_entries_close(overrides,
+                                           process->environment_count);
+        return NULL;
+    }
+    if (inherited_count + process->environment_count != 0) {
+        entries = fdn_alloc((inherited_count + process->environment_count) *
+                            sizeof(*entries));
+    }
+    if (inherited != NULL) {
+        wchar_t *cursor = inherited;
+        while (*cursor != L'\0') {
+            bool overridden = false;
+            const size_t length = wcslen(cursor);
+            for (index = 0; index < process->environment_count; ++index) {
+                if (fdn_wide_environment_name_equal(cursor, overrides[index])) {
+                    overridden = true;
+                    break;
+                }
+            }
+            if (!overridden) {
+                entries[entry_count] =
+                    fdn_alloc((length + 1) * sizeof(*entries[entry_count]));
+                (void)memcpy(entries[entry_count], cursor,
+                             (length + 1) * sizeof(*entries[entry_count]));
+                ++entry_count;
+            }
+            cursor += length + 1;
+        }
+        (void)FreeEnvironmentStringsW(inherited);
+    }
+    for (index = 0; index < process->environment_count; ++index) {
+        entries[entry_count++] = overrides[index];
+    }
+    fdn_dealloc(overrides);
+    for (index = 0; index < entry_count; ++index) {
+        const size_t length = wcslen(entries[index]);
+        if (length > SIZE_MAX - total - 1) {
+            fdn_wide_environment_entries_close(entries, entry_count);
+            return NULL;
+        }
+        total += length + 1;
+    }
+    if (entry_count == 0) {
+        ++total;
+    } else if (entry_count > 1) {
+        qsort(entries, entry_count, sizeof(*entries), fdn_wide_compare);
+    }
+    if (total > SIZE_MAX / sizeof(*block)) {
+        fdn_wide_environment_entries_close(entries, entry_count);
+        return NULL;
     }
     block = fdn_alloc(total * sizeof(*block));
-    for (index = 0; index < process->environment_count; ++index) {
+    for (index = 0; index < entry_count; ++index) {
         const size_t length = wcslen(entries[index]);
         (void)memcpy(block + offset, entries[index], length * sizeof(*block));
         offset += length;
         block[offset++] = L'\0';
-        fdn_dealloc(entries[index]);
     }
     block[offset++] = L'\0';
-    if (process->environment_count == 0) {
+    if (entry_count == 0) {
         block[offset] = L'\0';
     }
-    fdn_dealloc(entries);
+    fdn_wide_environment_entries_close(entries, entry_count);
     return block;
 }
 
-static int32_t fdn_process_windows_cwd(const fdn_process *process,
-                                       wchar_t **working_directory) {
+int32_t fdn_process_windows_cwd(const fdn_process *process,
+                                wchar_t **working_directory) {
     DWORD attributes;
     *working_directory = NULL;
     if (!process->has_working_directory) {
@@ -679,7 +784,7 @@ static int32_t fdn_process_run_platform(const fdn_process *process,
         goto cleanup;
     }
     if (program == NULL || command == NULL ||
-        (!process->inherit_environment && environment == NULL)) {
+        (fdn_process_environment_block_required(process) && environment == NULL)) {
         status = FDN_PROCESS_RESOURCE_LIMIT;
         goto cleanup;
     }
@@ -738,7 +843,7 @@ static int32_t fdn_process_run_platform(const fdn_process *process,
     created = CreateProcessW(program, command, NULL, NULL, TRUE,
                              CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW |
                                  EXTENDED_STARTUPINFO_PRESENT,
-                             process->inherit_environment ? NULL : environment,
+                             fdn_process_environment_block_required(process) ? environment : NULL,
                              working_directory, &startup.StartupInfo,
                              &information);
     if (!created) {
@@ -834,7 +939,7 @@ cleanup:
     return status;
 }
 #else
-static int32_t fdn_process_posix_status(int error) {
+int32_t fdn_process_posix_status(int error) {
     if (error == ENOENT) {
         return FDN_PROCESS_NOT_FOUND;
     }
@@ -872,7 +977,7 @@ static void fdn_process_posix_strings_close(char **values, size_t count) {
     fdn_dealloc(values);
 }
 
-static char **fdn_process_posix_argv(const fdn_process *process) {
+char **fdn_process_posix_argv(const fdn_process *process) {
     char **values = fdn_alloc((process->argument_count + 2) * sizeof(*values));
     size_t index;
     values[0] = fdn_process_posix_text(&process->program);
@@ -891,26 +996,61 @@ static char **fdn_process_posix_argv(const fdn_process *process) {
     return values;
 }
 
-static char **fdn_process_posix_environment(const fdn_process *process) {
+char **fdn_process_posix_environment(const fdn_process *process) {
+    size_t inherited_count = 0;
+    size_t count = 0;
     char **values;
     size_t index;
     if (process->inherit_environment) {
-        return environ;
-    }
-    values = fdn_alloc((process->environment_count + 1) * sizeof(*values));
-    for (index = 0; index < process->environment_count; ++index) {
-        values[index] = fdn_process_posix_text(&process->environment[index]);
-        if (values[index] == NULL) {
-            fdn_process_posix_strings_close(values, index);
-            return NULL;
+        while (environ[inherited_count] != NULL) {
+            ++inherited_count;
         }
     }
-    values[process->environment_count] = NULL;
+    if (process->environment_count == SIZE_MAX ||
+        inherited_count > SIZE_MAX - process->environment_count - 1) {
+        return NULL;
+    }
+    values = fdn_alloc((inherited_count + process->environment_count + 1) *
+                       sizeof(*values));
+    for (index = 0; index < inherited_count; ++index) {
+        const char *entry = environ[index];
+        const char *separator = strchr(entry, '=');
+        bool overridden = false;
+        size_t override_index;
+        if (separator != NULL) {
+            const size_t name_length = (size_t)(separator - entry);
+            for (override_index = 0; override_index < process->environment_count;
+                 ++override_index) {
+                const fdn_string *override =
+                    &process->environment[override_index];
+                if (fdn_process_environment_name_length(override) == name_length &&
+                    memcmp(entry, override->data, name_length) == 0) {
+                    overridden = true;
+                    break;
+                }
+            }
+        }
+        if (!overridden) {
+            const size_t length = strlen(entry);
+            values[count] = fdn_alloc(length + 1);
+            (void)memcpy(values[count], entry, length + 1);
+            ++count;
+        }
+    }
+    for (index = 0; index < process->environment_count; ++index) {
+        values[count] = fdn_process_posix_text(&process->environment[index]);
+        if (values[count] == NULL) {
+            fdn_process_posix_strings_close(values, count);
+            return NULL;
+        }
+        ++count;
+    }
+    values[count] = NULL;
     return values;
 }
 
-static int32_t fdn_process_posix_cwd(const fdn_process *process,
-                                     char **working_directory) {
+int32_t fdn_process_posix_cwd(const fdn_process *process,
+                              char **working_directory) {
     struct stat info;
     *working_directory = NULL;
     if (!process->has_working_directory) {
@@ -924,6 +1064,23 @@ static int32_t fdn_process_posix_cwd(const fdn_process *process,
         return FDN_PROCESS_INVALID_WORKING_DIRECTORY;
     }
     return 0;
+}
+
+void fdn_process_posix_argv_close(const fdn_process *process, char **values) {
+    fdn_process_posix_strings_close(values, process->argument_count + 1);
+}
+
+void fdn_process_posix_environment_close(const fdn_process *process,
+                                         char **values) {
+    size_t count = 0;
+    (void)process;
+    if (values == NULL) {
+        return;
+    }
+    while (values[count] != NULL) {
+        ++count;
+    }
+    fdn_process_posix_strings_close(values, count);
 }
 
 static int fdn_process_pipe(int descriptors[2]) {
@@ -1123,12 +1280,8 @@ cleanup:
     if (actions_ready) {
         (void)posix_spawn_file_actions_destroy(&actions);
     }
-    fdn_process_posix_strings_close(arguments,
-                                    process->argument_count + 1);
-    if (!process->inherit_environment) {
-        fdn_process_posix_strings_close(environment,
-                                        process->environment_count);
-    }
+    fdn_process_posix_argv_close(process, arguments);
+    fdn_process_posix_environment_close(process, environment);
     fdn_dealloc(working_directory);
     if (status != 0) {
         fdn_dealloc(stdout_capture.data);

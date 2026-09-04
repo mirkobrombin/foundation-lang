@@ -36,6 +36,35 @@ static int bytes_are(uint64_t handle, const char *expected) {
            (length == 0 || memcmp(data, expected, length) == 0);
 }
 
+static int bytes_contain(const uint8_t *data, size_t length,
+                         const char *expected) {
+    const size_t expected_length = strlen(expected);
+    size_t offset;
+    if (expected_length > length) {
+        return 0;
+    }
+    for (offset = 0; offset <= length - expected_length; ++offset) {
+        if (memcmp(data + offset, expected, expected_length) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static uint64_t bytes_from(const char *value) {
+    const size_t length = strlen(value);
+    uint8_t *data = fdn_alloc(length);
+    uint64_t handle = 0;
+    if (length != 0) {
+        (void)memcpy(data, value, length);
+    }
+    if (fdn_bytes_adopt(data, length, length, &handle) != 0) {
+        fdn_dealloc(data);
+        return 0;
+    }
+    return handle;
+}
+
 static int path_bytes_are(uint64_t handle, const char *expected) {
 #if defined(_WIN32)
     const uint8_t *data = NULL;
@@ -100,6 +129,21 @@ static int child_main(int argc, char **argv) {
         (void)memset(output, 'x', sizeof(output));
         return fwrite(output, 1, sizeof(output), stdout) == sizeof(output) ? 0 : 3;
     }
+    if (argc >= 3 && strcmp(argv[2], "pty") == 0) {
+        char input[64];
+        const char *value = getenv("FDN_PTY_TEST");
+        if (fgets(input, sizeof(input), stdin) == NULL) {
+            return 5;
+        }
+        (void)fprintf(stdout, "pty:%s:%s", value == NULL ? "missing" : value, input);
+        (void)fflush(stdout);
+        return 7;
+    }
+    if (argc >= 3 && strcmp(argv[2], "pty-output") == 0) {
+        (void)fputs("foundation-pty\n", stdout);
+        (void)fflush(stdout);
+        return 7;
+    }
 #if defined(_WIN32)
     if (argc >= 3 && strcmp(argv[2], "handle") == 0 && argc == 4) {
         const uintptr_t value = (uintptr_t)strtoull(argv[3], NULL, 10);
@@ -108,6 +152,69 @@ static int child_main(int argc, char **argv) {
     }
 #endif
     return 1;
+}
+
+static int run_pty(const char *program) {
+    fdn_string program_value = text(program);
+    fdn_string child = text("child");
+    fdn_string mode = text("pty");
+    fdn_string environment = text("FDN_PTY_TEST=foundation-value");
+    uint64_t process = 0;
+    uint64_t reader = 0;
+    uint64_t writer = 0;
+    uint64_t controller = 0;
+    uint64_t waiter = 0;
+    uint64_t input = 0;
+    uint64_t output = 0;
+    int32_t exit_code = 0;
+    uint8_t collected[8192];
+    size_t collected_length = 0;
+    const uint8_t *data = NULL;
+    size_t length = 0;
+    int status = 1;
+    if (foundation_runtime_process_open(&program_value, 0, true, &process) != 0 ||
+        foundation_runtime_process_add_argument(process, &child) != 0 ||
+        foundation_runtime_process_add_argument(process, &mode) != 0 ||
+        foundation_runtime_process_add_environment(process, &environment) != 0 ||
+        foundation_runtime_process_pty_start(process, 80, 24, &reader, &writer, &controller,
+                                             &waiter) != 0 ||
+        foundation_runtime_process_pty_live_handles() != 1 ||
+        foundation_runtime_process_pty_resize(controller, 120, 40) != 0) {
+        goto cleanup;
+    }
+    input = bytes_from("MARKER-OK\n");
+    if (input == 0 || foundation_runtime_process_pty_write(writer, input) != 0) {
+        goto cleanup;
+    }
+    while (!bytes_contain(collected, collected_length,
+                          "pty:foundation-value:MARKER-OK")) {
+        if (foundation_runtime_process_pty_read(reader, 4096, &output) != 0 ||
+            fdn_bytes_view(output, &data, &length) != 0 ||
+            length > sizeof(collected) - collected_length) {
+            goto cleanup;
+        }
+        (void)memcpy(collected + collected_length, data, length);
+        collected_length += length;
+        foundation_runtime_bytes_close(&output);
+    }
+    if (foundation_runtime_process_pty_wait(waiter, &exit_code) != 0 || exit_code != 7) {
+        goto cleanup;
+    }
+    status = 0;
+
+cleanup:
+    foundation_runtime_bytes_close(&input);
+    foundation_runtime_bytes_close(&output);
+    foundation_runtime_process_pty_abort(controller);
+    foundation_runtime_process_pty_reader_close(reader);
+    foundation_runtime_process_pty_writer_close(writer);
+    foundation_runtime_process_pty_controller_close(controller);
+    foundation_runtime_process_pty_waiter_close(waiter);
+    foundation_runtime_process_close(&process);
+    if (status == 0 && foundation_runtime_process_pty_live_handles() != 0) {
+        return 2;
+    }
+    return status;
 }
 
 #if defined(_WIN32)
@@ -258,10 +365,20 @@ static int run_process(const char *program, const char *working_directory) {
 
     status = foundation_runtime_process_open(&program_value, 64, true, &process);
     if (status != 0 ||
-        foundation_runtime_process_add_environment(process, &environment) != 4) {
+        foundation_runtime_process_add_argument(process, &child) != 0 ||
+        foundation_runtime_process_add_argument(process, &environment_mode) != 0 ||
+        foundation_runtime_process_add_environment(process, &environment) != 0 ||
+        foundation_runtime_process_run(process, &exit_code, &stdout_handle,
+                                       &stderr_handle) != 0 ||
+        exit_code != 0 || !bytes_are(stdout_handle, "foundation-value\n") ||
+        !bytes_are(stderr_handle, "")) {
+        foundation_runtime_bytes_close(&stdout_handle);
+        foundation_runtime_bytes_close(&stderr_handle);
         foundation_runtime_process_close(&process);
         return 6;
     }
+    foundation_runtime_bytes_close(&stdout_handle);
+    foundation_runtime_bytes_close(&stderr_handle);
     foundation_runtime_process_close(&process);
 #if defined(_WIN32)
     if (inherited_handle_is_confined(program) != 0) {
@@ -283,6 +400,9 @@ int main(int argc, char **argv) {
         return 1;
     }
     status = run_process(argv[0], argv[1]);
+    if (status == 0) {
+        status = run_pty(argv[0]);
+    }
     if (status != 0) {
         (void)fprintf(stderr, "runtime.process failed at check %d\n", status);
     }

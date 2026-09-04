@@ -1,0 +1,361 @@
+package std.process
+
+import std.bytes
+import std.concurrent
+import std.env
+import std.text
+
+struct PTYOptions {
+    WorkingDirectory Option<String>
+    InheritEnvironment bool
+    Term String
+    Columns u16
+    Rows u16
+}
+
+@concurrent.Transferable()
+struct PTYReader {
+    handle u64
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            closePTYReaderNative(handle)
+        }
+    }
+}
+
+@concurrent.Transferable()
+struct PTYWriter {
+    handle u64
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            closePTYWriterNative(handle)
+        }
+    }
+}
+
+@concurrent.Transferable()
+struct PTYController {
+    handle u64
+
+    fn Resize(&self, columns u16, rows u16) Result<void, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = resizePTYNative(self.handle, columns, rows)
+        if status == 0 return .Ok
+        .Err(errorFor(status))
+    }
+
+    fn Abort(&self) bool {
+        const handle = replace self.handle with 0
+        if handle == 0 return false
+        abortPTYNative(handle)
+        closePTYControllerNative(handle)
+        true
+    }
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            closePTYControllerNative(handle)
+        }
+    }
+}
+
+@concurrent.Transferable()
+struct PTYWaiter {
+    handle u64
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            closePTYWaiterNative(handle)
+        }
+    }
+}
+
+@concurrent.Transferable()
+struct PTY {
+    Reader own PTYReader
+    Writer own PTYWriter
+    Controller own PTYController
+    Waiter own PTYWaiter
+}
+
+@concurrent.Transferable()
+struct PTYCommand {
+    command own Command
+    columns u16
+    rows u16
+}
+
+struct PTYReadOutcome {
+    Reader own PTYReader
+    Value Result<Option<own bytes.Bytes>, Error>
+}
+
+struct PTYWriteOutcome {
+    Writer own PTYWriter
+    Value Result<void, Error>
+}
+
+@blocking
+extern c fn startPTYNative(
+    process u64,
+    columns u16,
+    rows u16,
+    &reader u64,
+    &writer u64,
+    &controller u64,
+    &waiter u64
+) i32 as foundation_runtime_process_pty_start
+
+@blocking
+extern c fn readPTYNative(
+    reader u64,
+    limit u64,
+    &value u64
+) i32 as foundation_runtime_process_pty_read
+
+@blocking
+extern c fn writePTYNative(
+    writer u64,
+    value u64
+) i32 as foundation_runtime_process_pty_write
+
+extern c fn resizePTYNative(
+    controller u64,
+    columns u16,
+    rows u16
+) i32 as foundation_runtime_process_pty_resize
+
+@blocking
+extern c fn waitPTYNative(
+    waiter u64,
+    &exitCode i32
+) i32 as foundation_runtime_process_pty_wait
+
+extern c fn abortPTYNative(
+    controller u64
+) void as foundation_runtime_process_pty_abort
+
+extern c fn closePTYReaderNative(
+    reader u64
+) void as foundation_runtime_process_pty_reader_close
+
+extern c fn closePTYWriterNative(
+    writer u64
+) void as foundation_runtime_process_pty_writer_close
+
+extern c fn closePTYControllerNative(
+    controller u64
+) void as foundation_runtime_process_pty_controller_close
+
+extern c fn closePTYWaiterNative(
+    waiter u64
+) void as foundation_runtime_process_pty_waiter_close
+
+fn DefaultPTYOptions() PTYOptions {
+    PTYOptions {
+        WorkingDirectory = .None
+        InheritEnvironment = true
+        Term = "xterm-256color"
+        Columns = 80
+        Rows = 24
+    }
+}
+
+@target(linux)
+fn defaultPTYProgram() String {
+    const shell = env.Get("SHELL") else error {
+        discard error
+        return "/bin/sh"
+    }
+    match shell {
+        Some(program): {
+            if !text.IsEmpty(program) return program
+        }
+        None: {}
+    }
+    "/bin/sh"
+}
+
+@target(macos)
+fn defaultPTYProgram() String {
+    const shell = env.Get("SHELL") else error {
+        discard error
+        return "/bin/sh"
+    }
+    match shell {
+        Some(program): {
+            if !text.IsEmpty(program) return program
+        }
+        None: {}
+    }
+    "/bin/sh"
+}
+
+@target(windows)
+fn defaultPTYProgram() String {
+    const shell = env.Get("COMSPEC") else error {
+        discard error
+        return "cmd.exe"
+    }
+    match shell {
+        Some(program): {
+            if !text.IsEmpty(program) return program
+        }
+        None: {}
+    }
+    "cmd.exe"
+}
+
+fn ptyProgram(command [String]) String {
+    if len(command) == 0 return defaultPTYProgram()
+    text.Copy(command[0])
+}
+
+fn ptyWorkingDirectory($value Option<String>) Option<String> {
+    match value {
+        Some(path): { return .Some(path) }
+        None: {}
+    }
+    const home = env.Home() else error {
+        discard error
+        return .None
+    }
+    home
+}
+
+fn configurePTY(
+    &command Command,
+    arguments [String],
+    environment [String],
+    term String
+) Result<void, Error> {
+    var index usize = 1
+    while index < len(arguments) {
+        command.AddArgument(arguments[index]) else error {
+            return .Err(error)
+        }
+        index += 1
+    }
+    for entry in environment {
+        if !text.StartsWith(entry, "TERM=") {
+            command.AddEnvironment(entry) else error {
+                return .Err(error)
+            }
+        }
+    }
+    const terminal = if text.IsEmpty(term) {
+        "TERM=xterm-256color"
+    } else {
+        "TERM=" + term
+    }
+    command.AddEnvironment(terminal)
+}
+
+fn OpenPTY(
+    command [String],
+    environment [String],
+    $options PTYOptions
+) Result<own PTYCommand, Error> {
+    const PTYOptions {
+        WorkingDirectory
+        InheritEnvironment
+        Term
+        Columns
+        Rows
+    } = options
+    const program = ptyProgram(command)
+    const opened = Open(
+        program,
+        $Options {
+        WorkingDirectory = ptyWorkingDirectory($WorkingDirectory)
+        InheritEnvironment = InheritEnvironment
+        OutputLimit = 0
+    }
+    ) else error {
+        return .Err(error)
+    }
+    var active = opened
+    configurePTY(&active, command, environment, Term) else error {
+        return .Err(error)
+    }
+    .Ok(own PTYCommand {
+        command = active
+        columns = Columns
+        rows = Rows
+    })
+}
+
+task StartPTY($prepared own PTYCommand) Result<own PTY, Error> {
+    const PTYCommand { command columns rows } = prepared
+    var reader u64 = 0
+    var writer u64 = 0
+    var controller u64 = 0
+    var waiter u64 = 0
+    const status = startPTYNative(
+        command.handle,
+        columns,
+        rows,
+        &reader,
+        &writer,
+        &controller,
+        &waiter
+    )
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own PTY {
+        Reader = own PTYReader { handle = reader }
+        Writer = own PTYWriter { handle = writer }
+        Controller = own PTYController { handle = controller }
+        Waiter = own PTYWaiter { handle = waiter }
+    })
+}
+
+task ReadPTY(
+    $reader own PTYReader,
+    limit u64
+) PTYReadOutcome {
+    var value u64 = 0
+    const status = readPTYNative(reader.handle, limit, &value)
+    if status == 11 {
+        return PTYReadOutcome { Reader = reader Value = .Ok(.None) }
+    }
+    if status != 0 {
+        return PTYReadOutcome {
+            Reader = reader
+            Value = .Err(errorFor(status))
+        }
+    }
+    const claimed = bytes.ClaimRuntimeHandle(value) else error {
+        discard error
+        return PTYReadOutcome { Reader = reader Value = .Err(.Io) }
+    }
+    PTYReadOutcome { Reader = reader Value = .Ok(.Some(claimed)) }
+}
+
+task WritePTY(
+    $writer own PTYWriter,
+    $value own bytes.Bytes
+) PTYWriteOutcome {
+    const status = writePTYNative(writer.handle, bytes.RuntimeHandle(value))
+    discard value
+    if status != 0 {
+        return PTYWriteOutcome {
+            Writer = writer
+            Value = .Err(errorFor(status))
+        }
+    }
+    PTYWriteOutcome { Writer = writer Value = .Ok }
+}
+
+task WaitPTY($waiter own PTYWaiter) Result<i32, Error> {
+    var exitCode i32 = 0
+    const status = waitPTYNative(waiter.handle, &exitCode)
+    discard waiter
+    if status == 0 return .Ok(exitCode)
+    .Err(errorFor(status))
+}

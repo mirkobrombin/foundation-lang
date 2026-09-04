@@ -497,6 +497,24 @@ int32_t foundation_runtime_process_run(uint64_t handle, int32_t *exit_code,
                                        uint64_t *stderr_handle);
 void foundation_runtime_process_close(uint64_t *handle);
 uint64_t foundation_runtime_process_live_handles(void);
+int32_t foundation_runtime_process_pty_start(uint64_t process_handle, uint16_t columns,
+                                             uint16_t rows, uint64_t *reader,
+                                             uint64_t *writer, uint64_t *controller,
+                                             uint64_t *waiter);
+int32_t foundation_runtime_process_pty_read(uint64_t handle, uint64_t limit,
+                                            uint64_t *result);
+int32_t foundation_runtime_process_pty_write(uint64_t handle,
+                                             uint64_t bytes_handle);
+int32_t foundation_runtime_process_pty_resize(uint64_t handle, uint16_t columns,
+                                              uint16_t rows);
+int32_t foundation_runtime_process_pty_wait(uint64_t handle,
+                                            int32_t *exit_code);
+void foundation_runtime_process_pty_abort(uint64_t handle);
+void foundation_runtime_process_pty_reader_close(uint64_t handle);
+void foundation_runtime_process_pty_writer_close(uint64_t handle);
+void foundation_runtime_process_pty_controller_close(uint64_t handle);
+void foundation_runtime_process_pty_waiter_close(uint64_t handle);
+uint64_t foundation_runtime_process_pty_live_handles(void);
 int32_t foundation_runtime_net_resolve(const fdn_string *host, uint64_t port,
                                        uint64_t *addresses);
 void foundation_runtime_net_addresses_close(uint64_t addresses);

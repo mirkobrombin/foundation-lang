@@ -1,0 +1,70 @@
+import std.bytes
+import std.process
+import std.text
+
+fn outputText($value Option<own bytes.Bytes>) Result<String, process.Error> {
+    match value {
+        None: { return .Err(.Io) }
+        Some(output): {
+            const content = output.Text() else error {
+                discard error
+                return .Err(.Io)
+            }
+            .Ok(content)
+        }
+    }
+}
+
+fn ptyResult($value Result<i32, process.Error>) i32 {
+    const exitCode = value else error {
+        discard error
+        return 5
+    }
+    if exitCode == 7 return 0
+    6
+}
+
+fn main(args [String]) i32 {
+    if len(args) != 1 return 1
+    const command = [text.Copy(args[0]), "child", "pty-output"]
+    const noEnvironment [0]String = []
+    const prepared = process.OpenPTY(
+        command,
+        noEnvironment,
+        $process.DefaultPTYOptions()
+    ) else error {
+        discard error
+        return 2
+    }
+    const started = spawn process.StartPTY($prepared)
+    const terminalResult = $started.wait()
+    const terminal = terminalResult else error {
+        discard error
+        return 3
+    }
+    const process.PTY { Reader Writer Controller Waiter } = terminal
+    discard Writer
+    var controller = Controller
+    controller.Resize(120, 40) else error {
+        discard error
+        return 4
+    }
+    const reading = spawn process.ReadPTY($Reader, 4096)
+    const process.PTYReadOutcome { Reader as restoredReader Value } = $reading.wait()
+    discard restoredReader
+    const output = Value else error {
+        discard error
+        return 5
+    }
+    const content = outputText($output) else error {
+        discard error
+        return 5
+    }
+    const waiting = spawn process.WaitPTY($Waiter)
+    const result = ptyResult($waiting.wait())
+    discard controller
+    if result != 0 return result
+    if !text.Contains(content, "foundation-pty") return 7
+    print("pty ready")
+    0
+}

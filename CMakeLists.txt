@@ -90,6 +90,8 @@ add_library(foundation_runtime STATIC
     runtime/src/runtime.c
     runtime/src/fs_host.c
     runtime/src/process.c
+    runtime/src/pty_posix.c
+    runtime/src/pty_windows.c
     runtime/src/crypto.c
     runtime/src/parse.c
     runtime/src/task.c
@@ -106,6 +108,9 @@ add_library(foundation_runtime STATIC
 )
 target_include_directories(foundation_runtime PUBLIC runtime/include)
 target_link_libraries(foundation_runtime PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(foundation_runtime PUBLIC util)
+endif()
 if(WIN32)
     target_link_libraries(foundation_runtime PUBLIC bcrypt ws2_32)
 endif()
@@ -289,6 +294,8 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_RUNTIME_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c"
     FOUNDATION_RUNTIME_FS_HOST_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/fs_host.c"
     FOUNDATION_RUNTIME_PROCESS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/process.c"
+    FOUNDATION_RUNTIME_PTY_POSIX_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pty_posix.c"
+    FOUNDATION_RUNTIME_PTY_WINDOWS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pty_windows.c"
     FOUNDATION_RUNTIME_CRYPTO_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c"
     FOUNDATION_RUNTIME_PARSE_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/parse.c"
     FOUNDATION_RUNTIME_TASK_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c"
@@ -2190,6 +2197,26 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/host-services.out
             -DBACKEND=c
             "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_runtime_process_test>;${CMAKE_CURRENT_BINARY_DIR}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME compiler.run.process-pty.llvm
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/process-pty.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/process-pty.out
+            -DBACKEND=llvm
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_runtime_process_test>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME compiler.run.process-pty.c
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/process-pty.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/process-pty.out
+            -DBACKEND=c
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_runtime_process_test>"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(

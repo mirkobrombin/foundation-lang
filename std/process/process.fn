@@ -1,6 +1,7 @@
 package std.process
 
 import std.bytes
+import std.concurrent
 
 enum Error {
     NotFound
@@ -12,6 +13,7 @@ enum Error {
     ResourceLimit
     Io
     Closed
+    Unavailable
 }
 
 struct Options {
@@ -34,6 +36,7 @@ struct Output {
     }
 }
 
+@concurrent.Transferable()
 struct Command {
     handle u64
 
@@ -129,6 +132,7 @@ fn errorFor(status i32) Error {
     if status == 6 return .OutputLimit
     if status == 7 return .ResourceLimit
     if status == 9 return .Closed
+    if status == 10 return .Unavailable
     .Io
 }
 

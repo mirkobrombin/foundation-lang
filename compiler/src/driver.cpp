@@ -496,6 +496,10 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
                  std::filesystem::path{FOUNDATION_RUNTIME_FS_HOST_SOURCE}),
         sdkAsset("runtime/src/process.c",
                  std::filesystem::path{FOUNDATION_RUNTIME_PROCESS_SOURCE}),
+        sdkAsset("runtime/src/pty_posix.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_PTY_POSIX_SOURCE}),
+        sdkAsset("runtime/src/pty_windows.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_PTY_WINDOWS_SOURCE}),
         sdkAsset("runtime/src/crypto.c", std::filesystem::path{FOUNDATION_RUNTIME_CRYPTO_SOURCE}),
         sdkAsset("runtime/src/parse.c", std::filesystem::path{FOUNDATION_RUNTIME_PARSE_SOURCE}),
         sdkAsset("runtime/src/task.c", std::filesystem::path{FOUNDATION_RUNTIME_TASK_SOURCE}),
@@ -565,6 +569,9 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
     arguments.push_back("-Wl,-S");
 #else
     arguments.push_back("-ldl");
+#if defined(__linux__)
+    arguments.push_back("-lutil");
+#endif
 #endif
 #endif
     for (const auto &input : nativeInputs) {
@@ -592,6 +599,10 @@ std::vector<std::filesystem::path> runtimeSourceFiles() {
                  std::filesystem::path{FOUNDATION_RUNTIME_FS_HOST_SOURCE}),
         sdkAsset("runtime/src/process.c",
                  std::filesystem::path{FOUNDATION_RUNTIME_PROCESS_SOURCE}),
+        sdkAsset("runtime/src/pty_posix.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_PTY_POSIX_SOURCE}),
+        sdkAsset("runtime/src/pty_windows.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_PTY_WINDOWS_SOURCE}),
         sdkAsset("runtime/src/crypto.c", std::filesystem::path{FOUNDATION_RUNTIME_CRYPTO_SOURCE}),
         sdkAsset("runtime/src/parse.c", std::filesystem::path{FOUNDATION_RUNTIME_PARSE_SOURCE}),
         sdkAsset("runtime/src/task.c", std::filesystem::path{FOUNDATION_RUNTIME_TASK_SOURCE}),
