@@ -38,6 +38,19 @@ fn instantiateMonomorphTypes(
     result
 }
 
+fn monomorphUnwrappedReadType(
+    &function firFunction,
+    localID u64,
+    &concreteType semanticType
+) void {
+    var local = match function.locals.take(localID) {
+        None: panic("unwrapped read local slot is empty")
+        Some(found): found
+    }
+    concreteType = copySemanticType(&local.type)
+    function.locals.restore(localID, $local)
+}
+
 fn monomorphExpressionValue(
     &state monomorphizer,
     &source firProgram,
@@ -46,6 +59,7 @@ fn monomorphExpressionValue(
     span sourceSpan,
     &arguments arena<semanticType>,
     &unwrappedReads arena<bool>,
+    &concreteType semanticType,
     defaultReceiverPresent bool,
     &defaultReceiver monomorphDefaultReceiver,
     defaultReceiverLocal Option<u64>
@@ -56,9 +70,17 @@ fn monomorphExpressionValue(
         Boolean(payload): .Boolean(payload)
         StringValue(payload): .StringValue(payload)
         Array(payload): .Array(payload)
-        Local(payload): .Local(payload)
+        Local(payload): {
+            if firBoolAt(&unwrappedReads, payload.local) {
+                monomorphUnwrappedReadType(
+                    &function, payload.local, &concreteType)
+            }
+            .Local(payload)
+        }
         Read(payload): {
             if firBoolAt(&unwrappedReads, payload.local) {
+                monomorphUnwrappedReadType(
+                    &function, payload.local, &concreteType)
                 return .Local(firLocalExpression { local = payload.local })
             }
             .Read(payload)
@@ -683,7 +705,7 @@ fn monomorphFunctionExpressions(
         function.expressions.restore(index, $firExpression {
             value = monomorphExpressionValue(
                 &state, &source, &function, $value, span, &arguments,
-                &unwrappedReads, defaultReceiverPresent, &defaultReceiver,
+                &unwrappedReads, &concreteType, defaultReceiverPresent, &defaultReceiver,
                 defaultReceiverLocal)
             type = concreteType
             span = span

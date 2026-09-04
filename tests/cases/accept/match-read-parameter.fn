@@ -1,0 +1,19 @@
+enum Failure {
+    Broken
+}
+
+fn accepted(result Result<void, Failure>) bool {
+    match result {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn main() i32 {
+    if !accepted(.Ok) return 1
+    if accepted(.Err(.Broken)) return 2
+    0
+}

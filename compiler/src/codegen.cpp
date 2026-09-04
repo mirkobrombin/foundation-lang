@@ -1272,11 +1272,16 @@ class Monomorphizer {
             } else {
                 expression.type = instantiateType(substitutedType);
             }
-            if (auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
+            if (const auto *local = std::get_if<FirLocalExpression>(&expression.value);
+                local != nullptr && local->local < unwrappedReads.size() &&
+                unwrappedReads[local->local]) {
+                expression.type = function.locals[local->local].type;
+            } else if (auto *channel = std::get_if<FirChannelExpression>(&expression.value)) {
                 channel->payload = instantiateType(substitute(channel->payload, arguments));
             } else if (const auto *read = std::get_if<FirReadExpression>(&expression.value);
                        read != nullptr && read->local < unwrappedReads.size() &&
                        unwrappedReads[read->local]) {
+                expression.type = function.locals[read->local].type;
                 expression.value = FirLocalExpression{read->local};
             } else if (auto *functionValue =
                            std::get_if<FirFunctionValueExpression>(&expression.value)) {
