@@ -431,10 +431,16 @@ int32_t foundation_runtime_fs_tree_open(const fdn_string *path,
 int32_t foundation_runtime_fs_tree_next(uint64_t handle, fdn_string *path,
                                         uint32_t *kind, bool *executable,
                                         uint64_t *size);
+int32_t foundation_runtime_fs_tree_next_metadata(
+    uint64_t handle, fdn_string *path, uint32_t *kind, bool *executable,
+    uint64_t *size, uint32_t *permissions, uint64_t *modified);
 int32_t foundation_runtime_fs_tree_read(uint64_t handle,
                                         const fdn_string *relative_path,
                                         uint64_t max_length,
                                         uint64_t *bytes_handle);
+int32_t foundation_runtime_fs_tree_read_symbolic_link(
+    uint64_t handle, const fdn_string *relative_path, uint64_t max_length,
+    fdn_string *target, bool *directory);
 int32_t foundation_runtime_fs_tree_close(uint64_t *handle);
 int32_t foundation_runtime_fs_root_open(const fdn_string *path,
                                         uint64_t *handle);
@@ -443,6 +449,17 @@ int32_t foundation_runtime_fs_root_create_directory(
 int32_t foundation_runtime_fs_root_write_file(
     uint64_t handle, const fdn_string *relative_path, uint64_t bytes_handle,
     uint32_t permissions);
+int32_t foundation_runtime_fs_root_create_symbolic_link(
+    uint64_t handle, const fdn_string *relative_path,
+    const fdn_string *target, bool directory);
+int32_t foundation_runtime_fs_root_remove_file(
+    uint64_t handle, const fdn_string *relative_path);
+int32_t foundation_runtime_fs_root_remove_empty_directory(
+    uint64_t handle, const fdn_string *relative_path);
+int32_t foundation_runtime_fs_root_set_permissions(
+    uint64_t handle, const fdn_string *relative_path, uint32_t permissions);
+int32_t foundation_runtime_fs_root_set_modified(
+    uint64_t handle, const fdn_string *relative_path, uint64_t modified);
 int32_t foundation_runtime_fs_root_close(uint64_t *handle);
 int32_t foundation_runtime_fs_file_open(const fdn_string *path,
                                         uint32_t mode,

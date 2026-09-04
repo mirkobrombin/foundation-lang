@@ -14,14 +14,23 @@ extern c fn nextTreeNative(
     &path String,
     &kind u32,
     &executable bool,
-    &size u64
-) i32 as foundation_runtime_fs_tree_next
+    &size u64,
+    &permissions u32,
+    &modified u64
+) i32 as foundation_runtime_fs_tree_next_metadata
 extern c fn readTreeNative(
     handle u64,
     path String,
     limit u64,
     &result u64
 ) i32 as foundation_runtime_fs_tree_read
+extern c fn readTreeSymbolicLinkNative(
+    handle u64,
+    path String,
+    limit u64,
+    &target String,
+    &directory bool
+) i32 as foundation_runtime_fs_tree_read_symbolic_link
 extern c fn closeTreeNative(
     &handle u64
 ) i32 as foundation_runtime_fs_tree_close
@@ -39,6 +48,30 @@ extern c fn writeRootFileNative(
     bytesHandle u64,
     permissions u32
 ) i32 as foundation_runtime_fs_root_write_file
+extern c fn createRootSymbolicLinkNative(
+    handle u64,
+    path String,
+    target String,
+    directory bool
+) i32 as foundation_runtime_fs_root_create_symbolic_link
+extern c fn removeRootFileNative(
+    handle u64,
+    path String
+) i32 as foundation_runtime_fs_root_remove_file
+extern c fn removeRootEmptyDirectoryNative(
+    handle u64,
+    path String
+) i32 as foundation_runtime_fs_root_remove_empty_directory
+extern c fn setRootPermissionsNative(
+    handle u64,
+    path String,
+    permissions u32
+) i32 as foundation_runtime_fs_root_set_permissions
+extern c fn setRootModifiedNative(
+    handle u64,
+    path String,
+    modified u64
+) i32 as foundation_runtime_fs_root_set_modified
 extern c fn closeRootNative(
     &handle u64
 ) i32 as foundation_runtime_fs_root_close
@@ -71,6 +104,21 @@ struct TreeEntry {
 
     // Regular-file length in bytes, or zero for other entry kinds.
     Size u64
+
+    // Lower nine portable permission bits.
+    Permissions u32 = 0
+
+    // Last modification time in whole Unix seconds.
+    Modified u64 = 0
+}
+
+// Describes the stored target and target kind of one symbolic link.
+struct SymbolicLinkInfo {
+    // Target text exactly as stored by the filesystem.
+    Target String
+
+    // Whether the link was created for a directory target.
+    Directory bool
 }
 
 // Enumerates one bounded directory tree and reads regular files beneath its
@@ -85,12 +133,16 @@ struct TreeReader {
         var kind u32 = 0
         var executable = false
         var size u64 = 0
+        var permissions u32 = 0
+        var modified u64 = 0
         const status = nextTreeNative(
             self.handle,
             &path,
             &kind,
             &executable,
-            &size
+            &size,
+            &permissions,
+            &modified
         )
         if status == 0 return .Ok(.None)
         if status != 1 return .Err(treeErrorFor(status))
@@ -99,7 +151,29 @@ struct TreeReader {
             Kind = treeKind(kind)
             Executable = executable
             Size = size
+            Permissions = permissions
+            Modified = modified
         }))
+    }
+
+    // Reads one symbolic link without following any relative path component.
+    fn ReadSymbolicLink(
+        self,
+        path String,
+        limit u64
+    ) Result<SymbolicLinkInfo, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        var target = ""
+        var directory = false
+        const status = readTreeSymbolicLinkNative(
+            self.handle,
+            path,
+            limit,
+            &target,
+            &directory
+        )
+        if status != 0 return .Err(treeErrorFor(status))
+        .Ok(SymbolicLinkInfo { Target = target Directory = directory })
     }
 
     // Reads one regular file without following any relative path component.
@@ -155,6 +229,64 @@ struct RootWriter {
             bytes.RuntimeHandle(value),
             permissions
         )
+        if status == 0 return .Ok
+        .Err(treeErrorFor(status))
+    }
+
+    // Creates one symbolic link beneath the root without following parents.
+    fn CreateSymbolicLink(
+        &self,
+        path String,
+        target String,
+        directory bool
+    ) Result<void, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = createRootSymbolicLinkNative(
+            self.handle,
+            path,
+            target,
+            directory
+        )
+        if status == 0 return .Ok
+        .Err(treeErrorFor(status))
+    }
+
+    // Removes one regular file or symbolic link beneath the root.
+    fn RemoveFile(&self, path String) Result<void, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = removeRootFileNative(self.handle, path)
+        if status == 0 return .Ok
+        .Err(treeErrorFor(status))
+    }
+
+    // Removes one empty directory beneath the root.
+    fn RemoveEmptyDirectory(&self, path String) Result<void, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = removeRootEmptyDirectoryNative(self.handle, path)
+        if status == 0 return .Ok
+        .Err(treeErrorFor(status))
+    }
+
+    // Applies lower-nine permission bits without following symbolic links.
+    fn SetPermissions(
+        &self,
+        path String,
+        permissions u32
+    ) Result<void, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = setRootPermissionsNative(
+            self.handle,
+            path,
+            permissions
+        )
+        if status == 0 return .Ok
+        .Err(treeErrorFor(status))
+    }
+
+    // Sets the last modification time in whole Unix seconds.
+    fn SetModified(&self, path String, modified u64) Result<void, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = setRootModifiedNative(self.handle, path, modified)
         if status == 0 return .Ok
         .Err(treeErrorFor(status))
     }

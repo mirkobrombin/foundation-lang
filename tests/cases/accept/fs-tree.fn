@@ -47,7 +47,30 @@ fn kindIs(kind fs.TreeKind, expected i32) bool {
     }
 }
 
+@target(linux)
+fn expectedPermissions() u32 {
+    385
+}
+
+@target(macos)
+fn expectedPermissions() u32 {
+    385
+}
+
+@target(windows)
+fn expectedPermissions() u32 {
+    438
+}
+
 fn main(args [String]) i32 {
+    const compatible = fs.TreeEntry {
+        Path = "legacy"
+        Kind = .Other
+        Executable = false
+        Size = 0
+    }
+    if compatible.Permissions != 0 || compatible.Modified != 0 return 21
+
     const openedSource = fs.OpenTree(args[0], 10, 4096) else error {
         discard error
         return 1
@@ -87,34 +110,58 @@ fn main(args [String]) i32 {
         discard error
         return 9
     }
+    root.SetPermissions("nested/payload.bin", 385) else error {
+        discard error
+        return 10
+    }
+    root.SetModified("nested/payload.bin", 1700000000) else error {
+        discard error
+        return 11
+    }
     discard root.Close()
 
     const openedOutput = fs.OpenTree(args[1], 10, 4096) else error {
         discard error
-        return 10
+        return 12
     }
     var output = openedOutput
     const directoryNext = output.Next() else error {
         discard error
-        return 11
+        return 13
     }
     const directory = requiredEntry($directoryNext)
     const fileNext = output.Next() else error {
         discard error
-        return 12
+        return 14
     }
     const file = requiredEntry($fileNext)
     if !text.Equal(directory.Path, "nested") || !kindIs(directory.Kind, 2) ||
         !text.Equal(file.Path, "nested/payload.bin") || !kindIs(file.Kind, 1) ||
-        file.Size != 14 {
-        return 13
+        file.Size != 14 || file.Permissions != expectedPermissions() ||
+        file.Modified != 1700000000 {
+        return 15
     }
     const copied = output.ReadFile(file.Path, 14) else error {
         discard error
-        return 14
+        return 16
     }
-    if !bytes.ConstantTimeEqual(payload, copied) return 15
+    if !bytes.ConstantTimeEqual(payload, copied) return 17
     discard output.Close()
+
+    const reopenedRoot = fs.OpenRoot(args[1]) else error {
+        discard error
+        return 18
+    }
+    var cleanup = reopenedRoot
+    cleanup.RemoveFile("nested/payload.bin") else error {
+        discard error
+        return 19
+    }
+    cleanup.RemoveEmptyDirectory("nested") else error {
+        discard error
+        return 20
+    }
+    discard cleanup.Close()
 
     print("fs tree ok")
     0

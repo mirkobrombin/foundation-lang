@@ -21,8 +21,14 @@ task SyncFile($file own File) FileOutcome
 fn LineReader.NextLimited(&self, limit u64) Result<Option<String>, Error>
 fn TreeReader.Next(&self) Result<Option<TreeEntry>, Error>
 fn TreeReader.ReadFile(self, path String, limit u64) Result<own bytes.Bytes, Error>
+fn TreeReader.ReadSymbolicLink(self, path String, limit u64) Result<SymbolicLinkInfo, Error>
 fn RootWriter.CreateDirectory(&self, path String) Result<void, Error>
 fn RootWriter.WriteFile(self, path String, value bytes.Bytes, permissions u32) Result<void, Error>
+fn RootWriter.CreateSymbolicLink(&self, path String, target String, directory bool) Result<void, Error>
+fn RootWriter.RemoveFile(&self, path String) Result<void, Error>
+fn RootWriter.RemoveEmptyDirectory(&self, path String) Result<void, Error>
+fn RootWriter.SetPermissions(&self, path String, permissions u32) Result<void, Error>
+fn RootWriter.SetModified(&self, path String, modified u64) Result<void, Error>
 task ReadText($path String) Result<String, Error>
 task ReadTextLimited($path String, limit u64) Result<String, Error>
 task ReadPrivateTextLimited($path String, limit u64) Result<String, Error>
@@ -59,14 +65,22 @@ display or serialization. `IsDirectory` follows the platform stat operation.
 `TreeReader` takes a stable bytewise snapshot of relative paths. It applies entry-count and path
 length bounds before returning the handle. Each entry is classified as `File`, `Directory`,
 `SymbolicLink`, or `Other`; traversal never follows symbolic links or Windows reparse points.
+Entries carry their lower nine portable permission bits and whole-second Unix modification time.
 `ReadFile` accepts only a regular file beneath the held root, revalidates every path component, and
 enforces the caller's byte limit before adopting the result as owned `std.bytes.Bytes`.
+`ReadSymbolicLink` applies the same path checks, returns the stored UTF-8 target without following
+it, and enforces a caller-selected byte limit. Its directory flag preserves the native Windows
+link kind; POSIX filesystems do not store that distinction and report `false`.
 
 `RootWriter` confines every operation beneath one held destination root. Relative paths reject
 empty components, `.`, `..`, backslashes, absolute roots, and embedded zero bytes. Directory
 creation refuses symbolic links and reparse points. File writes use an exclusive temporary file,
 flush its contents, and replace the destination atomically. POSIX applies the requested lower nine
 permission bits; Windows keeps the destination ACL because POSIX modes do not exist there.
+Symbolic-link creation requires an existing safe parent. Removal distinguishes files and links from
+empty directories and never follows a link. Metadata changes reject links. POSIX applies all lower
+nine permission bits; Windows maps absence of write bits to the read-only attribute. Both platforms
+store modification time in whole Unix seconds.
 
 `File` streams regular binary files through the bounded blocking executor. `ReadFileChunk`
 returns at most the requested positive byte count and distinguishes clean EOF with `None`.

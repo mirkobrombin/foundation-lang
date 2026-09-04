@@ -64,7 +64,6 @@ static int run_test(int argc, char **argv) {
     char output_file[4096];
 #if !defined(_WIN32)
     char private_link[4096];
-    char tree_link[4096];
 #endif
     if (argc != 4) {
         return 1;
@@ -260,25 +259,39 @@ static int run_test(int argc, char **argv) {
     {
         fdn_string relative_directory = fdn_string_static("nested", 6);
         fdn_string relative_file = fdn_string_static("nested/payload.bin", 18);
+        fdn_string relative_link = fdn_string_static("nested-link", 11);
+        fdn_string link_target = fdn_string_static("nested", 6);
+        fdn_string invalid_target = fdn_string_static("", 0);
         fdn_string blocked_directory =
             fdn_string_static("nested/payload.bin/child", 24);
         fdn_string invalid_relative = fdn_string_static("../escape", 9);
         fdn_string tree_path;
         fdn_string output_path;
         fdn_string entry_path = fdn_string_static("", 0);
+        fdn_string read_target = fdn_string_static("", 0);
         fdn_string payload_text = fdn_string_static("binary\0payload", 14);
         uint64_t root = 0;
         uint64_t tree = 0;
         uint64_t payload = foundation_runtime_bytes_from_text(&payload_text);
         uint64_t read_payload = 0;
         uint32_t kind = 0;
+        uint32_t permissions = 0;
         bool executable = false;
+        bool link_directory = false;
+        bool link_created = false;
+        uint64_t modified = 0;
         const uint8_t *read_data = NULL;
         size_t read_length = 0;
 #if defined(_WIN32)
         const bool expected_executable = false;
+        const bool expected_link_directory = true;
+        const uint32_t expected_input_permissions = 0666;
+        const uint32_t expected_output_permissions = 0666;
 #else
         const bool expected_executable = true;
+        const bool expected_link_directory = false;
+        const uint32_t expected_input_permissions = 0751;
+        const uint32_t expected_output_permissions = 0601;
 #endif
         int tree_root_length = snprintf(tree_root, sizeof(tree_root), "%s-tree", argv[3]);
         int tree_nested_length = snprintf(tree_nested, sizeof(tree_nested),
@@ -304,81 +317,185 @@ static int run_test(int argc, char **argv) {
         }
         tree_path = fdn_string_static(tree_root, strlen(tree_root));
         output_path = fdn_string_static(output_root, strlen(output_root));
+        status = foundation_runtime_fs_remove_tree(&tree_path, 64, 8);
+        if (status != 0 && status != 1) {
+            foundation_runtime_bytes_close(&payload);
+            return 35;
+        }
+        status = foundation_runtime_fs_remove_tree(&output_path, 64, 8);
+        if (status != 0 && status != 1) {
+            foundation_runtime_bytes_close(&payload);
+            return 35;
+        }
         if (foundation_runtime_fs_root_open(&tree_path, &root) != 0 || root == 0 ||
             foundation_runtime_fs_root_create_directory(root, &relative_directory) != 0 ||
             foundation_runtime_fs_root_create_directory(root, &invalid_relative) != 3 ||
             foundation_runtime_fs_root_write_file(root, &relative_file, payload, 0751) != 0 ||
+            foundation_runtime_fs_root_create_symbolic_link(
+                root, &invalid_relative, &link_target, false) != 3 ||
+            foundation_runtime_fs_root_create_symbolic_link(
+                root, &relative_link, &invalid_target, false) != 3 ||
             foundation_runtime_fs_root_create_directory(root, &blocked_directory) != 3 ||
             foundation_runtime_fs_root_close(&root) != 0 || root != 0) {
             foundation_runtime_bytes_close(&payload);
-            return 35;
+            return 36;
         }
         if (foundation_runtime_fs_tree_open(&tree_path, 1, 4096, &tree) != 5 || tree != 0 ||
             foundation_runtime_fs_tree_open(&tree_path, 10, 4096, &tree) != 0 || tree == 0 ||
             foundation_runtime_fs_live_directories() != 1) {
             foundation_runtime_bytes_close(&payload);
-            return 36;
+            return 37;
         }
-        if (foundation_runtime_fs_tree_next(tree, &entry_path, &kind, &executable, &size) != 1 ||
+        if (foundation_runtime_fs_tree_next_metadata(
+                tree, &entry_path, &kind, &executable, &size,
+                &permissions, &modified) != 1 ||
             !line_is(entry_path, "nested") || kind != 2 || size != 0) {
             fdn_string_drop(&entry_path);
             foundation_runtime_bytes_close(&payload);
             (void)foundation_runtime_fs_tree_close(&tree);
-            return 37;
+            return 38;
         }
-        if (foundation_runtime_fs_tree_next(tree, &entry_path, &kind, &executable, &size) != 1 ||
+        if (foundation_runtime_fs_tree_next_metadata(
+                tree, &entry_path, &kind, &executable, &size,
+                &permissions, &modified) != 1 ||
             !line_is(entry_path, "nested/payload.bin") || kind != 1 ||
             executable != expected_executable || size != 14 ||
+            permissions != expected_input_permissions || modified == 0 ||
             foundation_runtime_fs_tree_read(tree, &relative_file, 13, &read_payload) != 5 ||
             read_payload != 0 ||
             foundation_runtime_fs_tree_read(tree, &relative_file, 14, &read_payload) != 0 ||
             read_payload == 0 || fdn_bytes_view(read_payload, &read_data, &read_length) != 0 ||
             read_length != 14 || memcmp(read_data, "binary\0payload", 14) != 0 ||
-            foundation_runtime_fs_tree_next(tree, &entry_path, &kind, &executable, &size) != 0 ||
+            foundation_runtime_fs_tree_next_metadata(
+                tree, &entry_path, &kind, &executable, &size,
+                &permissions, &modified) != 0 ||
             foundation_runtime_fs_tree_close(&tree) != 0 || tree != 0 ||
             foundation_runtime_fs_live_directories() != 0) {
             fdn_string_drop(&entry_path);
             foundation_runtime_bytes_close(&read_payload);
             foundation_runtime_bytes_close(&payload);
             (void)foundation_runtime_fs_tree_close(&tree);
-            return 38;
+            return 39;
         }
         fdn_string_drop(&entry_path);
         if (foundation_runtime_fs_root_open(&output_path, &root) != 0 || root == 0 ||
             foundation_runtime_fs_root_create_directory(root, &relative_directory) != 0 ||
             foundation_runtime_fs_root_write_file(root, &relative_file, read_payload, 0640) != 0 ||
-            foundation_runtime_fs_root_close(&root) != 0 || root != 0) {
+            foundation_runtime_fs_root_set_permissions(root, &relative_file, 0601) != 0 ||
+            foundation_runtime_fs_root_set_permissions(root, &relative_file, 512) != 3 ||
+            foundation_runtime_fs_root_set_permissions(root, &invalid_relative, 0600) != 3 ||
+            foundation_runtime_fs_root_set_modified(root, &relative_file,
+                                                    UINT64_C(1700000000)) != 0 ||
+            foundation_runtime_fs_root_set_modified(root, &relative_file,
+                                                    UINT64_MAX) != 3 ||
+            foundation_runtime_fs_root_set_modified(root, &invalid_relative,
+                                                    UINT64_C(1700000000)) != 3 ||
+            foundation_runtime_fs_root_remove_file(root, &relative_directory) != 3 ||
+            foundation_runtime_fs_root_remove_empty_directory(root, &relative_file) != 3 ||
+            foundation_runtime_fs_root_remove_empty_directory(root, &invalid_relative) != 3) {
             foundation_runtime_bytes_close(&read_payload);
             foundation_runtime_bytes_close(&payload);
-            return 39;
+            return 40;
         }
+        status = foundation_runtime_fs_root_create_symbolic_link(
+            root, &relative_link, &link_target, true);
+#if defined(_WIN32)
+        if (status == 0) {
+            link_created = true;
+        } else if (status != 2) {
+            return 41;
+        }
+#else
+        if (status != 0) {
+            return 41;
+        }
+        link_created = true;
+#endif
         foundation_runtime_bytes_close(&read_payload);
         foundation_runtime_bytes_close(&payload);
+        if (foundation_runtime_fs_tree_open(&output_path, 10, 4096, &tree) != 0) {
+            return 42;
+        }
+        if (foundation_runtime_fs_tree_read_symbolic_link(
+                tree, &invalid_relative, 6, &read_target,
+                &link_directory) != 3 ||
+            foundation_runtime_fs_tree_next_metadata(
+                tree, &entry_path, &kind, &executable, &size,
+                &permissions, &modified) != 1 ||
+            !line_is(entry_path, "nested") || kind != 2) {
+            return 43;
+        }
+        if (link_created &&
+            (foundation_runtime_fs_tree_next_metadata(
+                 tree, &entry_path, &kind, &executable, &size,
+                 &permissions, &modified) != 1 ||
+             !line_is(entry_path, "nested-link") || kind != 3 ||
+             foundation_runtime_fs_tree_read_symbolic_link(
+                 tree, &relative_link, 5, &read_target,
+                 &link_directory) != 5 ||
+             foundation_runtime_fs_tree_read_symbolic_link(
+                 tree, &relative_link, 6, &read_target,
+                 &link_directory) != 0 ||
+             !line_is(read_target, "nested") ||
+             link_directory != expected_link_directory)) {
+            return 44;
+        }
+        if (link_created) {
+            fdn_string_drop(&read_target);
+        }
+        if (foundation_runtime_fs_tree_next_metadata(
+                tree, &entry_path, &kind, &executable, &size,
+                &permissions, &modified) != 1 ||
+            !line_is(entry_path, "nested/payload.bin") || kind != 1 ||
+            permissions != expected_output_permissions ||
+            modified != UINT64_C(1700000000) ||
+            foundation_runtime_fs_tree_next_metadata(
+                tree, &entry_path, &kind, &executable, &size,
+                &permissions, &modified) != 0 ||
+            foundation_runtime_fs_tree_close(&tree) != 0) {
+            fdn_string_drop(&entry_path);
+            (void)foundation_runtime_fs_tree_close(&tree);
+            return 45;
+        }
+        fdn_string_drop(&entry_path);
+        if ((link_created &&
+             (foundation_runtime_fs_root_set_permissions(
+                  root, &relative_link, 0600) != 3 ||
+              foundation_runtime_fs_root_set_modified(
+                  root, &relative_link, UINT64_C(1700000000)) != 3 ||
+              foundation_runtime_fs_root_remove_file(
+                  root, &relative_link) != 0)) ||
+            foundation_runtime_fs_root_remove_file(root, &relative_file) != 0 ||
+            foundation_runtime_fs_root_remove_empty_directory(
+                root, &relative_directory) != 0 ||
+            foundation_runtime_fs_root_remove_file(root, &invalid_relative) != 3 ||
+            foundation_runtime_fs_root_close(&root) != 0 || root != 0) {
+            return 46;
+        }
 #if !defined(_WIN32)
         {
             struct stat info;
-            int tree_link_length = snprintf(tree_link, sizeof(tree_link),
-                                            "%s/link", tree_root);
-            if (tree_link_length < 0 || (size_t)tree_link_length >= sizeof(tree_link) ||
-                stat(tree_file, &info) != 0 || (info.st_mode & 0777) != 0751 ||
-                stat(output_file, &info) != 0 || (info.st_mode & 0777) != 0640 ||
-                symlink("nested", tree_link) != 0 ||
-                foundation_runtime_fs_tree_open(&tree_path, 10, 4096, &tree) != 0 ||
-                foundation_runtime_fs_tree_next(tree, &entry_path, &kind, &executable, &size) != 1 ||
-                !line_is(entry_path, "link") || kind != 3 ||
-                foundation_runtime_fs_tree_close(&tree) != 0 || unlink(tree_link) != 0) {
-                fdn_string_drop(&entry_path);
-                (void)foundation_runtime_fs_tree_close(&tree);
-                return 40;
+            if (stat(tree_file, &info) != 0 ||
+                (info.st_mode & 0777) != expected_input_permissions) {
+                return 47;
             }
-            fdn_string_drop(&entry_path);
         }
 #endif
+        if (foundation_runtime_fs_tree_open(&tree_path, 10, 4096, &tree) != 0 ||
+            foundation_runtime_fs_tree_next(tree, &entry_path, &kind,
+                                            &executable, &size) != 1 ||
+            !line_is(entry_path, "nested") || kind != 2 ||
+            foundation_runtime_fs_tree_close(&tree) != 0) {
+            fdn_string_drop(&entry_path);
+            (void)foundation_runtime_fs_tree_close(&tree);
+            return 48;
+        }
+        fdn_string_drop(&entry_path);
         if (remove(tree_file) != 0 || remove_directory(tree_nested) != 0 ||
-            remove_directory(tree_root) != 0 || remove(output_file) != 0 ||
-            remove_directory(output_nested) != 0 || remove_directory(output_root) != 0 ||
+            remove_directory(tree_root) != 0 ||
+            remove_directory(output_root) != 0 ||
             foundation_runtime_fs_live_directories() != 0 || fdn_live_allocations() != 0) {
-            return 41;
+            return 49;
         }
     }
     return 0;
