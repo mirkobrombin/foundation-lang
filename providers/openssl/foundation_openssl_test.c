@@ -81,6 +81,34 @@ cleanup:
     return result;
 }
 
+static int test_ed25519_generation(void) {
+    uint64_t private_key = 0;
+    uint64_t public_key = 0;
+    uint64_t raw_public_key = 0;
+    uint64_t input = 0;
+    uint64_t signature = 0;
+    uint64_t raw_length = 0;
+    int result = 0;
+    if (foundation_openssl_ed25519_generate(&private_key, &public_key,
+                                             &raw_public_key) != FOUNDATION_OPENSSL_OK ||
+        foundation_runtime_bytes_length(raw_public_key, &raw_length) != 0 ||
+        raw_length != 32) goto cleanup;
+    input = test_bytes("generated Ed25519 key");
+    if (input == 0 ||
+        foundation_openssl_sign(FOUNDATION_OPENSSL_EDDSA, private_key,
+                                input, &signature) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_verify(FOUNDATION_OPENSSL_EDDSA, public_key,
+                                  input, signature) != FOUNDATION_OPENSSL_OK) goto cleanup;
+    result = 1;
+cleanup:
+    foundation_runtime_bytes_close(&signature);
+    foundation_runtime_bytes_close(&input);
+    foundation_runtime_bytes_close(&raw_public_key);
+    foundation_runtime_bytes_close(&public_key);
+    foundation_runtime_bytes_close(&private_key);
+    return result;
+}
+
 static int test_rejected_key(int key_type, int rsa_bits, int curve, uint32_t algorithm) {
     EVP_PKEY_CTX *context = EVP_PKEY_CTX_new_id(key_type, NULL);
     EVP_PKEY *key = NULL;
@@ -507,6 +535,7 @@ int main(void) {
     if (!test_algorithm(EVP_PKEY_RSA, FOUNDATION_OPENSSL_RS256) ||
         !test_algorithm(EVP_PKEY_EC, FOUNDATION_OPENSSL_ES256) ||
         !test_algorithm(EVP_PKEY_ED25519, FOUNDATION_OPENSSL_EDDSA) ||
+        !test_ed25519_generation() ||
         !test_rejected_key(EVP_PKEY_RSA, 1024, 0, FOUNDATION_OPENSSL_RS256) ||
         !test_rejected_key(EVP_PKEY_EC, 0, NID_secp384r1, FOUNDATION_OPENSSL_ES256) ||
         !test_cancelled_request() || !test_http_response_framing()) {

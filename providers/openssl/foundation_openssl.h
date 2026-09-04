@@ -32,6 +32,9 @@ int32_t foundation_openssl_sign(uint32_t algorithm, uint64_t private_key,
                                 uint64_t signing_input, uint64_t *signature);
 int32_t foundation_openssl_verify(uint32_t algorithm, uint64_t public_key,
                                   uint64_t signing_input, uint64_t signature);
+int32_t foundation_openssl_ed25519_generate(uint64_t *private_key,
+                                            uint64_t *public_key,
+                                            uint64_t *raw_public_key);
 
 // Opens a TLS client connection after SNI and hostname verification. The handle
 // is intentionally opaque: callers cannot downgrade it into a plain socket.

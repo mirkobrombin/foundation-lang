@@ -98,6 +98,28 @@ fn invalidServerCertificate() bool {
     }
 }
 
+fn generatedEd25519Works() bool {
+    const generated = auth.GenerateOpenSSLEd25519() else {
+        return false
+    }
+    const auth.OpenSSLEd25519KeyPair {
+        PrivateKeyPEM
+        PublicKeyPEM
+        RawPublicKey
+    } = generated
+    const rawLength = RawPublicKey.Len() else { return false }
+    if rawLength != 32 return false
+    var provider = auth.OpenSSLAsymmetricProvider {}
+    const input = bytes.FromText("generated Ed25519 key")
+    const signature = provider.Sign(.EdDSA, PrivateKeyPEM, input) else {
+        return false
+    }
+    provider.Verify(.EdDSA, PublicKeyPEM, input, signature) else {
+        return false
+    }
+    true
+}
+
 fn main() i32 {
     var asymmetric = auth.OpenSSLAsymmetricProvider {}
     const privateKey = bytes.FromText("not a private key")
@@ -116,6 +138,7 @@ fn main() i32 {
     discard tls
     if !cancelledTLS($completed) return 2
     if !invalidServerCertificate() return 3
+    if !generatedEd25519Works() return 4
 
     print("OpenSSL providers ok")
     0

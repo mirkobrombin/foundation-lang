@@ -14,6 +14,18 @@ extern c fn verifyNative(
     signingInput u64,
     signature u64
 ) i32 as foundation_openssl_verify
+extern c fn generateEd25519Native(
+    &privateKey u64,
+    &publicKey u64,
+    &rawPublicKey u64
+) i32 as foundation_openssl_ed25519_generate
+
+// Owns one generated Ed25519 keypair in provider and wire formats.
+struct OpenSSLEd25519KeyPair {
+    PrivateKeyPEM own bytes.Bytes
+    PublicKeyPEM own bytes.Bytes
+    RawPublicKey own bytes.Bytes
+}
 
 // Provides RS256, ES256, and Ed25519 signing through an explicitly linked OpenSSL adapter.
 struct OpenSSLAsymmetricProvider implements AsymmetricProvider {
@@ -59,6 +71,33 @@ struct OpenSSLAsymmetricProvider implements AsymmetricProvider {
 // Creates the provider only when the application explicitly links providers/openssl.
 fn OpenSSLAsymmetric() own AsymmetricProvider {
     own OpenSSLAsymmetricProvider {}
+}
+
+// Generates an Ed25519 keypair for signing, verification, and protocol pinning.
+fn GenerateOpenSSLEd25519() Result<OpenSSLEd25519KeyPair, AsymmetricProviderError> {
+    var privateKey u64 = 0
+    var publicKey u64 = 0
+    var rawPublicKey u64 = 0
+    if generateEd25519Native(&privateKey, &publicKey, &rawPublicKey) != 0 {
+        return .Err(.Failed)
+    }
+    const claimedPrivate = bytes.ClaimRuntimeHandle(privateKey) else error {
+        discard error
+        return .Err(.Failed)
+    }
+    const claimedPublic = bytes.ClaimRuntimeHandle(publicKey) else error {
+        discard error
+        return .Err(.Failed)
+    }
+    const claimedRaw = bytes.ClaimRuntimeHandle(rawPublicKey) else error {
+        discard error
+        return .Err(.Failed)
+    }
+    .Ok(OpenSSLEd25519KeyPair {
+        PrivateKeyPEM = claimedPrivate
+        PublicKeyPEM = claimedPublic
+        RawPublicKey = claimedRaw
+    })
 }
 
 fn openSSLAlgorithm(algorithm AsymmetricAlgorithm) u64 {

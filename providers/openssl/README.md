@@ -20,10 +20,11 @@ through `--native-link`.
 
 ## Security boundary
 
-The signing API accepts PEM keys and supports RS256, ES256, and EdDSA with Ed25519 keys. HTTPS
-clients require SNI, certificate and hostname verification, an explicit deadline, and a
-cooperative cancellation token. One monotonic deadline covers name resolution through the final
-response read.
+The signing API accepts PEM keys and supports RS256, ES256, and EdDSA with Ed25519 keys.
+`GenerateOpenSSLEd25519` creates a PEM keypair and returns the raw 32-byte public key for protocol
+identity and pinning. HTTPS clients require SNI, certificate and hostname verification, an explicit
+deadline, and a cooperative cancellation token. One monotonic deadline covers name resolution
+through the final response read.
 
 HTTPS servers select an exact SNI certificate from configured PEM pairs and reject unknown names;
 there is no plaintext fallback. Closing a server wakes its listener, waits for work that already

@@ -406,6 +406,59 @@ static int32_t foundation_openssl_output_bytes(const unsigned char *data, size_t
     return FOUNDATION_OPENSSL_OK;
 }
 
+int32_t foundation_openssl_ed25519_generate(uint64_t *private_key,
+                                             uint64_t *public_key,
+                                             uint64_t *raw_public_key) {
+    EVP_PKEY_CTX *context = NULL;
+    EVP_PKEY *key = NULL;
+    BIO *private_bio = NULL;
+    BIO *public_bio = NULL;
+    BUF_MEM *private_data = NULL;
+    BUF_MEM *public_data = NULL;
+    unsigned char raw_public[32];
+    size_t raw_public_length = sizeof(raw_public);
+    int32_t status = FOUNDATION_OPENSSL_FAILED;
+
+    if (private_key == NULL || public_key == NULL || raw_public_key == NULL) {
+        return FOUNDATION_OPENSSL_FAILED;
+    }
+    *private_key = 0;
+    *public_key = 0;
+    *raw_public_key = 0;
+    context = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, NULL);
+    if (context == NULL || EVP_PKEY_keygen_init(context) != 1 ||
+        EVP_PKEY_keygen(context, &key) != 1) goto cleanup;
+    private_bio = BIO_new(BIO_s_mem());
+    public_bio = BIO_new(BIO_s_mem());
+    if (private_bio == NULL || public_bio == NULL ||
+        PEM_write_bio_PrivateKey(private_bio, key, NULL, NULL, 0, NULL, NULL) != 1 ||
+        PEM_write_bio_PUBKEY(public_bio, key) != 1 ||
+        EVP_PKEY_get_raw_public_key(key, raw_public, &raw_public_length) != 1 ||
+        raw_public_length != sizeof(raw_public)) goto cleanup;
+    BIO_get_mem_ptr(private_bio, &private_data);
+    BIO_get_mem_ptr(public_bio, &public_data);
+    if (private_data == NULL || public_data == NULL ||
+        foundation_openssl_output_bytes((const unsigned char *)private_data->data,
+                                        private_data->length, private_key) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_output_bytes((const unsigned char *)public_data->data,
+                                        public_data->length, public_key) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_output_bytes(raw_public, raw_public_length,
+                                        raw_public_key) != FOUNDATION_OPENSSL_OK) goto cleanup;
+    status = FOUNDATION_OPENSSL_OK;
+cleanup:
+    OPENSSL_cleanse(raw_public, sizeof(raw_public));
+    BIO_free(public_bio);
+    BIO_free(private_bio);
+    EVP_PKEY_free(key);
+    EVP_PKEY_CTX_free(context);
+    if (status != FOUNDATION_OPENSSL_OK) {
+        foundation_runtime_bytes_close(raw_public_key);
+        foundation_runtime_bytes_close(public_key);
+        foundation_runtime_bytes_close(private_key);
+    }
+    return status;
+}
+
 static int foundation_openssl_es256_raw_signature(const unsigned char *der, size_t der_length,
                                                    unsigned char output[64]) {
     const unsigned char *cursor = der;
