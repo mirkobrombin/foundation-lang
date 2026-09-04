@@ -464,6 +464,12 @@ struct WriteOutcome {
     Value Result<void, Error>
 }
 
+// Restores an unsplit connection after one complete text write.
+struct ConnectionWriteOutcome {
+    Connection own TcpConnection
+    Value Result<void, Error>
+}
+
 // Binds one local address. Port zero asks the OS to choose.
 fn Listen($address String, port u64) Result<own TcpListener, Error> {
     const defaultBacklog u64 = 128
@@ -553,6 +559,52 @@ task ConnectUntil(
         return .Ok(own TcpConnection { handle = connection })
     }
     .Err(errorFor(connectStatus))
+}
+
+// Writes on an unsplit connection so a protocol provider can claim it afterward.
+task WriteConnectionAll(
+    $connection own TcpConnection,
+    $text String
+) ConnectionWriteOutcome {
+    const status = writeAllNative(connection.handle, text)
+    if status == 0 {
+        return ConnectionWriteOutcome {
+            Connection = connection
+            Value = .Ok
+        }
+    }
+    ConnectionWriteOutcome {
+        Connection = connection
+        Value = .Err(errorFor(status))
+    }
+}
+
+// Writes on an unsplit connection before one absolute monotonic deadline.
+task WriteConnectionAllUntil(
+    $connection own TcpConnection,
+    $text String,
+    deadline Deadline
+) ConnectionWriteOutcome {
+    const status = writeAllUntilNative(
+        connection.handle,
+        text,
+        deadline.nanoseconds
+    )
+    if status == 0 {
+        return ConnectionWriteOutcome {
+            Connection = connection
+            Value = .Ok
+        }
+    }
+    ConnectionWriteOutcome {
+        Connection = connection
+        Value = .Err(errorFor(status))
+    }
+}
+
+// Exposes an opaque runtime carrier to transport providers without exposing the OS socket.
+fn ConnectionRuntimeHandle(connection TcpConnection) u64 {
+    connection.handle
 }
 
 // Reads one UTF-8 line and returns ownership of the reader with the result.

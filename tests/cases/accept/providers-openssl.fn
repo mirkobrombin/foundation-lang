@@ -7,6 +7,7 @@ import foundation.web
 import std.bytes
 import std.collections
 import std.concurrent
+import std.net
 
 enum WebFailure {
     Rejected
@@ -239,6 +240,89 @@ fn controlledTLSWorks() bool {
     result
 }
 
+fn connectedTLSWorks() bool {
+    const host = auth.GenerateOpenSSLEd25519() else { return false }
+    const auth.OpenSSLEd25519KeyPair {
+        PrivateKeyPEM
+        PublicKeyPEM
+        RawPublicKey
+    } = host
+    discard PublicKeyPEM
+    const certificate = auth.OpenSSLEd25519Certificate(PrivateKeyPEM) else {
+        return false
+    }
+    const listener = net.Listen("127.0.0.1", 0) else { return false }
+    const port = listener.Port
+    const accepting = spawn net.Accept($listener)
+    const connecting = spawn net.Connect("127.0.0.1", port)
+    const clientTransport = $connecting.wait() else { return false }
+    const accepted = $accepting.wait()
+    const net.AcceptOutcome { Listener Value } = accepted
+    const serverTransport = Value else { return false }
+    const source = concurrent.NewCancellationSource()
+    const serverCancellation = source.Token()
+    const clientCancellation = source.Token()
+    discard source
+    const pin = RawPublicKey.Copy() else { return false }
+    discard RawPublicKey
+    const serving = spawn secureTLS.OpenSSLAcceptOver(
+        $serverTransport,
+        $certificate,
+        $PrivateKeyPEM,
+        $"foundation-over/1",
+        5000000000,
+        $serverCancellation
+    )
+    const dialing = spawn secureTLS.OpenSSLConnectOverPinned(
+        $clientTransport,
+        $pin,
+        $"foundation-over/1",
+        5000000000,
+        $clientCancellation
+    )
+    const client = $dialing.wait() else { return false }
+    const server = $serving.wait() else { return false }
+    const clientStream = client.Split() else { return false }
+    const serverStream = server.Split() else { return false }
+    const secureTLS.OpenSSLStreamPair {
+        Reader as clientReader
+        Writer as clientWriter
+    } = clientStream
+    const secureTLS.OpenSSLStreamPair {
+        Reader as serverReader
+        Writer as serverWriter
+    } = serverStream
+    const writing = spawn secureTLS.OpenSSLWriteAllBytes(
+        $clientWriter,
+        $bytes.FromText("over")
+    )
+    const reading = spawn secureTLS.OpenSSLReadExactBytes($serverReader, 4)
+    const secureTLS.OpenSSLWriteOutcome {
+        Writer as restoredClientWriter
+        Value as written
+    } = $writing.wait()
+    const secureTLS.OpenSSLReadOutcome {
+        Reader as restoredServerReader
+        Value as received
+    } = $reading.wait()
+    const writeSucceeded = validTLSWrite($written)
+    const payload = tlsBytes($received)
+    const matches = match payload {
+        Some(value): {
+            const textValue = value.Text() else { return false }
+            textValue == "over"
+        }
+        None: false
+    }
+    const success = writeSucceeded && matches
+    discard restoredClientWriter
+    discard restoredServerReader
+    discard clientReader
+    discard serverWriter
+    discard Listener
+    success
+}
+
 fn validTLSWrite($value Result<void, secureTLS.Error>) bool {
     match value {
         Ok: true
@@ -281,6 +365,7 @@ fn main() i32 {
     if !invalidServerCertificate() return 3
     if !generatedEd25519Works() return 4
     if !controlledTLSWorks() return 5
+    if !connectedTLSWorks() return 6
 
     print("OpenSSL providers ok")
     0

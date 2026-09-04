@@ -103,6 +103,14 @@ int32_t foundation_openssl_secure_connect_pinned(const fdn_string *server_name,
                                                  int64_t timeout_nanoseconds,
                                                  uint64_t cancellation,
                                                  uint64_t *connection);
+int32_t foundation_openssl_secure_connect_over_pinned(
+    uint64_t transport, uint64_t raw_public_key, const fdn_string *protocol,
+    int64_t timeout_nanoseconds, uint64_t cancellation,
+    uint64_t *connection);
+int32_t foundation_openssl_secure_accept_over(
+    uint64_t transport, uint64_t certificate, uint64_t private_key,
+    const fdn_string *protocol, int64_t timeout_nanoseconds,
+    uint64_t cancellation, uint64_t *connection);
 int32_t foundation_openssl_server_add_certificate(uint64_t server, const char *server_name,
                                                   uint64_t server_name_length,
                                                   uint64_t certificate,

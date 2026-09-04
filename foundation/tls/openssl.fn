@@ -2,6 +2,7 @@ package foundation.tls
 
 import std.bytes
 import std.concurrent
+import std.net
 
 enum Error {
     InvalidAddress
@@ -42,6 +43,27 @@ extern c fn connectPinnedNative(
     cancellation u64,
     &connection u64
 ) i32 as foundation_openssl_secure_connect_pinned
+
+@blocking
+extern c fn connectPinnedOverNative(
+    connection u64,
+    rawPublicKey u64,
+    protocol String,
+    timeoutNanoseconds i64,
+    cancellation u64,
+    &secured u64
+) i32 as foundation_openssl_secure_connect_over_pinned
+
+@blocking
+extern c fn acceptOverNative(
+    connection u64,
+    certificate u64,
+    privateKey u64,
+    protocol String,
+    timeoutNanoseconds i64,
+    cancellation u64,
+    &secured u64
+) i32 as foundation_openssl_secure_accept_over
 
 extern c fn peerNative(connection u64, &address String) i32 as foundation_openssl_secure_connection_peer
 
@@ -276,6 +298,55 @@ task OpenSSLDialPinned(
         &connection
     )
     discard rawPublicKey
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own OpenSSLConnection { handle = connection })
+}
+
+// Secures an already connected TCP stream after a plaintext protocol prefix.
+task OpenSSLConnectOverPinned(
+    $transport own net.TcpConnection,
+    $rawPublicKey own bytes.Bytes,
+    $protocol String,
+    timeoutNanoseconds i64,
+    $cancellation concurrent.Cancellation
+) Result<own OpenSSLConnection, Error> {
+    var connection u64 = 0
+    const status = connectPinnedOverNative(
+        net.ConnectionRuntimeHandle(transport),
+        bytes.RuntimeHandle(rawPublicKey),
+        protocol,
+        timeoutNanoseconds,
+        cancellation.RuntimeHandle(),
+        &connection
+    )
+    discard transport
+    discard rawPublicKey
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own OpenSSLConnection { handle = connection })
+}
+
+// Secures an accepted TCP stream with one certificate and exact ALPN protocol.
+task OpenSSLAcceptOver(
+    $transport own net.TcpConnection,
+    $certificatePEM own bytes.Bytes,
+    $privateKeyPEM own bytes.Bytes,
+    $protocol String,
+    timeoutNanoseconds i64,
+    $cancellation concurrent.Cancellation
+) Result<own OpenSSLConnection, Error> {
+    var connection u64 = 0
+    const status = acceptOverNative(
+        net.ConnectionRuntimeHandle(transport),
+        bytes.RuntimeHandle(certificatePEM),
+        bytes.RuntimeHandle(privateKeyPEM),
+        protocol,
+        timeoutNanoseconds,
+        cancellation.RuntimeHandle(),
+        &connection
+    )
+    discard transport
+    discard certificatePEM
+    discard privateKeyPEM
     if status != 0 return .Err(errorFor(status))
     .Ok(own OpenSSLConnection { handle = connection })
 }

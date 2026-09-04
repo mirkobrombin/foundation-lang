@@ -1113,6 +1113,34 @@ int32_t foundation_runtime_net_peer_address(uint64_t handle,
     return FDN_NET_OK;
 }
 
+int32_t foundation_runtime_net_connection_take_socket(uint64_t handle,
+                                                      uint64_t *result) {
+    fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)handle;
+    fdn_net_socket socket;
+    if (connection == NULL || result == NULL) {
+        return FDN_NET_CLOSED;
+    }
+    *result = 0;
+    fdn_net_connection_enter(connection);
+    if (!connection->full_open || connection->socket == FDN_NET_INVALID_SOCKET ||
+        connection->read_length != 0) {
+        fdn_net_connection_leave(connection);
+        return FDN_NET_CLOSED;
+    }
+    socket = connection->socket;
+    connection->socket = FDN_NET_INVALID_SOCKET;
+    connection->full_open = false;
+    connection->read_open = false;
+    connection->write_open = false;
+    fdn_net_connection_leave(connection);
+#if defined(_WIN32)
+    *result = (uint64_t)socket;
+#else
+    *result = (uint64_t)(unsigned int)socket;
+#endif
+    return FDN_NET_OK;
+}
+
 void foundation_runtime_net_connection_close(uint64_t handle) {
     fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)handle;
     fdn_net_socket socket = FDN_NET_INVALID_SOCKET;

@@ -518,6 +518,8 @@ void foundation_runtime_net_connect_until_start(
 void foundation_runtime_net_connect_cancel(fdn_reactor_operation *operation);
 int32_t foundation_runtime_net_peer_address(uint64_t connection,
                                             fdn_string *address);
+int32_t foundation_runtime_net_connection_take_socket(uint64_t connection,
+                                                      uint64_t *socket);
 int32_t foundation_runtime_net_split(uint64_t connection, uint64_t *reader,
                                      uint64_t *writer);
 int32_t foundation_runtime_net_split_controlled(uint64_t connection,
