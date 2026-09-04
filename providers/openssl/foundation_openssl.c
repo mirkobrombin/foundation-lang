@@ -38,6 +38,7 @@ typedef SOCKET foundation_openssl_socket;
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <signal.h>
 typedef int foundation_openssl_socket;
 #define FOUNDATION_OPENSSL_INVALID_SOCKET (-1)
 #define foundation_openssl_socket_close close
@@ -182,6 +183,14 @@ static int foundation_openssl_network_open(void) {
     WSADATA data;
     return WSAStartup(MAKEWORD(2, 2), &data) == 0;
 #else
+    struct sigaction current;
+    struct sigaction ignored;
+    if (sigaction(SIGPIPE, NULL, &current) == 0 && current.sa_handler == SIG_DFL) {
+        memset(&ignored, 0, sizeof(ignored));
+        ignored.sa_handler = SIG_IGN;
+        sigemptyset(&ignored.sa_mask);
+        sigaction(SIGPIPE, &ignored, NULL);
+    }
     return 1;
 #endif
 }
@@ -2230,13 +2239,26 @@ int32_t foundation_openssl_server_read_exact_bytes(uint64_t handle, uint64_t len
     while (offset < (size_t)length) {
         size_t remaining = (size_t)length - offset;
         int count;
+        int error;
         if (remaining > INT_MAX) remaining = INT_MAX;
         if (!CRYPTO_THREAD_write_lock(stream->connection->lock)) goto cleanup;
         count = SSL_read(stream->connection->ssl, buffer + offset, (int)remaining);
+        error = count > 0 ? SSL_ERROR_NONE : SSL_get_error(stream->connection->ssl, count);
         CRYPTO_THREAD_unlock(stream->connection->lock);
         if (count <= 0) {
-            if (SSL_get_error(stream->connection->ssl, count) == SSL_ERROR_ZERO_RETURN) {
+            if (error == SSL_ERROR_ZERO_RETURN) {
                 status = FOUNDATION_OPENSSL_PROTOCOL_FAILED;
+                goto cleanup;
+            }
+            if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+                int waited = foundation_openssl_socket_wait(
+                    stream->connection->socket,
+                    error == SSL_ERROR_WANT_READ,
+                    error == SSL_ERROR_WANT_WRITE,
+                    foundation_openssl_deadline(1000000000LL),
+                    0
+                );
+                if (waited > 0) continue;
             }
             goto cleanup;
         }
@@ -2255,11 +2277,25 @@ static int32_t foundation_openssl_server_write(foundation_openssl_server_stream 
     while (written < length) {
         size_t chunk = length - written;
         int count;
+        int error;
         if (chunk > INT_MAX) chunk = INT_MAX;
         if (!CRYPTO_THREAD_write_lock(stream->connection->lock)) return FOUNDATION_OPENSSL_FAILED;
         count = SSL_write(stream->connection->ssl, value + written, (int)chunk);
+        error = count > 0 ? SSL_ERROR_NONE : SSL_get_error(stream->connection->ssl, count);
         CRYPTO_THREAD_unlock(stream->connection->lock);
-        if (count <= 0) return FOUNDATION_OPENSSL_FAILED;
+        if (count <= 0) {
+            if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+                int waited = foundation_openssl_socket_wait(
+                    stream->connection->socket,
+                    error == SSL_ERROR_WANT_READ,
+                    error == SSL_ERROR_WANT_WRITE,
+                    foundation_openssl_deadline(1000000000LL),
+                    0
+                );
+                if (waited > 0) continue;
+            }
+            return FOUNDATION_OPENSSL_FAILED;
+        }
         written += (size_t)count;
     }
     return FOUNDATION_OPENSSL_OK;
@@ -2306,8 +2342,55 @@ int32_t foundation_openssl_secure_connection_split(uint64_t *connection,
     return foundation_openssl_server_connection_split(connection, reader, writer);
 }
 
+int32_t foundation_openssl_secure_connection_split_controlled(
+    uint64_t *handle, uint64_t *reader, uint64_t *writer,
+    uint64_t *controller) {
+    foundation_openssl_server_connection *connection;
+    foundation_openssl_server_stream *read_stream = NULL;
+    foundation_openssl_server_stream *write_stream = NULL;
+    foundation_openssl_server_stream *control_stream = NULL;
+    if (handle == NULL || reader == NULL || writer == NULL || controller == NULL ||
+        *handle == 0) return FOUNDATION_OPENSSL_FAILED;
+    *reader = 0;
+    *writer = 0;
+    *controller = 0;
+    connection = (foundation_openssl_server_connection *)(uintptr_t)*handle;
+    if (!foundation_openssl_socket_blocking(connection->socket, 0)) {
+        return FOUNDATION_OPENSSL_FAILED;
+    }
+    read_stream = OPENSSL_zalloc(sizeof(*read_stream));
+    write_stream = OPENSSL_zalloc(sizeof(*write_stream));
+    control_stream = OPENSSL_zalloc(sizeof(*control_stream));
+    if (read_stream == NULL || write_stream == NULL || control_stream == NULL) goto cleanup;
+    read_stream->connection = connection;
+    write_stream->connection = connection;
+    control_stream->connection = connection;
+    atomic_init(&connection->streams, 3);
+    *reader = (uint64_t)(uintptr_t)read_stream;
+    *writer = (uint64_t)(uintptr_t)write_stream;
+    *controller = (uint64_t)(uintptr_t)control_stream;
+    *handle = 0;
+    return FOUNDATION_OPENSSL_OK;
+cleanup:
+    OPENSSL_free(read_stream);
+    OPENSSL_free(write_stream);
+    OPENSSL_free(control_stream);
+    foundation_openssl_socket_blocking(connection->socket, 1);
+    return FOUNDATION_OPENSSL_FAILED;
+}
+
 void foundation_openssl_secure_stream_close(uint64_t *stream) {
     foundation_openssl_server_stream_close(stream);
+}
+
+void foundation_openssl_secure_stream_abort(uint64_t *handle) {
+    foundation_openssl_server_stream *stream;
+    if (handle == NULL || *handle == 0) return;
+    stream = (foundation_openssl_server_stream *)(uintptr_t)*handle;
+    if (stream->connection != NULL) {
+        shutdown(stream->connection->socket, FOUNDATION_OPENSSL_SOCKET_SHUTDOWN);
+    }
+    foundation_openssl_server_stream_close(handle);
 }
 
 int32_t foundation_openssl_secure_read_exact_bytes(uint64_t stream,

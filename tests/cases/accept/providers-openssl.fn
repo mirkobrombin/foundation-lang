@@ -2,6 +2,7 @@ package test.providers_openssl
 
 import foundation.auth
 import foundation.httpx
+import foundation.tls as secureTLS
 import foundation.web
 import std.bytes
 import std.collections
@@ -137,6 +138,127 @@ fn generatedEd25519Works() bool {
     true
 }
 
+fn controlledTLSWorks() bool {
+    const host = auth.GenerateOpenSSLEd25519() else { return false }
+    const certificate = auth.OpenSSLEd25519Certificate(host.PrivateKeyPEM) else {
+        return false
+    }
+    const listener = secureTLS.OpenSSLListen(
+        $"127.0.0.1",
+        0,
+        $"foundation-test",
+        certificate,
+        host.PrivateKeyPEM,
+        $"foundation-test/1"
+    ) else { return false }
+    const port = listener.Port
+    const pin = host.RawPublicKey.Copy() else { return false }
+    const source = concurrent.NewCancellationSource()
+    const cancellation = source.Token()
+    discard source
+    const accepting = spawn secureTLS.OpenSSLAccept($listener)
+    const dialing = spawn secureTLS.OpenSSLDialPinned(
+        $"127.0.0.1",
+        port,
+        $pin,
+        $"foundation-test/1",
+        5000000000,
+        $cancellation
+    )
+    const clientConnection = $dialing.wait() else { return false }
+    const accepted = $accepting.wait()
+    const secureTLS.OpenSSLAcceptOutcome { Listener Value } = accepted
+    const serverConnection = Value else { return false }
+    const client = clientConnection.SplitControlled() else { return false }
+    const server = serverConnection.SplitControlled() else { return false }
+    const secureTLS.OpenSSLControlledStream {
+        Reader as clientReader
+        Writer as clientWriter
+        Controller as clientController
+    } = client
+    const secureTLS.OpenSSLControlledStream {
+        Reader as serverReader
+        Writer as serverWriter
+        Controller as serverController
+    } = server
+    const readingClient = spawn secureTLS.OpenSSLReadExactBytes($clientReader, 6)
+    const readingServer = spawn secureTLS.OpenSSLReadExactBytes($serverReader, 6)
+    const writingClient = spawn secureTLS.OpenSSLWriteAllBytes(
+        $clientWriter,
+        $bytes.FromText("client")
+    )
+    const writingServer = spawn secureTLS.OpenSSLWriteAllBytes(
+        $serverWriter,
+        $bytes.FromText("server")
+    )
+    const clientWrite = $writingClient.wait()
+    const serverWrite = $writingServer.wait()
+    const clientRead = $readingClient.wait()
+    const serverRead = $readingServer.wait()
+    const secureTLS.OpenSSLWriteOutcome {
+        Writer as restoredClientWriter
+        Value as clientWriteValue
+    } = clientWrite
+    const secureTLS.OpenSSLWriteOutcome {
+        Writer as restoredServerWriter
+        Value as serverWriteValue
+    } = serverWrite
+    const secureTLS.OpenSSLReadOutcome {
+        Reader as restoredClientReader
+        Value as clientReadValue
+    } = clientRead
+    const secureTLS.OpenSSLReadOutcome {
+        Reader as restoredServerReader
+        Value as serverReadValue
+    } = serverRead
+    const clientWritten = validTLSWrite($clientWriteValue)
+    const serverWritten = validTLSWrite($serverWriteValue)
+    const clientReadOption = tlsBytes($clientReadValue)
+    const serverReadOption = tlsBytes($serverReadValue)
+    const clientBytes = match clientReadOption {
+        Some(value): value
+        None: { return false }
+    }
+    const serverBytes = match serverReadOption {
+        Some(value): value
+        None: { return false }
+    }
+    const clientText = clientBytes.Text() else { return false }
+    const serverText = serverBytes.Text() else { return false }
+    const result = clientWritten && serverWritten &&
+        clientText == "server" && serverText == "client"
+    discard restoredClientWriter
+    discard restoredServerWriter
+    discard restoredClientReader
+    discard restoredServerReader
+    discard clientController
+    discard serverController
+    discard Listener
+    result
+}
+
+fn validTLSWrite($value Result<void, secureTLS.Error>) bool {
+    match value {
+        Ok: true
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn tlsBytes(
+    $value Result<own bytes.Bytes, secureTLS.Error>
+) Option<own bytes.Bytes> {
+    match value {
+        Ok(value): .Some(value)
+        Err(error): {
+            discard error
+            .None
+        }
+    }
+}
+
 fn main() i32 {
     var asymmetric = auth.OpenSSLAsymmetricProvider {}
     const privateKey = bytes.FromText("not a private key")
@@ -156,6 +278,7 @@ fn main() i32 {
     if !cancelledTLS($completed) return 2
     if !invalidServerCertificate() return 3
     if !generatedEd25519Works() return 4
+    if !controlledTLSWorks() return 5
 
     print("OpenSSL providers ok")
     0

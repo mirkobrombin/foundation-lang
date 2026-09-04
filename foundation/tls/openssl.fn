@@ -53,7 +53,15 @@ extern c fn splitNative(
     &writer u64
 ) i32 as foundation_openssl_secure_connection_split
 
+extern c fn splitControlledNative(
+    &connection u64,
+    &reader u64,
+    &writer u64,
+    &controller u64
+) i32 as foundation_openssl_secure_connection_split_controlled
+
 extern c fn closeStreamNative(&stream u64) void as foundation_openssl_secure_stream_close
+extern c fn abortStreamNative(&stream u64) void as foundation_openssl_secure_stream_abort
 
 @blocking
 extern c fn readExactBytesNative(
@@ -121,6 +129,28 @@ struct OpenSSLConnection {
         })
     }
 
+    fn SplitControlled($self) Result<OpenSSLControlledStream, Error> {
+        var reader u64 = 0
+        var writer u64 = 0
+        var controller u64 = 0
+        var active = self
+        var handle = active.Take()
+        if splitControlledNative(
+            &handle,
+            &reader,
+            &writer,
+            &controller
+        ) != 0 {
+            closeConnectionNative(&handle)
+            return .Err(.Io)
+        }
+        .Ok(OpenSSLControlledStream {
+            Reader = own OpenSSLReader { handle = reader }
+            Writer = own OpenSSLWriter { handle = writer }
+            Controller = own OpenSSLController { handle = controller }
+        })
+    }
+
     fn drop(&self) void {
         closeConnectionNative(&self.handle)
     }
@@ -157,9 +187,31 @@ struct OpenSSLWriter {
 }
 
 @concurrent.Transferable()
+struct OpenSSLController {
+    handle u64
+
+    fn Abort(&self) bool {
+        if self.handle == 0 return false
+        abortStreamNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        closeStreamNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
 struct OpenSSLStreamPair {
     Reader own OpenSSLReader
     Writer own OpenSSLWriter
+}
+
+@concurrent.Transferable()
+struct OpenSSLControlledStream {
+    Reader own OpenSSLReader
+    Writer own OpenSSLWriter
+    Controller own OpenSSLController
 }
 
 struct OpenSSLAcceptOutcome {

@@ -133,7 +133,11 @@ void foundation_openssl_secure_connection_close(uint64_t *connection);
 int32_t foundation_openssl_secure_connection_split(uint64_t *connection,
                                                    uint64_t *reader,
                                                    uint64_t *writer);
+int32_t foundation_openssl_secure_connection_split_controlled(
+    uint64_t *connection, uint64_t *reader, uint64_t *writer,
+    uint64_t *controller);
 void foundation_openssl_secure_stream_close(uint64_t *stream);
+void foundation_openssl_secure_stream_abort(uint64_t *stream);
 int32_t foundation_openssl_secure_read_exact_bytes(uint64_t stream,
                                                    uint64_t length,
                                                    uint64_t *value);
