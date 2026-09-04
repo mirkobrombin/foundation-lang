@@ -1,0 +1,82 @@
+package test.network_datagram
+
+import std.bytes
+import std.net
+import std.time
+
+fn main() i32 {
+    const listing = spawn net.LocalAddresses(true)
+    const addresses = $listing.wait() else error {
+        discard error
+        return 1
+    }
+    const hasAddress = !addresses.IsEmpty()
+    discard addresses
+    if !hasAddress return 2
+
+    const openedReceiver = net.OpenDatagram($"127.0.0.1", 0, false) else error {
+        discard error
+        return 3
+    }
+    var receiver = openedReceiver
+    const openedSender = net.OpenDatagram($"127.0.0.1", 0, false) else error {
+        discard error
+        discard receiver
+        return 4
+    }
+    var sender = openedSender
+    const expectedSenderPort = sender.Port
+    const sending = spawn net.SendDatagram(
+        $sender,
+        $"127.0.0.1",
+        receiver.Port,
+        bytes.FromText("foundation datagram")
+    )
+    const net.DatagramSendOutcome {
+        Socket as returnedSender
+        Value as sent
+    } = $sending.wait()
+    sender = returnedSender
+    sent else error {
+        discard error
+        discard sender
+        discard receiver
+        return 5
+    }
+
+    const deadline = net.DeadlineAfter(time.Seconds(1)) else error {
+        discard error
+        discard sender
+        discard receiver
+        return 6
+    }
+    const receiving = spawn net.ReceiveDatagramUntil($receiver, 128, deadline)
+    const net.DatagramReceiveOutcome {
+        Socket as returnedReceiver
+        Value as received
+    } = $receiving.wait()
+    receiver = returnedReceiver
+    const datagram = received else error {
+        discard error
+        discard sender
+        discard receiver
+        return 7
+    }
+    const text = datagram.Data.Text() else error {
+        discard error
+        discard datagram
+        discard sender
+        discard receiver
+        return 8
+    }
+    const valid = text == "foundation datagram" &&
+        datagram.Address == "127.0.0.1" &&
+        datagram.Port == expectedSenderPort
+    discard text
+    discard datagram
+    discard sender
+    discard receiver
+    if !valid return 9
+    print("datagram ok")
+    0
+}

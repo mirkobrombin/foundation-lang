@@ -1,0 +1,234 @@
+package std.net
+
+import std.bytes
+import std.collections
+import std.concurrent
+
+extern c fn openDatagramNative(
+    address String,
+    port u64,
+    reuse bool,
+    &handle u64,
+    &boundPort u64
+) i32 as foundation_runtime_net_datagram_open
+
+extern c fn joinIPv4MulticastNative(
+    handle u64,
+    group String
+) i32 as foundation_runtime_net_datagram_join_ipv4
+
+@blocking
+extern c fn sendDatagramNative(
+    handle u64,
+    host String,
+    port u64,
+    value u64
+) i32 as foundation_runtime_net_datagram_send
+
+@blocking
+extern c fn receiveDatagramNative(
+    handle u64,
+    limit u64,
+    deadline u64,
+    &value u64,
+    &address String,
+    &port u64
+) i32 as foundation_runtime_net_datagram_receive
+
+extern c fn closeDatagramNative(
+    &handle u64
+) void as foundation_runtime_net_datagram_close
+
+@blocking
+extern c fn openLocalAddressesNative(
+    includeLoopback bool,
+    &handle u64,
+    &count u64
+) i32 as foundation_runtime_net_local_addresses_open
+
+extern c fn localAddressAtNative(
+    handle u64,
+    index u64,
+    &address String
+) i32 as foundation_runtime_net_local_address_at
+
+extern c fn closeLocalAddressesNative(
+    &handle u64
+) void as foundation_runtime_net_local_addresses_close
+
+// Owns one bound UDP socket.
+@concurrent.Transferable()
+struct UdpSocket {
+    handle u64
+
+    // Reports the actual local port, including an OS-selected port.
+    Port u64
+
+    // Joins one IPv4 multicast group on the default interface.
+    fn JoinIPv4Multicast(&self, group String) Result<void, Error> {
+        const status = joinIPv4MulticastNative(self.handle, group)
+        if status == 0 return .Ok
+        .Err(errorFor(status))
+    }
+
+    // Closes the socket once.
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeDatagramNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        closeDatagramNative(&self.handle)
+    }
+}
+
+// Contains one complete UDP datagram and its numeric sender endpoint.
+struct Datagram {
+    // Owns the exact received payload.
+    Data own bytes.Bytes
+    // Contains the numeric sender IP address.
+    Address String
+    // Contains the sender port.
+    Port u64
+}
+
+// Restores a UDP socket beside one send result.
+struct DatagramSendOutcome {
+    // Restores the socket after completion or failure.
+    Socket own UdpSocket
+    // Confirms a complete send or carries its typed failure.
+    Value Result<void, Error>
+}
+
+// Restores a UDP socket beside one received datagram.
+struct DatagramReceiveOutcome {
+    // Restores the socket after completion, timeout, or failure.
+    Socket own UdpSocket
+    // Contains one complete datagram or its typed failure.
+    Value Result<Datagram, Error>
+}
+
+struct localAddressCursor {
+    handle u64
+    count u64
+
+    fn drop(&self) void {
+        closeLocalAddressesNative(&self.handle)
+    }
+}
+
+// Binds one UDP socket. Port zero asks the OS to choose a port.
+fn OpenDatagram(
+    $address String,
+    port u64,
+    reuse bool
+) Result<own UdpSocket, Error> {
+    var handle u64 = 0
+    var boundPort u64 = 0
+    const status = openDatagramNative(
+        address,
+        port,
+        reuse,
+        &handle,
+        &boundPort
+    )
+    if status == 0 {
+        return .Ok(own UdpSocket { handle = handle Port = boundPort })
+    }
+    .Err(errorFor(status))
+}
+
+// Sends one complete datagram and restores the socket owner.
+task SendDatagram(
+    $socket own UdpSocket,
+    $host String,
+    port u64,
+    $value own bytes.Bytes
+) DatagramSendOutcome {
+    const status = sendDatagramNative(
+        socket.handle,
+        host,
+        port,
+        bytes.RuntimeHandle(value)
+    )
+    discard value
+    if status == 0 {
+        return DatagramSendOutcome { Socket = socket Value = .Ok }
+    }
+    DatagramSendOutcome {
+        Socket = socket
+        Value = .Err(errorFor(status))
+    }
+}
+
+// Receives one bounded datagram before an absolute monotonic deadline.
+task ReceiveDatagramUntil(
+    $socket own UdpSocket,
+    limit u64,
+    deadline Deadline
+) DatagramReceiveOutcome {
+    var value u64 = 0
+    var address = ""
+    var port u64 = 0
+    const status = receiveDatagramNative(
+        socket.handle,
+        limit,
+        deadline.nanoseconds,
+        &value,
+        &address,
+        &port
+    )
+    if status != 0 {
+        return DatagramReceiveOutcome {
+            Socket = socket
+            Value = .Err(errorFor(status))
+        }
+    }
+    const data = bytes.ClaimRuntimeHandle(value) else error {
+        discard error
+        discard address
+        return DatagramReceiveOutcome {
+            Socket = socket
+            Value = .Err(.Io)
+        }
+    }
+    DatagramReceiveOutcome {
+        Socket = socket
+        Value = .Ok(Datagram { Data = data Address = address Port = port })
+    }
+}
+
+// Lists usable numeric interface addresses in deterministic preference order.
+task LocalAddresses(
+    includeLoopback bool
+) Result<own collections.List<String>, Error> {
+    var handle u64 = 0
+    var count u64 = 0
+    const status = openLocalAddressesNative(
+        includeLoopback,
+        &handle,
+        &count
+    )
+    if status != 0 return .Err(errorFor(status))
+    const cursor = own localAddressCursor { handle = handle count = count }
+    var result = collections.NewList<String>()
+    var index = cursor.count
+    while index > 0 {
+        index -= 1
+        var address = ""
+        const itemStatus = localAddressAtNative(
+            cursor.handle,
+            index,
+            &address
+        )
+        if itemStatus != 0 {
+            discard result
+            discard cursor
+            return .Err(errorFor(itemStatus))
+        }
+        result.PushFront($address)
+    }
+    discard cursor
+    .Ok(result)
+}

@@ -1,5 +1,8 @@
 #if !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
+#if defined(__linux__)
+#define _DEFAULT_SOURCE
+#endif
 #endif
 
 #include "foundation/runtime.h"
@@ -16,12 +19,15 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
 #include <windows.h>
 #include <wchar.h>
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <netdb.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -101,6 +107,20 @@ typedef struct fdn_net_listener {
 #endif
 } fdn_net_listener;
 
+typedef struct fdn_net_datagram {
+    fdn_net_socket socket;
+} fdn_net_datagram;
+
+typedef struct fdn_net_local_address {
+    char *text;
+    int rank;
+} fdn_net_local_address;
+
+typedef struct fdn_net_local_addresses {
+    fdn_net_local_address *items;
+    size_t count;
+} fdn_net_local_addresses;
+
 typedef enum fdn_net_request_kind {
     FDN_NET_REQUEST_ACCEPT,
     FDN_NET_REQUEST_CONNECT,
@@ -168,6 +188,8 @@ static SRWLOCK fdn_net_global_lock = SRWLOCK_INIT;
 static volatile LONG64 fdn_net_addresses_count;
 static volatile LONG64 fdn_net_listeners_count;
 static volatile LONG64 fdn_net_connections_count;
+static volatile LONG64 fdn_net_datagrams_count;
+static volatile LONG64 fdn_net_local_addresses_count;
 static volatile LONG64 fdn_net_requests_count;
 static volatile LONG64 fdn_net_services_count;
 static bool fdn_net_winsock_started;
@@ -176,6 +198,8 @@ static pthread_mutex_t fdn_net_global_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint_fast64_t fdn_net_addresses_count;
 static atomic_uint_fast64_t fdn_net_listeners_count;
 static atomic_uint_fast64_t fdn_net_connections_count;
+static atomic_uint_fast64_t fdn_net_datagrams_count;
+static atomic_uint_fast64_t fdn_net_local_addresses_count;
 static atomic_uint_fast64_t fdn_net_requests_count;
 static atomic_uint_fast64_t fdn_net_services_count;
 #endif
@@ -2306,6 +2330,631 @@ void foundation_runtime_net_write_all_bytes_until_start(
     fdn_net_write_bytes_start(writer, bytes, deadline, operation);
 }
 
+static int32_t fdn_net_datagram_address(const fdn_string *address,
+                                        uint64_t port,
+                                        struct sockaddr_storage *storage,
+                                        int *length) {
+    struct addrinfo hints;
+    struct addrinfo *result = NULL;
+    char *native_address;
+    char service[6];
+    if (storage == NULL || length == NULL ||
+        !fdn_net_bind_address_valid(address) || port > UINT64_C(65535)) {
+        return FDN_NET_INVALID_ADDRESS;
+    }
+    (void)memset(storage, 0, sizeof(*storage));
+    if (address->length == 0) {
+        struct sockaddr_in *value = (struct sockaddr_in *)storage;
+        value->sin_family = AF_INET;
+        value->sin_addr.s_addr = htonl(INADDR_ANY);
+        value->sin_port = htons((uint16_t)port);
+        *length = (int)sizeof(*value);
+        return FDN_NET_OK;
+    }
+    if (address->length == SIZE_MAX) {
+        return FDN_NET_INVALID_ADDRESS;
+    }
+    native_address = fdn_alloc(address->length + 1);
+    (void)memcpy(native_address, address->data, address->length);
+    native_address[address->length] = '\0';
+    if (snprintf(service, sizeof(service), "%u", (unsigned int)port) <= 0) {
+        fdn_dealloc(native_address);
+        return FDN_NET_INVALID_ADDRESS;
+    }
+    (void)memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    hints.ai_flags = AI_NUMERICHOST;
+    if (getaddrinfo(native_address, service, &hints, &result) != 0 ||
+        result == NULL || result->ai_addr == NULL ||
+        result->ai_addrlen > sizeof(*storage) || result->ai_addrlen > INT_MAX) {
+        if (result != NULL) {
+            freeaddrinfo(result);
+        }
+        fdn_dealloc(native_address);
+        return FDN_NET_INVALID_ADDRESS;
+    }
+    (void)memcpy(storage, result->ai_addr, result->ai_addrlen);
+    *length = (int)result->ai_addrlen;
+    freeaddrinfo(result);
+    fdn_dealloc(native_address);
+    return FDN_NET_OK;
+}
+
+static uint64_t fdn_net_sockaddr_port(const struct sockaddr_storage *address) {
+    if (address->ss_family == AF_INET) {
+        const struct sockaddr_in *value = (const struct sockaddr_in *)address;
+        return (uint64_t)ntohs(value->sin_port);
+    }
+    if (address->ss_family == AF_INET6) {
+        const struct sockaddr_in6 *value = (const struct sockaddr_in6 *)address;
+        return (uint64_t)ntohs(value->sin6_port);
+    }
+    return 0;
+}
+
+int32_t foundation_runtime_net_datagram_open(const fdn_string *address,
+                                             uint64_t port, bool reuse,
+                                             uint64_t *handle,
+                                             uint64_t *bound_port) {
+    struct sockaddr_storage storage;
+    int length = 0;
+    fdn_net_socket native_socket = FDN_NET_INVALID_SOCKET;
+    fdn_net_datagram *datagram;
+    if (handle == NULL || bound_port == NULL) {
+        fdn_panic_cstr("network datagram output is null");
+    }
+    *handle = 0;
+    *bound_port = 0;
+    const int32_t address_status =
+        fdn_net_datagram_address(address, port, &storage, &length);
+    if (address_status != FDN_NET_OK) {
+        return address_status;
+    }
+    fdn_net_global_enter();
+    const bool platform_ready = fdn_net_platform_start();
+    fdn_net_global_leave();
+    if (!platform_ready) {
+        return FDN_NET_IO;
+    }
+    native_socket = socket(storage.ss_family, SOCK_DGRAM, IPPROTO_UDP);
+    if (native_socket == FDN_NET_INVALID_SOCKET) {
+        return FDN_NET_IO;
+    }
+    if (reuse) {
+        const int enabled = 1;
+#if defined(_WIN32)
+        if (setsockopt(native_socket, SOL_SOCKET, SO_REUSEADDR,
+                       (const char *)&enabled, (int)sizeof(enabled)) != 0) {
+#else
+        if (setsockopt(native_socket, SOL_SOCKET, SO_REUSEADDR, &enabled,
+                       (socklen_t)sizeof(enabled)) != 0) {
+#endif
+            fdn_net_close_socket(native_socket);
+            return FDN_NET_IO;
+        }
+    }
+    if (bind(native_socket, (const struct sockaddr *)&storage, length) != 0) {
+        const int error = fdn_net_last_error();
+        fdn_net_close_socket(native_socket);
+        return fdn_net_address_in_use(error) ? FDN_NET_ADDRESS_IN_USE :
+                                               FDN_NET_IO;
+    }
+    {
+#if defined(_WIN32)
+        int actual_length = (int)sizeof(storage);
+#else
+        socklen_t actual_length = (socklen_t)sizeof(storage);
+#endif
+        if (getsockname(native_socket, (struct sockaddr *)&storage,
+                        &actual_length) != 0) {
+            fdn_net_close_socket(native_socket);
+            return FDN_NET_IO;
+        }
+    }
+    datagram = fdn_alloc(sizeof(*datagram));
+    datagram->socket = native_socket;
+    fdn_net_count_add(&fdn_net_datagrams_count);
+    *handle = (uint64_t)(uintptr_t)datagram;
+    *bound_port = fdn_net_sockaddr_port(&storage);
+    return FDN_NET_OK;
+}
+
+int32_t foundation_runtime_net_datagram_join_ipv4(uint64_t handle,
+                                                  const fdn_string *group) {
+    const fdn_net_datagram *datagram =
+        (const fdn_net_datagram *)(uintptr_t)handle;
+    struct ip_mreq request;
+    char *native_group;
+    if (datagram == NULL || datagram->socket == FDN_NET_INVALID_SOCKET) {
+        return FDN_NET_CLOSED;
+    }
+    if (!fdn_net_host_valid(group) || group->length == SIZE_MAX) {
+        return FDN_NET_INVALID_ADDRESS;
+    }
+    native_group = fdn_alloc(group->length + 1);
+    (void)memcpy(native_group, group->data, group->length);
+    native_group[group->length] = '\0';
+    (void)memset(&request, 0, sizeof(request));
+    if (inet_pton(AF_INET, native_group, &request.imr_multiaddr) != 1 ||
+        !IN_MULTICAST(ntohl(request.imr_multiaddr.s_addr))) {
+        fdn_dealloc(native_group);
+        return FDN_NET_INVALID_ADDRESS;
+    }
+    fdn_dealloc(native_group);
+    request.imr_interface.s_addr = htonl(INADDR_ANY);
+#if defined(_WIN32)
+    if (setsockopt(datagram->socket, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                   (const char *)&request, (int)sizeof(request)) != 0) {
+#else
+    if (setsockopt(datagram->socket, IPPROTO_IP, IP_ADD_MEMBERSHIP, &request,
+                   (socklen_t)sizeof(request)) != 0) {
+#endif
+        return FDN_NET_IO;
+    }
+    return FDN_NET_OK;
+}
+
+int32_t foundation_runtime_net_datagram_send(uint64_t handle,
+                                             const fdn_string *host,
+                                             uint64_t port,
+                                             uint64_t bytes_handle) {
+    const fdn_net_datagram *datagram =
+        (const fdn_net_datagram *)(uintptr_t)handle;
+    struct sockaddr_storage local_address;
+    const uint8_t *data = NULL;
+    size_t length = 0;
+    int local_length;
+    struct addrinfo hints;
+    struct addrinfo *result = NULL;
+    struct addrinfo *item;
+    char *native_host;
+    char service[6];
+    int status = FDN_NET_IO;
+    if (datagram == NULL || datagram->socket == FDN_NET_INVALID_SOCKET) {
+        return FDN_NET_CLOSED;
+    }
+    if (!fdn_net_host_valid(host) || port == 0 || port > UINT64_C(65535)) {
+        return FDN_NET_INVALID_ADDRESS;
+    }
+    if (fdn_bytes_view(bytes_handle, &data, &length) != 0 || length > 65507) {
+        return FDN_NET_INVALID_LIMIT;
+    }
+    native_host = fdn_alloc(host->length + 1);
+    (void)memcpy(native_host, host->data, host->length);
+    native_host[host->length] = '\0';
+    if (snprintf(service, sizeof(service), "%u", (unsigned int)port) <= 0) {
+        fdn_dealloc(native_host);
+        return FDN_NET_INVALID_ADDRESS;
+    }
+#if defined(_WIN32)
+    local_length = (int)sizeof(local_address);
+#else
+    {
+        socklen_t value = (socklen_t)sizeof(local_address);
+        if (getsockname(datagram->socket, (struct sockaddr *)&local_address,
+                        &value) != 0) {
+            fdn_dealloc(native_host);
+            return FDN_NET_IO;
+        }
+        local_length = (int)value;
+    }
+#endif
+#if defined(_WIN32)
+    if (getsockname(datagram->socket, (struct sockaddr *)&local_address,
+                    &local_length) != 0) {
+        fdn_dealloc(native_host);
+        return FDN_NET_IO;
+    }
+#endif
+    (void)local_length;
+    (void)memset(&hints, 0, sizeof(hints));
+    hints.ai_family = local_address.ss_family;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    if (getaddrinfo(native_host, service, &hints, &result) != 0) {
+        fdn_dealloc(native_host);
+        return FDN_NET_RESOLVE_FAILED;
+    }
+    fdn_dealloc(native_host);
+    for (item = result; item != NULL; item = item->ai_next) {
+        int sent;
+        do {
+#if defined(_WIN32)
+            sent = sendto(datagram->socket, (const char *)data, (int)length, 0,
+                          item->ai_addr, (int)item->ai_addrlen);
+#else
+            const ssize_t count = sendto(datagram->socket, data, length,
+                                         fdn_net_send_flags(), item->ai_addr,
+                                         item->ai_addrlen);
+            sent = count > INT_MAX ? INT_MAX : (int)count;
+#endif
+        } while (sent < 0 && fdn_net_interrupted(fdn_net_last_error()));
+        if (sent >= 0 && (size_t)sent == length) {
+            status = FDN_NET_OK;
+            break;
+        }
+    }
+    freeaddrinfo(result);
+    return status;
+}
+
+static int fdn_net_datagram_timeout(uint64_t deadline) {
+    const uint64_t now = foundation_runtime_time_monotonic_nanoseconds();
+    uint64_t milliseconds;
+    if (deadline == UINT64_MAX) {
+        return -1;
+    }
+    if (deadline <= now) {
+        return 0;
+    }
+    const uint64_t remaining = deadline - now;
+    milliseconds = remaining / UINT64_C(1000000);
+    if (remaining % UINT64_C(1000000) != 0) {
+        ++milliseconds;
+    }
+    return milliseconds > (uint64_t)INT_MAX ? INT_MAX : (int)milliseconds;
+}
+
+static int32_t fdn_net_datagram_peer(const struct sockaddr_storage *peer,
+                                     int peer_length, fdn_string *address,
+                                     uint64_t *port) {
+    char host[INET6_ADDRSTRLEN];
+    if (getnameinfo((const struct sockaddr *)peer,
+#if defined(_WIN32)
+                    peer_length,
+#else
+                    (socklen_t)peer_length,
+#endif
+                    host, (socklen_t)sizeof(host), NULL, 0,
+                    NI_NUMERICHOST) != 0) {
+        return FDN_NET_IO;
+    }
+    fdn_string_drop(address);
+    address->length = strlen(host);
+    address->data = fdn_alloc(address->length);
+    (void)memcpy((char *)address->data, host, address->length);
+    address->owned = 1;
+    *port = fdn_net_sockaddr_port(peer);
+    return FDN_NET_OK;
+}
+
+int32_t foundation_runtime_net_datagram_receive(
+    uint64_t handle, uint64_t limit, uint64_t deadline,
+    uint64_t *bytes_handle, fdn_string *address, uint64_t *port) {
+    const fdn_net_datagram *datagram =
+        (const fdn_net_datagram *)(uintptr_t)handle;
+    fdn_net_pollfd descriptor;
+    uint8_t *data;
+    struct sockaddr_storage peer;
+    int peer_length = (int)sizeof(peer);
+    int count;
+    if (bytes_handle == NULL || address == NULL || port == NULL) {
+        fdn_panic_cstr("network datagram receive output is null");
+    }
+    *bytes_handle = 0;
+    fdn_string_drop(address);
+    *address = fdn_string_static("", 0);
+    *port = 0;
+    if (datagram == NULL || datagram->socket == FDN_NET_INVALID_SOCKET) {
+        return FDN_NET_CLOSED;
+    }
+    if (limit == 0 || limit > UINT64_C(16777216) || limit > (uint64_t)INT_MAX) {
+        return FDN_NET_INVALID_LIMIT;
+    }
+    descriptor.fd = datagram->socket;
+    descriptor.events = FDN_NET_POLL_READ;
+    descriptor.revents = 0;
+    for (;;) {
+        const int ready = fdn_net_poll(&descriptor, 1,
+                                       fdn_net_datagram_timeout(deadline));
+        if (ready == 0) {
+            return FDN_NET_TIMEOUT;
+        }
+        if (ready < 0) {
+            if (fdn_net_interrupted(fdn_net_last_error())) {
+                continue;
+            }
+            return FDN_NET_IO;
+        }
+        break;
+    }
+    data = fdn_alloc((size_t)limit);
+    do {
+#if defined(_WIN32)
+        count = recvfrom(datagram->socket, (char *)data, (int)limit, 0,
+                         (struct sockaddr *)&peer, &peer_length);
+#else
+        socklen_t native_length = (socklen_t)peer_length;
+        const ssize_t received = recvfrom(datagram->socket, data, (size_t)limit,
+                                          0, (struct sockaddr *)&peer,
+                                          &native_length);
+        peer_length = (int)native_length;
+        count = received > INT_MAX ? INT_MAX : (int)received;
+#endif
+    } while (count < 0 && fdn_net_interrupted(fdn_net_last_error()));
+    if (count < 0) {
+        fdn_dealloc(data);
+        return FDN_NET_IO;
+    }
+    const int32_t peer_status =
+        fdn_net_datagram_peer(&peer, peer_length, address, port);
+    if (peer_status != FDN_NET_OK) {
+        fdn_dealloc(data);
+        return peer_status;
+    }
+    if (fdn_bytes_adopt(data, (size_t)count, (size_t)limit, bytes_handle) != 0) {
+        fdn_string_drop(address);
+        *address = fdn_string_static("", 0);
+        *port = 0;
+        fdn_dealloc(data);
+        return FDN_NET_IO;
+    }
+    return FDN_NET_OK;
+}
+
+void foundation_runtime_net_datagram_close(uint64_t *handle) {
+    fdn_net_datagram *datagram;
+    if (handle == NULL || *handle == 0) {
+        return;
+    }
+    datagram = (fdn_net_datagram *)(uintptr_t)*handle;
+    *handle = 0;
+    fdn_net_close_socket(datagram->socket);
+    datagram->socket = FDN_NET_INVALID_SOCKET;
+    fdn_dealloc(datagram);
+    fdn_net_count_remove(&fdn_net_datagrams_count);
+}
+
+static int fdn_net_local_rank(const struct sockaddr *address,
+                              bool include_loopback) {
+    if (address->sa_family == AF_INET) {
+        const struct sockaddr_in *value = (const struct sockaddr_in *)address;
+        const uint32_t host = ntohl(value->sin_addr.s_addr);
+        const bool loopback = (host & UINT32_C(0xff000000)) ==
+                              UINT32_C(0x7f000000);
+        if (host == 0 || IN_MULTICAST(host) || (host & UINT32_C(0xffff0000)) ==
+            UINT32_C(0xa9fe0000) || (loopback && !include_loopback)) {
+            return -1;
+        }
+        if ((host & UINT32_C(0xff000000)) == UINT32_C(0x0a000000) ||
+            (host & UINT32_C(0xfff00000)) == UINT32_C(0xac100000) ||
+            (host & UINT32_C(0xffff0000)) == UINT32_C(0xc0a80000)) {
+            return 0;
+        }
+        return loopback ? 4 : 1;
+    }
+    if (address->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *value = (const struct sockaddr_in6 *)address;
+        const uint8_t *bytes = value->sin6_addr.s6_addr;
+        if (IN6_IS_ADDR_UNSPECIFIED(&value->sin6_addr) ||
+            IN6_IS_ADDR_MULTICAST(&value->sin6_addr) ||
+            IN6_IS_ADDR_LINKLOCAL(&value->sin6_addr) ||
+            (IN6_IS_ADDR_LOOPBACK(&value->sin6_addr) && !include_loopback)) {
+            return -1;
+        }
+        if ((bytes[0] & 0xfeU) == 0xfcU) {
+            return 2;
+        }
+        return IN6_IS_ADDR_LOOPBACK(&value->sin6_addr) ? 4 : 3;
+    }
+    return -1;
+}
+
+static bool fdn_net_local_text(const struct sockaddr *address, char *text,
+                               size_t capacity) {
+    const void *source;
+    if (address->sa_family == AF_INET) {
+        source = &((const struct sockaddr_in *)address)->sin_addr;
+    } else if (address->sa_family == AF_INET6) {
+        source = &((const struct sockaddr_in6 *)address)->sin6_addr;
+    } else {
+        return false;
+    }
+    return inet_ntop(address->sa_family, source, text,
+#if defined(_WIN32)
+                     (DWORD)capacity
+#else
+                     (socklen_t)capacity
+#endif
+                     ) != NULL;
+}
+
+static int fdn_net_local_compare(const void *left, const void *right) {
+    const fdn_net_local_address *first = left;
+    const fdn_net_local_address *second = right;
+    if (first->rank != second->rank) {
+        return first->rank < second->rank ? -1 : 1;
+    }
+    return strcmp(first->text, second->text);
+}
+
+static void fdn_net_local_destroy(fdn_net_local_addresses *addresses) {
+    size_t index;
+    if (addresses == NULL) {
+        return;
+    }
+    for (index = 0; index < addresses->count; ++index) {
+        fdn_dealloc(addresses->items[index].text);
+    }
+    fdn_dealloc(addresses->items);
+    fdn_dealloc(addresses);
+    fdn_net_count_remove(&fdn_net_local_addresses_count);
+}
+
+static void fdn_net_local_compact(fdn_net_local_addresses *addresses) {
+    size_t read_index;
+    size_t write_index = 0;
+    qsort(addresses->items, addresses->count, sizeof(*addresses->items),
+          fdn_net_local_compare);
+    for (read_index = 0; read_index < addresses->count; ++read_index) {
+        if (write_index != 0 &&
+            strcmp(addresses->items[write_index - 1].text,
+                   addresses->items[read_index].text) == 0) {
+            fdn_dealloc(addresses->items[read_index].text);
+            continue;
+        }
+        if (write_index != read_index) {
+            addresses->items[write_index] = addresses->items[read_index];
+        }
+        ++write_index;
+    }
+    addresses->count = write_index;
+}
+
+static void fdn_net_local_store(fdn_net_local_addresses *addresses,
+                                const struct sockaddr *address,
+                                bool include_loopback) {
+    char text[INET6_ADDRSTRLEN];
+    const int rank = fdn_net_local_rank(address, include_loopback);
+    size_t length;
+    char *copy;
+    if (rank < 0 || !fdn_net_local_text(address, text, sizeof(text))) {
+        return;
+    }
+    length = strlen(text);
+    copy = fdn_alloc(length + 1);
+    (void)memcpy(copy, text, length + 1);
+    addresses->items[addresses->count].text = copy;
+    addresses->items[addresses->count].rank = rank;
+    ++addresses->count;
+}
+
+int32_t foundation_runtime_net_local_addresses_open(bool include_loopback,
+                                                    uint64_t *handle,
+                                                    uint64_t *count) {
+    fdn_net_local_addresses *addresses;
+    size_t capacity = 0;
+    if (handle == NULL || count == NULL) {
+        fdn_panic_cstr("network local address output is null");
+    }
+    *handle = 0;
+    *count = 0;
+    addresses = fdn_alloc(sizeof(*addresses));
+    addresses->items = NULL;
+    addresses->count = 0;
+#if defined(_WIN32)
+    {
+        ULONG length = 0;
+        IP_ADAPTER_ADDRESSES *adapters;
+        IP_ADAPTER_ADDRESSES *adapter;
+        const ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+                            GAA_FLAG_SKIP_DNS_SERVER;
+        ULONG status = GetAdaptersAddresses(AF_UNSPEC, flags, NULL, NULL,
+                                            &length);
+        if (status != ERROR_BUFFER_OVERFLOW || length == 0) {
+            fdn_dealloc(addresses);
+            return FDN_NET_IO;
+        }
+        adapters = fdn_alloc((size_t)length);
+        status = GetAdaptersAddresses(AF_UNSPEC, flags, NULL, adapters,
+                                      &length);
+        if (status != NO_ERROR) {
+            fdn_dealloc(adapters);
+            fdn_dealloc(addresses);
+            return FDN_NET_IO;
+        }
+        for (adapter = adapters; adapter != NULL; adapter = adapter->Next) {
+            IP_ADAPTER_UNICAST_ADDRESS *item;
+            if (adapter->OperStatus != IfOperStatusUp) {
+                continue;
+            }
+            for (item = adapter->FirstUnicastAddress; item != NULL;
+                 item = item->Next) {
+                if (item->Address.lpSockaddr != NULL) {
+                    ++capacity;
+                }
+            }
+        }
+        if (capacity != 0) {
+            addresses->items = fdn_alloc(capacity * sizeof(*addresses->items));
+            for (adapter = adapters; adapter != NULL; adapter = adapter->Next) {
+                IP_ADAPTER_UNICAST_ADDRESS *item;
+                if (adapter->OperStatus != IfOperStatusUp) {
+                    continue;
+                }
+                for (item = adapter->FirstUnicastAddress; item != NULL;
+                     item = item->Next) {
+                    if (item->Address.lpSockaddr != NULL) {
+                        fdn_net_local_store(addresses,
+                                            item->Address.lpSockaddr,
+                                            include_loopback);
+                    }
+                }
+            }
+        }
+        fdn_dealloc(adapters);
+    }
+#else
+    {
+        struct ifaddrs *interfaces = NULL;
+        struct ifaddrs *item;
+        if (getifaddrs(&interfaces) != 0) {
+            fdn_dealloc(addresses);
+            return FDN_NET_IO;
+        }
+        for (item = interfaces; item != NULL; item = item->ifa_next) {
+            if (item->ifa_addr != NULL && (item->ifa_flags & IFF_UP) != 0 &&
+                (item->ifa_addr->sa_family == AF_INET ||
+                 item->ifa_addr->sa_family == AF_INET6)) {
+                ++capacity;
+            }
+        }
+        if (capacity != 0) {
+            addresses->items = fdn_alloc(capacity * sizeof(*addresses->items));
+            for (item = interfaces; item != NULL; item = item->ifa_next) {
+                if (item->ifa_addr != NULL &&
+                    (item->ifa_flags & IFF_UP) != 0) {
+                    fdn_net_local_store(addresses, item->ifa_addr,
+                                        include_loopback);
+                }
+            }
+        }
+        freeifaddrs(interfaces);
+    }
+#endif
+    if (addresses->count > 1) {
+        fdn_net_local_compact(addresses);
+    }
+    fdn_net_count_add(&fdn_net_local_addresses_count);
+    *handle = (uint64_t)(uintptr_t)addresses;
+    *count = (uint64_t)addresses->count;
+    return FDN_NET_OK;
+}
+
+int32_t foundation_runtime_net_local_address_at(uint64_t handle,
+                                                uint64_t index,
+                                                fdn_string *address) {
+    const fdn_net_local_addresses *addresses =
+        (const fdn_net_local_addresses *)(uintptr_t)handle;
+    const char *text;
+    size_t length;
+    if (address == NULL) {
+        fdn_panic_cstr("network local address text output is null");
+    }
+    fdn_string_drop(address);
+    *address = fdn_string_static("", 0);
+    if (addresses == NULL || index >= (uint64_t)addresses->count) {
+        return FDN_NET_INVALID_ADDRESS;
+    }
+    text = addresses->items[(size_t)index].text;
+    length = strlen(text);
+    address->data = fdn_alloc(length);
+    (void)memcpy((char *)address->data, text, length);
+    address->length = length;
+    address->owned = 1;
+    return FDN_NET_OK;
+}
+
+void foundation_runtime_net_local_addresses_close(uint64_t *handle) {
+    if (handle == NULL || *handle == 0) {
+        return;
+    }
+    fdn_net_local_destroy((fdn_net_local_addresses *)(uintptr_t)*handle);
+    *handle = 0;
+}
+
 uint64_t foundation_runtime_net_live_addresses(void) {
     return fdn_net_count_read(&fdn_net_addresses_count);
 }
@@ -2316,6 +2965,14 @@ uint64_t foundation_runtime_net_live_listeners(void) {
 
 uint64_t foundation_runtime_net_live_connections(void) {
     return fdn_net_count_read(&fdn_net_connections_count);
+}
+
+uint64_t foundation_runtime_net_live_datagrams(void) {
+    return fdn_net_count_read(&fdn_net_datagrams_count);
+}
+
+uint64_t foundation_runtime_net_live_local_addresses(void) {
+    return fdn_net_count_read(&fdn_net_local_addresses_count);
 }
 
 uint64_t foundation_runtime_net_live_requests(void) {

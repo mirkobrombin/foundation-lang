@@ -49,7 +49,8 @@ function(run_windows_wine_case name source expected)
     execute_process(
         COMMAND "${MINGW_C_COMPILER}" -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror
                 -DFOUNDATION_VERIFY_ALLOCATIONS "${generated}" ${runtime_sources}
-                -I "${ROOT}/runtime/include" -pthread -lbcrypt -lws2_32 -o "${executable}"
+                -I "${ROOT}/runtime/include" -pthread -lbcrypt -liphlpapi -lws2_32
+                -o "${executable}"
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
         ERROR_VARIABLE build_error

@@ -113,7 +113,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(foundation_runtime PUBLIC util)
 endif()
 if(WIN32)
-    target_link_libraries(foundation_runtime PUBLIC bcrypt ws2_32)
+    target_link_libraries(foundation_runtime PUBLIC bcrypt iphlpapi ws2_32)
 endif()
 
 if(FOUNDATION_WAMR_SANITIZERS AND FOUNDATION_WAMR_TSAN)
@@ -4964,6 +4964,24 @@ if(BUILD_TESTING)
             -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
             -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
+    )
+    add_test(
+        NAME compiler.run.network-datagram.llvm
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-datagram.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-datagram.out
+            -DBACKEND=llvm
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME compiler.run.network-datagram.c
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-datagram.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-datagram.out
+            -DBACKEND=c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
     )
     add_test(
         NAME compiler.run.web-server

@@ -1,14 +1,21 @@
 # `std.net`
 
-`std.net` provides portable TCP clients and servers. Host names, local IP addresses, and
-transmitted text are UTF-8 Foundation Strings. Native addresses and socket handles remain private
-to the runtime.
+`std.net` provides portable TCP streams, UDP datagrams, and local interface discovery. Host names,
+local IP addresses, and transmitted text are UTF-8 Foundation Strings. Native addresses and socket
+handles remain private to the runtime.
 
 ```foundation
 task Connect($host String, port u64) Result<own TcpConnection, Error>
 fn DeadlineAfter(duration time.Duration) Result<Deadline, Error>
 task ConnectUntil($host String, port u64, deadline Deadline) Result<own TcpConnection, Error>
 fn Listen($address String, port u64) Result<own TcpListener, Error>
+fn OpenDatagram($address String, port u64, reuse bool) Result<own UdpSocket, Error>
+fn UdpSocket.JoinIPv4Multicast(&self, group String) Result<void, Error>
+task SendDatagram($socket own UdpSocket, $host String, port u64,
+                  $value own bytes.Bytes) DatagramSendOutcome
+task ReceiveDatagramUntil($socket own UdpSocket, limit u64,
+                          deadline Deadline) DatagramReceiveOutcome
+task LocalAddresses(includeLoopback bool) Result<own collections.List<String>, Error>
 fn TcpListener.Control(self) Result<own TcpListenerController, Error>
 fn TcpListenerController.Close(&self) bool
 task Accept(listener own TcpListener) AcceptOutcome
@@ -60,6 +67,25 @@ into an accept loop. `TcpListenerController.Close` closes the listening socket, 
 accept with `Error.Closed`, and releases the controller. Dropping the controller without closing it
 leaves the listener active. Servers can therefore close the controller, wait for their accept task,
 and release the returned listener in that order.
+
+`OpenDatagram` binds one IPv4 or IPv6 UDP socket. An empty address selects the IPv4 wildcard, port
+zero asks the operating system to choose a port, and `UdpSocket.Port` reports the result. The
+`reuse` argument enables local-address reuse before binding, as required by multicast discovery.
+`JoinIPv4Multicast` accepts only a numeric IPv4 multicast address and joins it on the default
+interface.
+
+`SendDatagram` transmits one owned byte value as a single datagram and restores the socket in
+`DatagramSendOutcome`. UDP payloads above 65,507 bytes return `InvalidLimit`. Host resolution and
+the platform send call run on the bounded blocking executor.
+
+`ReceiveDatagramUntil` receives at most the requested number of bytes before one absolute
+monotonic deadline. Its `Datagram` contains the exact bytes plus the sender's numeric address and
+port. The limit must be between 1 byte and 16 MiB. A datagram larger than the limit is truncated by
+the operating system; the unread suffix is not retained.
+
+`LocalAddresses` returns usable numeric addresses from active interfaces. Link-local, multicast,
+and unspecified addresses are excluded. Loopback addresses are optional. Results are deduplicated
+and ordered as private IPv4, public IPv4, private IPv6, public IPv6, then loopback.
 
 `ReadLine` strips LF and one preceding CR, validates UTF-8, and caps the returned line at 16 MiB.
 `ReadLineLimited` uses the caller's byte limit. The limit covers returned UTF-8 bytes, excluding

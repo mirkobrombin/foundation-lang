@@ -597,9 +597,32 @@ void foundation_runtime_net_write_all_bytes_start(
 void foundation_runtime_net_write_all_bytes_until_start(
     uint64_t writer, uint64_t bytes, uint64_t deadline,
     fdn_reactor_operation *operation);
+int32_t foundation_runtime_net_datagram_open(const fdn_string *address,
+                                             uint64_t port, bool reuse,
+                                             uint64_t *handle,
+                                             uint64_t *bound_port);
+int32_t foundation_runtime_net_datagram_join_ipv4(uint64_t handle,
+                                                  const fdn_string *group);
+int32_t foundation_runtime_net_datagram_send(uint64_t handle,
+                                             const fdn_string *host,
+                                             uint64_t port,
+                                             uint64_t bytes_handle);
+int32_t foundation_runtime_net_datagram_receive(
+    uint64_t handle, uint64_t limit, uint64_t deadline,
+    uint64_t *bytes_handle, fdn_string *address, uint64_t *port);
+void foundation_runtime_net_datagram_close(uint64_t *handle);
+int32_t foundation_runtime_net_local_addresses_open(bool include_loopback,
+                                                    uint64_t *handle,
+                                                    uint64_t *count);
+int32_t foundation_runtime_net_local_address_at(uint64_t handle,
+                                                uint64_t index,
+                                                fdn_string *address);
+void foundation_runtime_net_local_addresses_close(uint64_t *handle);
 uint64_t foundation_runtime_net_live_addresses(void);
 uint64_t foundation_runtime_net_live_listeners(void);
 uint64_t foundation_runtime_net_live_connections(void);
+uint64_t foundation_runtime_net_live_datagrams(void);
+uint64_t foundation_runtime_net_live_local_addresses(void);
 uint64_t foundation_runtime_net_live_requests(void);
 uint64_t foundation_runtime_net_live_services(void);
 int32_t foundation_runtime_plugin_open(const fdn_string *path, uint64_t *handle,

@@ -543,6 +543,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
             arguments.push_back(link + ".lib");
         }
         arguments.push_back("bcrypt.lib");
+        arguments.push_back("iphlpapi.lib");
         arguments.push_back("ws2_32.lib");
         arguments.insert(arguments.end(), {"/link", "/Brepro", "/STACK:8388608"});
         return arguments;
@@ -584,6 +585,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
     }
 #ifdef _WIN32
     arguments.push_back("-lbcrypt");
+    arguments.push_back("-liphlpapi");
     arguments.push_back("-lws2_32");
 #endif
     arguments.insert(arguments.end(), {"-o", output.string()});
@@ -767,7 +769,7 @@ bool linkSharedLibrary(const std::filesystem::path &output,
                 arguments.push_back(link.name + ".lib");
             }
         }
-        arguments.insert(arguments.end(), {"bcrypt.lib", "ws2_32.lib", "/link",
+        arguments.insert(arguments.end(), {"bcrypt.lib", "iphlpapi.lib", "ws2_32.lib", "/link",
                                            "/Brepro",
                                            "/DEF:" + controlFile.string(),
                                            "/IMPLIB:" + importLibrary.string()});
@@ -781,7 +783,7 @@ bool linkSharedLibrary(const std::filesystem::path &output,
 #ifdef _WIN32
     arguments.insert(arguments.end(), {"-Wl,--no-undefined", controlFile.string(),
                                        "-Wl,--out-implib," + importLibrary.string(),
-                                       "-lbcrypt", "-lws2_32"});
+                                       "-lbcrypt", "-liphlpapi", "-lws2_32"});
 #elif defined(__APPLE__)
     const auto installName = "@rpath/" + sharedLibraryFilename(packageInterface.library,
                                                                  packageInterface.soVersion);
