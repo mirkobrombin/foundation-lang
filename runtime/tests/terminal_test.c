@@ -33,7 +33,11 @@ int main(void) {
 
 #else
 
+#if defined(__APPLE__)
+#include <util.h>
+#else
 #include <pty.h>
+#endif
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <termios.h>
