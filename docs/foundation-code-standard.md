@@ -360,7 +360,7 @@ or shell scripts.
 
 Keep functions whose control flow fits one screen and whose nested ownership and error paths remain
 auditable. The linter reports `FCS6001` when a function exceeds 12 control-flow decisions or four
-nested control-flow scopes in Standard, or eight decisions or four scopes in Strict. A diagnostic
+nested control-flow scopes in Standard, or seven decisions or four scopes in Strict. A diagnostic
 never asks the formatter or compiler to extract a helper: the author decides whether to split the
 policy.
 

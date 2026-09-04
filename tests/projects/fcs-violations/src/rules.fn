@@ -35,7 +35,6 @@ fn complex(value i32) i32 {
     if result > 5 { result = result + 1 }
     if result > 6 { result = result + 1 }
     if result > 7 { result = result + 1 }
-    if result > 8 { result = result + 1 }
     result
 }
 

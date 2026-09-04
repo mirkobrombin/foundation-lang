@@ -492,7 +492,7 @@ std::size_t blockComplexity(const Program &program, AstBlockId block, std::size_
 void findComplexity(const ProjectAnalysis &analysis, CodeStandardProfile profile,
                     const std::set<std::size_t> &projectSources,
                     std::vector<Finding> &findings) {
-    const auto limit = profile == CodeStandardProfile::Strict ? 8U : 12U;
+    const auto limit = profile == CodeStandardProfile::Strict ? 7U : 12U;
     for (const auto &function : analysis.program.functions) {
         if (!function.hasBody ||
             !projectSource(analysis, function.span.source, projectSources)) {
