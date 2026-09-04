@@ -630,6 +630,30 @@ uint64_t foundation_runtime_bytes_from_text(const fdn_string *value) {
     return fdn_bytes_create((const uint8_t *)value->data, value->length);
 }
 
+int32_t foundation_runtime_bytes_random(uint64_t length, uint64_t *result) {
+    fdn_bytes *value;
+    if (result == NULL) {
+        return 1;
+    }
+    *result = 0;
+    if (length > UINT64_C(16777216) || length > SIZE_MAX) {
+        return 2;
+    }
+    value = fdn_alloc(sizeof(*value));
+    value->data = NULL;
+    value->length = (size_t)length;
+    value->capacity = (size_t)length;
+    if (length != 0) {
+        value->data = fdn_alloc((size_t)length);
+        if (!fdn_crypto_random(value->data, (size_t)length)) {
+            fdn_bytes_release(value);
+            return 3;
+        }
+    }
+    *result = (uint64_t)(uintptr_t)value;
+    return 0;
+}
+
 int32_t foundation_runtime_bytes_copy(uint64_t handle, uint64_t *result) {
     const fdn_bytes *value = fdn_bytes_value(handle);
     if (result == NULL) {

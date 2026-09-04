@@ -20,6 +20,15 @@ enum Error {
     TooLarge
 }
 
+// Classifies failures while requesting cryptographic random bytes.
+enum RandomError {
+    // The requested output exceeds the fixed random-byte bound.
+    TooLarge
+
+    // The operating system could not supply cryptographic entropy.
+    EntropyUnavailable
+}
+
 // Classifies operations on a shared memory region that clears secret bytes on
 // release.
 enum SecretMemoryError {
@@ -36,6 +45,10 @@ enum SecretMemoryError {
 extern c fn fromTextNative(
     value String
 ) u64 as foundation_runtime_bytes_from_text
+extern c fn randomNative(
+    length u64,
+    &result u64
+) i32 as foundation_runtime_bytes_random
 extern c fn copyNative(
     handle u64,
     &result u64
@@ -403,6 +416,15 @@ struct SecretMemory {
 // Copies UTF-8 text into an owned byte sequence.
 fn FromText(value String) own Bytes {
     own Bytes { handle = fromTextNative(value) }
+}
+
+// Returns bytes filled by the operating system cryptographic random source.
+fn Random(length u64) Result<own Bytes, RandomError> {
+    var result u64 = 0
+    const status = randomNative(length, &result)
+    if status == 0 return .Ok(own Bytes { handle = result })
+    if status == 2 return .Err(.TooLarge)
+    .Err(.EntropyUnavailable)
 }
 
 // Creates an empty builder with a hard output-size limit.

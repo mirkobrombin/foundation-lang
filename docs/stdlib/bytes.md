@@ -6,6 +6,11 @@ before returning a String. `Len`, `At`, and `Slice` inspect or copy bounded rang
 native storage. `Close` is idempotent, and automatic destruction clears the complete backing
 allocation before release.
 
+`Random(length)` returns up to 16 MiB from the operating system cryptographic random source. It
+returns `TooLarge` before allocation when the requested length exceeds that bound and
+`EntropyUnavailable` when the platform source fails. Random storage follows the same clearing and
+ownership rules as every other `Bytes` value.
+
 ```foundation
 import std.bytes
 

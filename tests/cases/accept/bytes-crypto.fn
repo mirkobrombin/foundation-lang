@@ -2,73 +2,100 @@ import std.bytes
 import std.text
 
 fn main() i32 {
-    const opened = bytes.NewBuilder(10) else error {
+    const firstRandom = bytes.Random(32) else error {
         discard error
         return 1
+    }
+    const secondRandom = bytes.Random(32) else error {
+        discard error
+        return 2
+    }
+    const randomLength = firstRandom.Len() else error {
+        discard error
+        return 3
+    }
+    if randomLength != 32 return 4
+    if bytes.ConstantTimeEqual(firstRandom, secondRandom) return 5
+    match bytes.Random(16777217) {
+        Ok(value): {
+            discard value
+            return 6
+        }
+        Err(error): match error {
+            TooLarge: {}
+            _: {
+                return 7
+            }
+        }
+    }
+
+    const opened = bytes.NewBuilder(10) else error {
+        discard error
+        return 8
     }
     var builder = opened
     const prefix = bytes.FromText("found")
     builder.Write(prefix) else error {
         discard error
-        return 2
+        return 9
     }
     builder.WriteByte(97) else error {
         discard error
-        return 3
+        return 10
     }
     const built = builder.Finish() else error {
         discard error
-        return 4
+        return 11
     }
     const builtText = built.Text() else error {
         discard error
-        return 5
+        return 12
     }
-    if !text.Equal(builtText, "founda") return 6
+    if !text.Equal(builtText, "founda") return 13
 
     const sliced = built.Slice(1, 5) else error {
         discard error
-        return 7
+        return 14
     }
     const slicedText = sliced.Text() else error {
         discard error
-        return 8
+        return 15
     }
-    if !text.Equal(slicedText, "ound") return 9
+    if !text.Equal(slicedText, "ound") return 16
 
     const source = bytes.FromText("foundation")
     const copied = source.Copy() else error {
         discard error
-        return 10
+        return 17
     }
-    if !bytes.ConstantTimeEqual(source, copied) return 11
+    if !bytes.ConstantTimeEqual(source, copied) return 18
 
     const encoded = bytes.EncodeBase64URL(source) else error {
         discard error
-        return 12
+        return 19
     }
-    if !text.Equal(encoded, "Zm91bmRhdGlvbg") return 13
+    if !text.Equal(encoded, "Zm91bmRhdGlvbg") return 20
 
     const decoded = bytes.DecodeBase64URL(encoded) else error {
         discard error
-        return 14
+        return 21
     }
     const decodedText = decoded.Text() else error {
         discard error
-        return 15
+        return 22
     }
-    if !text.Equal(decodedText, "foundation") return 16
+    if !text.Equal(decodedText, "foundation") return 23
 
     const key = bytes.FromText("0123456789abcdef0123456789abcdef")
     const digest = bytes.HmacSha256(key, source) else error {
         discard error
-        return 17
+        return 24
     }
     const digestText = bytes.EncodeBase64URL(digest) else error {
         discard error
-        return 18
+        return 25
     }
-    if !text.Equal(digestText, "Tx82HG20ntCsQ5iRYF8plw1MY6ebaFsPRORaQYxBWTc") return 19
+    if !text.Equal(digestText, "Tx82HG20ntCsQ5iRYF8plw1MY6ebaFsPRORaQYxBWTc") return 26
 
     print("bytes crypto ok")
     0

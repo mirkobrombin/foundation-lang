@@ -253,6 +253,7 @@ fdn_string foundation_runtime_format_f64(double value);
 int32_t foundation_runtime_parse_f32(const fdn_string *value, float *result);
 int32_t foundation_runtime_parse_f64(const fdn_string *value, double *result);
 uint64_t foundation_runtime_bytes_from_text(const fdn_string *value);
+int32_t foundation_runtime_bytes_random(uint64_t length, uint64_t *result);
 int32_t foundation_runtime_bytes_copy(uint64_t handle, uint64_t *result);
 int32_t foundation_runtime_bytes_length(uint64_t handle, uint64_t *result);
 int32_t foundation_runtime_bytes_at(uint64_t handle, uint64_t index, uint64_t *result);
