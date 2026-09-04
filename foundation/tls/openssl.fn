@@ -1,0 +1,302 @@
+package foundation.tls
+
+import std.bytes
+import std.concurrent
+
+enum Error {
+    InvalidAddress
+    InvalidKey
+    InvalidProtocol
+    PeerRejected
+    HandshakeFailed
+    Timeout
+    Cancelled
+    Unavailable
+    Closed
+    Io
+}
+
+extern c fn openListenerNative(
+    address String,
+    port u64,
+    serverName String,
+    certificate u64,
+    privateKey u64,
+    protocol String,
+    &listener u64,
+    &boundPort u64
+) i32 as foundation_openssl_secure_server_open
+
+extern c fn closeListenerNative(&listener u64) void as foundation_openssl_secure_server_close
+
+@blocking
+extern c fn acceptNative(listener u64, &connection u64) i32 as foundation_openssl_secure_server_accept
+
+@blocking
+extern c fn connectPinnedNative(
+    serverName String,
+    port u64,
+    rawPublicKey u64,
+    protocol String,
+    timeoutNanoseconds i64,
+    cancellation u64,
+    &connection u64
+) i32 as foundation_openssl_secure_connect_pinned
+
+extern c fn peerNative(connection u64, &address String) i32 as foundation_openssl_secure_connection_peer
+
+extern c fn closeConnectionNative(&connection u64) void as foundation_openssl_secure_connection_close
+
+extern c fn splitNative(
+    &connection u64,
+    &reader u64,
+    &writer u64
+) i32 as foundation_openssl_secure_connection_split
+
+extern c fn closeStreamNative(&stream u64) void as foundation_openssl_secure_stream_close
+
+@blocking
+extern c fn readExactBytesNative(
+    reader u64,
+    length u64,
+    &value u64
+) i32 as foundation_openssl_secure_read_exact_bytes
+
+@blocking
+extern c fn writeBytesNative(
+    writer u64,
+    value u64
+) i32 as foundation_openssl_secure_write_bytes
+
+// Owns a TLS 1.3 listener that requires one exact ALPN protocol.
+struct OpenSSLListener {
+    handle u64
+    Port u64
+
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeListenerNative(&self.handle)
+        true
+    }
+
+    fn Take(&self) u64 {
+        const handle = self.handle
+        self.handle = 0
+        handle
+    }
+
+    fn drop(&self) void {
+        closeListenerNative(&self.handle)
+    }
+}
+
+// Owns one verified TLS connection before its stream halves are split.
+struct OpenSSLConnection {
+    handle u64
+
+    fn PeerAddress(self) Result<String, Error> {
+        var address = ""
+        if peerNative(self.handle, &address) != 0 return .Err(.Io)
+        .Ok(address)
+    }
+
+    fn Take(&self) u64 {
+        const handle = self.handle
+        self.handle = 0
+        handle
+    }
+
+    fn Split($self) Result<OpenSSLStreamPair, Error> {
+        var reader u64 = 0
+        var writer u64 = 0
+        var active = self
+        var handle = active.Take()
+        if splitNative(&handle, &reader, &writer) != 0 {
+            closeConnectionNative(&handle)
+            return .Err(.Io)
+        }
+        .Ok(OpenSSLStreamPair {
+            Reader = own OpenSSLReader { handle = reader }
+            Writer = own OpenSSLWriter { handle = writer }
+        })
+    }
+
+    fn drop(&self) void {
+        closeConnectionNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
+struct OpenSSLReader {
+    handle u64
+
+    fn Take(&self) u64 {
+        const handle = self.handle
+        self.handle = 0
+        handle
+    }
+
+    fn drop(&self) void {
+        closeStreamNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
+struct OpenSSLWriter {
+    handle u64
+
+    fn Take(&self) u64 {
+        const handle = self.handle
+        self.handle = 0
+        handle
+    }
+
+    fn drop(&self) void {
+        closeStreamNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
+struct OpenSSLStreamPair {
+    Reader own OpenSSLReader
+    Writer own OpenSSLWriter
+}
+
+struct OpenSSLAcceptOutcome {
+    Listener own OpenSSLListener
+    Value Result<own OpenSSLConnection, Error>
+}
+
+struct OpenSSLReadOutcome {
+    Reader own OpenSSLReader
+    Value Result<own bytes.Bytes, Error>
+}
+
+struct OpenSSLWriteOutcome {
+    Writer own OpenSSLWriter
+    Value Result<void, Error>
+}
+
+// Binds a TLS 1.3 listener with one certificate and exact ALPN protocol.
+fn OpenSSLListen(
+    $address String,
+    port u64,
+    $serverName String,
+    certificatePEM bytes.Bytes,
+    privateKeyPEM bytes.Bytes,
+    $protocol String
+) Result<own OpenSSLListener, Error> {
+    if port > 65535 return .Err(.InvalidAddress)
+    var listener u64 = 0
+    var boundPort u64 = 0
+    const status = openListenerNative(
+        address,
+        port,
+        serverName,
+        bytes.RuntimeHandle(certificatePEM),
+        bytes.RuntimeHandle(privateKeyPEM),
+        protocol,
+        &listener,
+        &boundPort
+    )
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own OpenSSLListener { handle = listener Port = boundPort })
+}
+
+// Connects with TLS 1.3 after checking ALPN and the peer Ed25519 key.
+task OpenSSLDialPinned(
+    $serverName String,
+    port u64,
+    $rawPublicKey own bytes.Bytes,
+    $protocol String,
+    timeoutNanoseconds i64,
+    $cancellation concurrent.Cancellation
+) Result<own OpenSSLConnection, Error> {
+    if port == 0 || port > 65535 return .Err(.InvalidAddress)
+    var connection u64 = 0
+    const status = connectPinnedNative(
+        serverName,
+        port,
+        bytes.RuntimeHandle(rawPublicKey),
+        protocol,
+        timeoutNanoseconds,
+        cancellation.RuntimeHandle(),
+        &connection
+    )
+    discard rawPublicKey
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own OpenSSLConnection { handle = connection })
+}
+
+task OpenSSLAccept($listener own OpenSSLListener) OpenSSLAcceptOutcome {
+    var active = listener
+    const handle = active.Take()
+    var connection u64 = 0
+    const status = acceptNative(handle, &connection)
+    const restored = own OpenSSLListener { handle = handle Port = active.Port }
+    if status != 0 {
+        return OpenSSLAcceptOutcome {
+            Listener = restored
+            Value = .Err(errorFor(status))
+        }
+    }
+    OpenSSLAcceptOutcome {
+        Listener = restored
+        Value = .Ok(own OpenSSLConnection { handle = connection })
+    }
+}
+
+task OpenSSLReadExactBytes(
+    $reader own OpenSSLReader,
+    length u64
+) OpenSSLReadOutcome {
+    var active = reader
+    const handle = active.Take()
+    var value u64 = 0
+    const status = readExactBytesNative(handle, length, &value)
+    const restored = own OpenSSLReader { handle = handle }
+    if status != 0 {
+        return OpenSSLReadOutcome {
+            Reader = restored
+            Value = .Err(errorFor(status))
+        }
+    }
+    const claimed = bytes.ClaimRuntimeHandle(value) else error {
+        discard error
+        return OpenSSLReadOutcome {
+            Reader = restored
+            Value = .Err(.Io)
+        }
+    }
+    OpenSSLReadOutcome { Reader = restored Value = .Ok(claimed) }
+}
+
+task OpenSSLWriteAllBytes(
+    $writer own OpenSSLWriter,
+    $value own bytes.Bytes
+) OpenSSLWriteOutcome {
+    var active = writer
+    const handle = active.Take()
+    const status = writeBytesNative(handle, bytes.RuntimeHandle(value))
+    discard value
+    const restored = own OpenSSLWriter { handle = handle }
+    if status != 0 {
+        return OpenSSLWriteOutcome {
+            Writer = restored
+            Value = .Err(errorFor(status))
+        }
+    }
+    OpenSSLWriteOutcome { Writer = restored Value = .Ok }
+}
+
+fn errorFor(status i32) Error {
+    if status == 1 return .Unavailable
+    if status == 2 || status == 3 return .InvalidKey
+    if status == 6 return .InvalidAddress
+    if status == 7 return .PeerRejected
+    if status == 8 return .HandshakeFailed
+    if status == 9 return .InvalidProtocol
+    if status == 11 return .Timeout
+    if status == 12 return .Cancelled
+    .Io
+}

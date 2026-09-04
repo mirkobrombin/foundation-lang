@@ -28,6 +28,10 @@ extern c fn ed25519PublicPEMNative(
     rawPublicKey u64,
     &publicKey u64
 ) i32 as foundation_openssl_ed25519_public_pem
+extern c fn ed25519SelfSignedNative(
+    privateKey u64,
+    &certificate u64
+) i32 as foundation_openssl_ed25519_self_signed
 
 // Owns one generated Ed25519 keypair in provider and wire formats.
 struct OpenSSLEd25519KeyPair {
@@ -154,6 +158,24 @@ fn OpenSSLEd25519PublicPEM(
     if status == 3 return .Err(.InvalidPublicKey)
     if status != 0 return .Err(.Failed)
     const claimed = bytes.ClaimRuntimeHandle(publicKey) else error {
+        discard error
+        return .Err(.Failed)
+    }
+    .Ok(claimed)
+}
+
+// Creates a one-year self-signed TLS certificate for an Ed25519 identity.
+fn OpenSSLEd25519Certificate(
+    privateKeyPEM bytes.Bytes
+) Result<own bytes.Bytes, AsymmetricProviderError> {
+    var certificate u64 = 0
+    const status = ed25519SelfSignedNative(
+        bytes.RuntimeHandle(privateKeyPEM),
+        &certificate
+    )
+    if status == 2 return .Err(.InvalidPrivateKey)
+    if status != 0 return .Err(.Failed)
+    const claimed = bytes.ClaimRuntimeHandle(certificate) else error {
         discard error
         return .Err(.Failed)
     }

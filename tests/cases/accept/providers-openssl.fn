@@ -121,6 +121,11 @@ fn generatedEd25519Works() bool {
         return false
     }
     if !bytes.ConstantTimeEqual(PublicKeyPEM, convertedPublicKeyPEM) return false
+    const certificate = auth.OpenSSLEd25519Certificate(PrivateKeyPEM) else {
+        return false
+    }
+    const certificateLength = certificate.Len() else { return false }
+    if certificateLength == 0 return false
     var provider = auth.OpenSSLAsymmetricProvider {}
     const input = bytes.FromText("generated Ed25519 key")
     const signature = provider.Sign(.EdDSA, PrivateKeyPEM, input) else {

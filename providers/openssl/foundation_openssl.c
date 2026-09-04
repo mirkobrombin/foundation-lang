@@ -8,6 +8,7 @@
 #include <openssl/core_names.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
@@ -56,6 +57,8 @@ typedef struct foundation_openssl_connection {
     SSL_CTX *context;
     SSL *ssl;
     foundation_openssl_socket socket;
+    _Atomic size_t streams;
+    CRYPTO_RWLOCK *lock;
 } foundation_openssl_connection;
 
 static int foundation_openssl_cancelled(uint64_t cancellation);
@@ -537,6 +540,65 @@ cleanup:
     return status;
 }
 
+int32_t foundation_openssl_ed25519_self_signed(uint64_t private_key,
+                                                uint64_t *certificate) {
+    foundation_openssl_bytes private_bytes = {0};
+    EVP_PKEY *key = NULL;
+    X509 *x509 = NULL;
+    X509_NAME *name;
+    X509_EXTENSION *extension = NULL;
+    BIO *certificate_bio = NULL;
+    BUF_MEM *certificate_data = NULL;
+    uint64_t serial = 0;
+    int32_t status = FOUNDATION_OPENSSL_FAILED;
+
+    if (certificate == NULL) return FOUNDATION_OPENSSL_FAILED;
+    *certificate = 0;
+    if (!foundation_openssl_copy_bytes(private_key, &private_bytes)) goto cleanup;
+    key = foundation_openssl_private_key(&private_bytes);
+    if (key == NULL || !foundation_openssl_key_matches(FOUNDATION_OPENSSL_EDDSA, key)) {
+        status = FOUNDATION_OPENSSL_INVALID_PRIVATE_KEY;
+        goto cleanup;
+    }
+    x509 = X509_new();
+    if (x509 == NULL || RAND_bytes((unsigned char *)&serial, sizeof(serial)) != 1) goto cleanup;
+    serial &= INT64_MAX;
+    if (serial == 0) serial = 1;
+    if (X509_set_version(x509, 2) != 1 ||
+        ASN1_INTEGER_set_uint64(X509_get_serialNumber(x509), serial) != 1 ||
+        X509_gmtime_adj(X509_getm_notBefore(x509), -3600) == NULL ||
+        X509_gmtime_adj(X509_getm_notAfter(x509), 31536000L) == NULL ||
+        X509_set_pubkey(x509, key) != 1) goto cleanup;
+    name = X509_get_subject_name(x509);
+    if (name == NULL ||
+        X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                                   (const unsigned char *)"remolo-host", -1, -1, 0) != 1 ||
+        X509_set_issuer_name(x509, name) != 1) goto cleanup;
+    extension = X509V3_EXT_conf_nid(NULL, NULL, NID_key_usage, "digitalSignature");
+    if (extension == NULL || X509_add_ext(x509, extension, -1) != 1) goto cleanup;
+    X509_EXTENSION_free(extension);
+    extension = X509V3_EXT_conf_nid(NULL, NULL, NID_ext_key_usage,
+                                    "serverAuth,clientAuth");
+    if (extension == NULL || X509_add_ext(x509, extension, -1) != 1 ||
+        X509_sign(x509, key, NULL) <= 0) goto cleanup;
+    certificate_bio = BIO_new(BIO_s_mem());
+    if (certificate_bio == NULL || PEM_write_bio_X509(certificate_bio, x509) != 1) goto cleanup;
+    BIO_get_mem_ptr(certificate_bio, &certificate_data);
+    if (certificate_data == NULL ||
+        foundation_openssl_output_bytes((const unsigned char *)certificate_data->data,
+                                        certificate_data->length,
+                                        certificate) != FOUNDATION_OPENSSL_OK) goto cleanup;
+    status = FOUNDATION_OPENSSL_OK;
+cleanup:
+    X509_EXTENSION_free(extension);
+    BIO_free(certificate_bio);
+    X509_free(x509);
+    EVP_PKEY_free(key);
+    foundation_openssl_free_bytes(&private_bytes);
+    if (status != FOUNDATION_OPENSSL_OK) foundation_runtime_bytes_close(certificate);
+    return status;
+}
+
 static int foundation_openssl_es256_raw_signature(const unsigned char *der, size_t der_length,
                                                    unsigned char output[64]) {
     const unsigned char *cursor = der;
@@ -755,8 +817,10 @@ static int32_t foundation_openssl_tls_connect_with_ca(const char *server_name,
     connection = OPENSSL_zalloc(sizeof(*connection));
     if (connection == NULL) { status = FOUNDATION_OPENSSL_FAILED; goto cleanup; }
     connection->socket = socket_fd;
+    connection->lock = CRYPTO_THREAD_lock_new();
     connection->context = SSL_CTX_new(TLS_client_method());
-    if (connection->context == NULL || SSL_CTX_set_min_proto_version(connection->context, TLS1_2_VERSION) != 1 ||
+    if (connection->lock == NULL || connection->context == NULL ||
+        SSL_CTX_set_min_proto_version(connection->context, TLS1_2_VERSION) != 1 ||
         !foundation_openssl_tls_install_ca(connection->context, ca_handle)) goto cleanup;
     SSL_CTX_set_verify(connection->context, SSL_VERIFY_PEER, NULL);
     connection->ssl = SSL_new(connection->context);
@@ -781,6 +845,7 @@ cleanup:
     if (connection != NULL) {
         SSL_free(connection->ssl);
         SSL_CTX_free(connection->context);
+        CRYPTO_THREAD_lock_free(connection->lock);
         if (connection->socket != FOUNDATION_OPENSSL_INVALID_SOCKET) foundation_openssl_socket_close(connection->socket);
         OPENSSL_free(connection);
     } else if (socket_fd != FOUNDATION_OPENSSL_INVALID_SOCKET) foundation_openssl_socket_close(socket_fd);
@@ -803,6 +868,7 @@ void foundation_openssl_tls_close(uint64_t *handle) {
     SSL_free(connection->ssl);
     SSL_CTX_free(connection->context);
     foundation_openssl_socket_close(connection->socket);
+    CRYPTO_THREAD_lock_free(connection->lock);
     OPENSSL_free(connection);
     foundation_openssl_network_close();
 }
@@ -1388,14 +1454,11 @@ typedef struct foundation_openssl_server {
     foundation_openssl_socket socket;
     foundation_openssl_server_certificate *certificates;
     SSL_CTX *default_context;
+    unsigned char protocol[255];
+    size_t protocol_length;
 } foundation_openssl_server;
 
-typedef struct foundation_openssl_server_connection {
-    SSL *ssl;
-    foundation_openssl_socket socket;
-    _Atomic size_t streams;
-    CRYPTO_RWLOCK *lock;
-} foundation_openssl_server_connection;
+typedef foundation_openssl_connection foundation_openssl_server_connection;
 
 typedef struct foundation_openssl_server_stream {
     foundation_openssl_server_connection *connection;
@@ -1472,7 +1535,8 @@ static void foundation_openssl_server_certificates_free(
 }
 
 static SSL_CTX *foundation_openssl_server_context(uint64_t certificate_handle,
-                                                  uint64_t private_key_handle) {
+                                                  uint64_t private_key_handle,
+                                                  int protocol_required) {
     foundation_openssl_bytes certificate = {0};
     foundation_openssl_bytes private_key = {0};
     BIO *certificate_bio = NULL;
@@ -1492,7 +1556,9 @@ static SSL_CTX *foundation_openssl_server_context(uint64_t certificate_handle,
     key = PEM_read_bio_PrivateKey(private_key_bio, NULL, NULL, NULL);
     context = SSL_CTX_new(TLS_server_method());
     if (x509 == NULL || key == NULL || context == NULL ||
-        SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION) != 1 ||
+        SSL_CTX_set_min_proto_version(context,
+                                      protocol_required ? TLS1_3_VERSION : TLS1_2_VERSION) != 1 ||
+        (protocol_required && SSL_CTX_set_num_tickets(context, 0) != 1) ||
         SSL_CTX_use_certificate(context, x509) != 1 ||
         SSL_CTX_use_PrivateKey(context, key) != 1 ||
         SSL_CTX_check_private_key(context) != 1) {
@@ -1554,6 +1620,29 @@ static int foundation_openssl_server_sni(SSL *ssl, int *alert, void *argument) {
     return SSL_TLSEXT_ERR_ALERT_FATAL;
 }
 
+static int foundation_openssl_server_alpn(SSL *ssl, const unsigned char **selected,
+                                          unsigned char *selected_length,
+                                          const unsigned char *offered,
+                                          unsigned int offered_length, void *argument) {
+    foundation_openssl_server *server = argument;
+    size_t offset = 0;
+    (void)ssl;
+    if (server == NULL || server->protocol_length == 0 ||
+        selected == NULL || selected_length == NULL) return SSL_TLSEXT_ERR_ALERT_FATAL;
+    while (offset < offered_length) {
+        size_t length = offered[offset++];
+        if (length == 0 || length > offered_length - offset) return SSL_TLSEXT_ERR_ALERT_FATAL;
+        if (length == server->protocol_length &&
+            CRYPTO_memcmp(offered + offset, server->protocol, length) == 0) {
+            *selected = offered + offset;
+            *selected_length = (unsigned char)length;
+            return SSL_TLSEXT_ERR_OK;
+        }
+        offset += length;
+    }
+    return SSL_TLSEXT_ERR_ALERT_FATAL;
+}
+
 static int foundation_openssl_server_add(foundation_openssl_server *server,
                                          const char *server_name, uint64_t server_name_length,
                                          uint64_t certificate_handle, uint64_t private_key_handle) {
@@ -1569,7 +1658,9 @@ static int foundation_openssl_server_add(foundation_openssl_server *server,
     certificate = OPENSSL_zalloc(sizeof(*certificate));
     if (certificate == NULL) return 0;
     certificate->name = OPENSSL_malloc((size_t)server_name_length + 1);
-    certificate->context = foundation_openssl_server_context(certificate_handle, private_key_handle);
+    certificate->context = foundation_openssl_server_context(certificate_handle,
+                                                              private_key_handle,
+                                                              server->protocol_length != 0);
     if (certificate->name == NULL || certificate->context == NULL) {
         foundation_openssl_server_certificate_free(certificate);
         return 0;
@@ -1578,17 +1669,21 @@ static int foundation_openssl_server_add(foundation_openssl_server *server,
     certificate->name[server_name_length] = '\0';
     SSL_CTX_set_tlsext_servername_callback(certificate->context, foundation_openssl_server_sni);
     SSL_CTX_set_tlsext_servername_arg(certificate->context, server);
+    if (server->protocol_length != 0) {
+        SSL_CTX_set_alpn_select_cb(certificate->context, foundation_openssl_server_alpn, server);
+    }
     if (server->default_context == NULL) server->default_context = certificate->context;
     certificate->next = server->certificates;
     server->certificates = certificate;
     return 1;
 }
 
-int32_t foundation_openssl_server_open(const char *address, uint64_t address_length,
-                                       uint16_t port, const char *server_name,
-                                       uint64_t server_name_length, uint64_t certificate_handle,
-                                       uint64_t private_key_handle, uint64_t *result,
-                                       uint64_t *bound_port) {
+static int32_t foundation_openssl_server_open_with_protocol(
+    const char *address, uint64_t address_length, uint16_t port,
+    const char *server_name, uint64_t server_name_length,
+    uint64_t certificate_handle, uint64_t private_key_handle,
+    const char *protocol, uint64_t protocol_length,
+    uint64_t *result, uint64_t *bound_port) {
     char *host = NULL;
     char port_text[6];
     struct addrinfo hints;
@@ -1601,7 +1696,12 @@ int32_t foundation_openssl_server_open(const char *address, uint64_t address_len
     if (result == NULL || bound_port == NULL || address == NULL ||
         address_length == 0 || address_length > SIZE_MAX - 1 ||
         memchr(address, '\0', (size_t)address_length) != NULL ||
-        !foundation_openssl_valid_server_name(server_name, server_name_length)) return FOUNDATION_OPENSSL_INVALID_SERVER_NAME;
+        !foundation_openssl_valid_server_name(server_name, server_name_length) ||
+        protocol_length > sizeof(server->protocol) ||
+        (protocol_length != 0 &&
+         (protocol == NULL || memchr(protocol, '\0', (size_t)protocol_length) != NULL))) {
+        return FOUNDATION_OPENSSL_INVALID_SERVER_NAME;
+    }
     *result = 0;
     *bound_port = 0;
     if (!foundation_openssl_network_open()) return FOUNDATION_OPENSSL_UNAVAILABLE;
@@ -1634,7 +1734,12 @@ int32_t foundation_openssl_server_open(const char *address, uint64_t address_len
     }
     if (socket_fd == FOUNDATION_OPENSSL_INVALID_SOCKET) goto cleanup;
     server = OPENSSL_zalloc(sizeof(*server));
-    if (server == NULL || !foundation_openssl_server_add(server, server_name, server_name_length,
+    if (server == NULL) goto cleanup;
+    if (protocol_length != 0) {
+        memcpy(server->protocol, protocol, (size_t)protocol_length);
+        server->protocol_length = (size_t)protocol_length;
+    }
+    if (!foundation_openssl_server_add(server, server_name, server_name_length,
                                                           certificate_handle, private_key_handle)) goto cleanup;
     server->socket = socket_fd;
     {
@@ -1683,6 +1788,195 @@ cleanup:
     if (socket_fd != FOUNDATION_OPENSSL_INVALID_SOCKET) foundation_openssl_socket_close(socket_fd);
     if (status != FOUNDATION_OPENSSL_OK) foundation_openssl_network_close();
     return status;
+}
+
+int32_t foundation_openssl_server_open(const char *address, uint64_t address_length,
+                                       uint16_t port, const char *server_name,
+                                       uint64_t server_name_length, uint64_t certificate_handle,
+                                       uint64_t private_key_handle, uint64_t *result,
+                                       uint64_t *bound_port) {
+    return foundation_openssl_server_open_with_protocol(
+        address, address_length, port, server_name, server_name_length,
+        certificate_handle, private_key_handle, NULL, 0, result, bound_port);
+}
+
+int32_t foundation_openssl_server_open_protocol(
+    const char *address, uint64_t address_length, uint16_t port,
+    const char *server_name, uint64_t server_name_length,
+    uint64_t certificate_handle, uint64_t private_key_handle,
+    const char *protocol, uint64_t protocol_length,
+    uint64_t *result, uint64_t *bound_port) {
+    if (protocol_length == 0) return FOUNDATION_OPENSSL_PROTOCOL_FAILED;
+    return foundation_openssl_server_open_with_protocol(
+        address, address_length, port, server_name, server_name_length,
+        certificate_handle, private_key_handle, protocol, protocol_length,
+        result, bound_port);
+}
+
+int32_t foundation_openssl_tls_connect_pinned(
+    const char *server_name, uint64_t server_name_length, uint16_t port,
+    uint64_t raw_public_key, const char *protocol, uint64_t protocol_length,
+    int64_t timeout_nanoseconds, uint64_t cancellation, uint64_t *result) {
+    struct addrinfo hints;
+    struct addrinfo *addresses = NULL;
+    struct addrinfo *current;
+    foundation_openssl_bytes expected = {0};
+    foundation_openssl_connection *connection = NULL;
+    X509 *certificate = NULL;
+    EVP_PKEY *public_key = NULL;
+    char *name = NULL;
+    char service[6];
+    unsigned char actual[32];
+    size_t actual_length = sizeof(actual);
+    unsigned char wire_protocol[256];
+    const unsigned char *selected = NULL;
+    unsigned int selected_length = 0;
+    foundation_openssl_socket socket_fd = FOUNDATION_OPENSSL_INVALID_SOCKET;
+    uint64_t deadline = foundation_openssl_deadline(timeout_nanoseconds);
+    int64_t remaining;
+    int32_t status = FOUNDATION_OPENSSL_HANDSHAKE_FAILED;
+
+    if (result == NULL ||
+        !foundation_openssl_valid_server_name(server_name, server_name_length) ||
+        protocol == NULL || protocol_length == 0 || protocol_length > 255 ||
+        memchr(protocol, '\0', (size_t)protocol_length) != NULL) {
+        return FOUNDATION_OPENSSL_INVALID_SERVER_NAME;
+    }
+    *result = 0;
+    if (!foundation_openssl_copy_bytes(raw_public_key, &expected) || expected.length != 32) {
+        status = FOUNDATION_OPENSSL_INVALID_PUBLIC_KEY;
+        goto cleanup;
+    }
+    if (foundation_openssl_cancelled(cancellation)) {
+        status = FOUNDATION_OPENSSL_CANCELLED;
+        goto cleanup;
+    }
+    if (!foundation_openssl_deadline_remaining(deadline, &remaining)) {
+        status = FOUNDATION_OPENSSL_TIMEOUT;
+        goto cleanup;
+    }
+    if (!foundation_openssl_network_open()) {
+        status = FOUNDATION_OPENSSL_UNAVAILABLE;
+        goto cleanup;
+    }
+    name = OPENSSL_malloc((size_t)server_name_length + 1);
+    if (name == NULL) { status = FOUNDATION_OPENSSL_FAILED; goto cleanup_network; }
+    memcpy(name, server_name, (size_t)server_name_length);
+    name[server_name_length] = '\0';
+    snprintf(service, sizeof(service), "%u", (unsigned int)port);
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    status = foundation_openssl_resolve_until(name, service, &hints, deadline,
+                                               cancellation, &addresses);
+    if (status != FOUNDATION_OPENSSL_OK) goto cleanup_network;
+    for (current = addresses; current != NULL; current = current->ai_next) {
+        socket_fd = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+        if (socket_fd != FOUNDATION_OPENSSL_INVALID_SOCKET &&
+            foundation_openssl_connect_until(socket_fd, current->ai_addr,
+                                             current->ai_addrlen, deadline,
+                                             cancellation)) break;
+        if (socket_fd != FOUNDATION_OPENSSL_INVALID_SOCKET) {
+            foundation_openssl_socket_close(socket_fd);
+            socket_fd = FOUNDATION_OPENSSL_INVALID_SOCKET;
+        }
+    }
+    if (socket_fd == FOUNDATION_OPENSSL_INVALID_SOCKET) {
+        if (foundation_openssl_cancelled(cancellation)) status = FOUNDATION_OPENSSL_CANCELLED;
+        else if (!foundation_openssl_deadline_remaining(deadline, &remaining)) status = FOUNDATION_OPENSSL_TIMEOUT;
+        goto cleanup_network;
+    }
+    connection = OPENSSL_zalloc(sizeof(*connection));
+    if (connection == NULL) { status = FOUNDATION_OPENSSL_FAILED; goto cleanup_network; }
+    connection->socket = socket_fd;
+    connection->lock = CRYPTO_THREAD_lock_new();
+    connection->context = SSL_CTX_new(TLS_client_method());
+    if (connection->lock == NULL || connection->context == NULL ||
+        SSL_CTX_set_min_proto_version(connection->context, TLS1_3_VERSION) != 1) {
+        status = FOUNDATION_OPENSSL_FAILED;
+        goto cleanup_network;
+    }
+    SSL_CTX_set_verify(connection->context, SSL_VERIFY_NONE, NULL);
+    connection->ssl = SSL_new(connection->context);
+    wire_protocol[0] = (unsigned char)protocol_length;
+    memcpy(wire_protocol + 1, protocol, (size_t)protocol_length);
+    if (connection->ssl == NULL ||
+        SSL_set_alpn_protos(connection->ssl, wire_protocol,
+                            (unsigned int)protocol_length + 1) != 0 ||
+        SSL_set_fd(connection->ssl, (int)socket_fd) != 1) {
+        status = FOUNDATION_OPENSSL_FAILED;
+        goto cleanup_network;
+    }
+    status = foundation_openssl_tls_handshake_until(connection->ssl, socket_fd, 0,
+                                                     deadline, cancellation);
+    if (status != FOUNDATION_OPENSSL_OK) goto cleanup_network;
+    SSL_get0_alpn_selected(connection->ssl, &selected, &selected_length);
+    if (selected_length != protocol_length ||
+        CRYPTO_memcmp(selected, protocol, (size_t)protocol_length) != 0) {
+        status = FOUNDATION_OPENSSL_PROTOCOL_FAILED;
+        goto cleanup_network;
+    }
+    certificate = SSL_get1_peer_certificate(connection->ssl);
+    public_key = certificate == NULL ? NULL : X509_get_pubkey(certificate);
+    if (public_key == NULL ||
+        !foundation_openssl_key_matches(FOUNDATION_OPENSSL_EDDSA, public_key) ||
+        EVP_PKEY_get_raw_public_key(public_key, actual, &actual_length) != 1 ||
+        actual_length != expected.length ||
+        CRYPTO_memcmp(actual, expected.data, expected.length) != 0) {
+        status = FOUNDATION_OPENSSL_PEER_REJECTED;
+        goto cleanup_network;
+    }
+    *result = (uint64_t)(uintptr_t)connection;
+    connection = NULL;
+    socket_fd = FOUNDATION_OPENSSL_INVALID_SOCKET;
+    status = FOUNDATION_OPENSSL_OK;
+cleanup_network:
+    if (addresses != NULL) freeaddrinfo(addresses);
+    if (connection != NULL) {
+        shutdown(connection->socket, FOUNDATION_OPENSSL_SOCKET_SHUTDOWN);
+        SSL_free(connection->ssl);
+        SSL_CTX_free(connection->context);
+        CRYPTO_THREAD_lock_free(connection->lock);
+        if (connection->socket != FOUNDATION_OPENSSL_INVALID_SOCKET) {
+            foundation_openssl_socket_close(connection->socket);
+            socket_fd = FOUNDATION_OPENSSL_INVALID_SOCKET;
+        }
+        OPENSSL_free(connection);
+    }
+    if (socket_fd != FOUNDATION_OPENSSL_INVALID_SOCKET) foundation_openssl_socket_close(socket_fd);
+    if (status != FOUNDATION_OPENSSL_OK) foundation_openssl_network_close();
+cleanup:
+    OPENSSL_cleanse(actual, sizeof(actual));
+    OPENSSL_free(name);
+    EVP_PKEY_free(public_key);
+    X509_free(certificate);
+    foundation_openssl_free_bytes(&expected);
+    return status;
+}
+
+int32_t foundation_openssl_secure_server_open(
+    const fdn_string *address, uint64_t port, const fdn_string *server_name,
+    uint64_t certificate, uint64_t private_key, const fdn_string *protocol,
+    uint64_t *server, uint64_t *bound_port) {
+    if (address == NULL || server_name == NULL || protocol == NULL || port > 65535) {
+        return FOUNDATION_OPENSSL_INVALID_SERVER_NAME;
+    }
+    return foundation_openssl_server_open_protocol(
+        address->data, address->length, (uint16_t)port,
+        server_name->data, server_name->length, certificate, private_key,
+        protocol->data, protocol->length, server, bound_port);
+}
+
+int32_t foundation_openssl_secure_connect_pinned(
+    const fdn_string *server_name, uint64_t port, uint64_t raw_public_key,
+    const fdn_string *protocol, int64_t timeout_nanoseconds,
+    uint64_t cancellation, uint64_t *connection) {
+    if (server_name == NULL || protocol == NULL || port == 0 || port > 65535) {
+        return FOUNDATION_OPENSSL_INVALID_SERVER_NAME;
+    }
+    return foundation_openssl_tls_connect_pinned(
+        server_name->data, server_name->length, (uint16_t)port, raw_public_key,
+        protocol->data, protocol->length, timeout_nanoseconds, cancellation,
+        connection);
 }
 
 int32_t foundation_openssl_server_add_certificate(uint64_t server_handle,
@@ -1819,6 +2113,7 @@ void foundation_openssl_server_connection_close(uint64_t *handle) {
     *handle = 0;
     foundation_openssl_tls_shutdown(connection->ssl, connection->socket);
     SSL_free(connection->ssl);
+    SSL_CTX_free(connection->context);
     foundation_openssl_socket_close(connection->socket);
     CRYPTO_THREAD_lock_free(connection->lock);
     OPENSSL_free(connection);
@@ -1861,6 +2156,7 @@ void foundation_openssl_server_stream_close(uint64_t *handle) {
     if (connection != NULL && atomic_fetch_sub_explicit(&connection->streams, 1, memory_order_acq_rel) == 1) {
         foundation_openssl_tls_shutdown(connection->ssl, connection->socket);
         SSL_free(connection->ssl);
+        SSL_CTX_free(connection->context);
         foundation_openssl_socket_close(connection->socket);
         CRYPTO_THREAD_lock_free(connection->lock);
         OPENSSL_free(connection);
@@ -1919,6 +2215,39 @@ int32_t foundation_openssl_server_read_exact(uint64_t handle, uint64_t length, f
                                           (size_t)length, 0, result);
 }
 
+int32_t foundation_openssl_server_read_exact_bytes(uint64_t handle, uint64_t length,
+                                                   uint64_t *result) {
+    foundation_openssl_server_stream *stream =
+        (foundation_openssl_server_stream *)(uintptr_t)handle;
+    unsigned char *buffer = NULL;
+    size_t offset = 0;
+    int32_t status = FOUNDATION_OPENSSL_FAILED;
+    if (stream == NULL || result == NULL || length > SIZE_MAX) return FOUNDATION_OPENSSL_FAILED;
+    *result = 0;
+    if (length == 0) return foundation_openssl_output_bytes(NULL, 0, result);
+    buffer = OPENSSL_malloc((size_t)length);
+    if (buffer == NULL) return FOUNDATION_OPENSSL_FAILED;
+    while (offset < (size_t)length) {
+        size_t remaining = (size_t)length - offset;
+        int count;
+        if (remaining > INT_MAX) remaining = INT_MAX;
+        if (!CRYPTO_THREAD_write_lock(stream->connection->lock)) goto cleanup;
+        count = SSL_read(stream->connection->ssl, buffer + offset, (int)remaining);
+        CRYPTO_THREAD_unlock(stream->connection->lock);
+        if (count <= 0) {
+            if (SSL_get_error(stream->connection->ssl, count) == SSL_ERROR_ZERO_RETURN) {
+                status = FOUNDATION_OPENSSL_PROTOCOL_FAILED;
+            }
+            goto cleanup;
+        }
+        offset += (size_t)count;
+    }
+    status = foundation_openssl_output_bytes(buffer, offset, result);
+cleanup:
+    OPENSSL_clear_free(buffer, (size_t)length);
+    return status;
+}
+
 static int32_t foundation_openssl_server_write(foundation_openssl_server_stream *stream,
                                                const unsigned char *value, size_t length) {
     size_t written = 0;
@@ -1951,4 +2280,43 @@ int32_t foundation_openssl_server_write_bytes(uint64_t handle, uint64_t value_ha
                                              value.data, value.length);
     foundation_openssl_free_bytes(&value);
     return status;
+}
+
+void foundation_openssl_secure_server_close(uint64_t *server) {
+    foundation_openssl_server_close(server);
+}
+
+int32_t foundation_openssl_secure_server_accept(uint64_t server,
+                                                uint64_t *connection) {
+    return foundation_openssl_server_accept(server, connection);
+}
+
+int32_t foundation_openssl_secure_connection_peer(uint64_t connection,
+                                                  fdn_string *address) {
+    return foundation_openssl_server_connection_peer(connection, address);
+}
+
+void foundation_openssl_secure_connection_close(uint64_t *connection) {
+    foundation_openssl_server_connection_close(connection);
+}
+
+int32_t foundation_openssl_secure_connection_split(uint64_t *connection,
+                                                   uint64_t *reader,
+                                                   uint64_t *writer) {
+    return foundation_openssl_server_connection_split(connection, reader, writer);
+}
+
+void foundation_openssl_secure_stream_close(uint64_t *stream) {
+    foundation_openssl_server_stream_close(stream);
+}
+
+int32_t foundation_openssl_secure_read_exact_bytes(uint64_t stream,
+                                                   uint64_t length,
+                                                   uint64_t *value) {
+    return foundation_openssl_server_read_exact_bytes(stream, length, value);
+}
+
+int32_t foundation_openssl_secure_write_bytes(uint64_t stream,
+                                              uint64_t value) {
+    return foundation_openssl_server_write_bytes(stream, value);
 }

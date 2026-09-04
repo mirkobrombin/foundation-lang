@@ -90,6 +90,9 @@ static int test_ed25519_generation(void) {
     uint64_t derived_public_key = 0;
     uint64_t derived_raw_public_key = 0;
     uint64_t converted_public_key = 0;
+    uint64_t certificate = 0;
+    uint64_t server = 0;
+    uint64_t port = 0;
     uint64_t raw_length = 0;
     int result = 0;
     if (foundation_openssl_ed25519_generate(&private_key, &public_key,
@@ -106,12 +109,22 @@ static int test_ed25519_generation(void) {
                                           &derived_raw_public_key) != FOUNDATION_OPENSSL_OK ||
         foundation_openssl_ed25519_public_pem(raw_public_key,
                                               &converted_public_key) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_ed25519_self_signed(private_key,
+                                               &certificate) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_server_open_protocol("127.0.0.1", 9, 0,
+                                                "remolo-host", 11,
+                                                certificate, private_key,
+                                                "remolo/1", 8,
+                                                &server, &port) != FOUNDATION_OPENSSL_OK ||
+        port == 0 ||
         !foundation_runtime_bytes_constant_time_equal(public_key, derived_public_key) ||
         !foundation_runtime_bytes_constant_time_equal(public_key, converted_public_key) ||
         !foundation_runtime_bytes_constant_time_equal(raw_public_key,
                                                       derived_raw_public_key)) goto cleanup;
     result = 1;
 cleanup:
+    foundation_openssl_server_close(&server);
+    foundation_runtime_bytes_close(&certificate);
     foundation_runtime_bytes_close(&converted_public_key);
     foundation_runtime_bytes_close(&derived_raw_public_key);
     foundation_runtime_bytes_close(&derived_public_key);
@@ -251,6 +264,11 @@ typedef struct tls_server_race {
     int add_certificate;
     int32_t status;
 } tls_server_race;
+
+typedef struct pinned_accept {
+    uint64_t server;
+    int32_t status;
+} pinned_accept;
 
 static EVP_PKEY *test_rsa_key(void) {
     EVP_PKEY_CTX *context = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
@@ -421,6 +439,58 @@ static void *test_tls_server_race(void *argument) {
     return NULL;
 }
 
+static void *test_pinned_accept(void *argument) {
+    pinned_accept *accepted = argument;
+    uint64_t connection = 0;
+    accepted->status = foundation_openssl_server_accept(accepted->server,
+                                                         &connection);
+    foundation_openssl_server_connection_close(&connection);
+    return NULL;
+}
+
+static int test_pinned_tls_rejects_wrong_alpn(void) {
+    uint64_t private_key = 0;
+    uint64_t public_key = 0;
+    uint64_t raw_public_key = 0;
+    uint64_t certificate = 0;
+    uint64_t server = 0;
+    uint64_t port = 0;
+    uint64_t connection = 0;
+    pinned_accept accepted;
+    pthread_t thread;
+    int thread_started = 0;
+    int result = 0;
+    memset(&accepted, 0, sizeof(accepted));
+    if (foundation_openssl_ed25519_generate(&private_key, &public_key,
+                                             &raw_public_key) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_ed25519_self_signed(private_key,
+                                               &certificate) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_server_open_protocol("127.0.0.1", 9, 0,
+                                                "remolo-host", 11,
+                                                certificate, private_key,
+                                                "remolo/1", 8,
+                                                &server, &port) != FOUNDATION_OPENSSL_OK) goto cleanup;
+    accepted.server = server;
+    if (pthread_create(&thread, NULL, test_pinned_accept, &accepted) != 0) goto cleanup;
+    thread_started = 1;
+    if (foundation_openssl_tls_connect_pinned("127.0.0.1", 9, (uint16_t)port,
+                                              raw_public_key, "remolo/2", 8,
+                                              5000000000LL, 0,
+                                              &connection) == FOUNDATION_OPENSSL_OK) goto cleanup;
+    pthread_join(thread, NULL);
+    thread_started = 0;
+    result = accepted.status != FOUNDATION_OPENSSL_OK;
+cleanup:
+    foundation_openssl_server_connection_close(&connection);
+    foundation_openssl_server_close(&server);
+    if (thread_started) pthread_join(thread, NULL);
+    foundation_runtime_bytes_close(&certificate);
+    foundation_runtime_bytes_close(&raw_public_key);
+    foundation_runtime_bytes_close(&public_key);
+    foundation_runtime_bytes_close(&private_key);
+    return result;
+}
+
 static int test_tls_server_close_races(void) {
     tls_fixture fixture;
     int add_certificate;
@@ -556,7 +626,8 @@ int main(void) {
         return 1;
     }
 #ifndef _WIN32
-    if (!test_tls_server() || !test_tls_server_close_races()) return 1;
+    if (!test_tls_server() || !test_tls_server_close_races() ||
+        !test_pinned_tls_rejects_wrong_alpn()) return 1;
 #endif
     puts("openssl asymmetric provider: ok");
     return 0;

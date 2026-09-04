@@ -40,6 +40,8 @@ int32_t foundation_openssl_ed25519_public(uint64_t private_key,
                                           uint64_t *raw_public_key);
 int32_t foundation_openssl_ed25519_public_pem(uint64_t raw_public_key,
                                               uint64_t *public_key);
+int32_t foundation_openssl_ed25519_self_signed(uint64_t private_key,
+                                               uint64_t *certificate);
 
 // Opens a TLS client connection after SNI and hostname verification. The handle
 // is intentionally opaque: callers cannot downgrade it into a plain socket.
@@ -66,6 +68,41 @@ int32_t foundation_openssl_server_open(const char *address, uint64_t address_len
                                        uint64_t server_name_length, uint64_t certificate,
                                        uint64_t private_key, uint64_t *server,
                                        uint64_t *bound_port);
+int32_t foundation_openssl_server_open_protocol(const char *address,
+                                                uint64_t address_length,
+                                                uint16_t port,
+                                                const char *server_name,
+                                                uint64_t server_name_length,
+                                                uint64_t certificate,
+                                                uint64_t private_key,
+                                                const char *protocol,
+                                                uint64_t protocol_length,
+                                                uint64_t *server,
+                                                uint64_t *bound_port);
+int32_t foundation_openssl_tls_connect_pinned(const char *server_name,
+                                              uint64_t server_name_length,
+                                              uint16_t port,
+                                              uint64_t raw_public_key,
+                                              const char *protocol,
+                                              uint64_t protocol_length,
+                                              int64_t timeout_nanoseconds,
+                                              uint64_t cancellation,
+                                              uint64_t *connection);
+int32_t foundation_openssl_secure_server_open(const fdn_string *address,
+                                              uint64_t port,
+                                              const fdn_string *server_name,
+                                              uint64_t certificate,
+                                              uint64_t private_key,
+                                              const fdn_string *protocol,
+                                              uint64_t *server,
+                                              uint64_t *bound_port);
+int32_t foundation_openssl_secure_connect_pinned(const fdn_string *server_name,
+                                                 uint64_t port,
+                                                 uint64_t raw_public_key,
+                                                 const fdn_string *protocol,
+                                                 int64_t timeout_nanoseconds,
+                                                 uint64_t cancellation,
+                                                 uint64_t *connection);
 int32_t foundation_openssl_server_add_certificate(uint64_t server, const char *server_name,
                                                   uint64_t server_name_length,
                                                   uint64_t certificate,
@@ -81,8 +118,26 @@ int32_t foundation_openssl_server_read_line(uint64_t stream, uint64_t limit,
                                             fdn_string *line);
 int32_t foundation_openssl_server_read_exact(uint64_t stream, uint64_t length,
                                              fdn_string *value);
+int32_t foundation_openssl_server_read_exact_bytes(uint64_t stream,
+                                                   uint64_t length,
+                                                   uint64_t *value);
 int32_t foundation_openssl_server_write_text(uint64_t stream, const char *value,
                                              uint64_t value_length);
 int32_t foundation_openssl_server_write_bytes(uint64_t stream, uint64_t value);
+void foundation_openssl_secure_server_close(uint64_t *server);
+int32_t foundation_openssl_secure_server_accept(uint64_t server,
+                                                uint64_t *connection);
+int32_t foundation_openssl_secure_connection_peer(uint64_t connection,
+                                                  fdn_string *address);
+void foundation_openssl_secure_connection_close(uint64_t *connection);
+int32_t foundation_openssl_secure_connection_split(uint64_t *connection,
+                                                   uint64_t *reader,
+                                                   uint64_t *writer);
+void foundation_openssl_secure_stream_close(uint64_t *stream);
+int32_t foundation_openssl_secure_read_exact_bytes(uint64_t stream,
+                                                   uint64_t length,
+                                                   uint64_t *value);
+int32_t foundation_openssl_secure_write_bytes(uint64_t stream,
+                                              uint64_t value);
 
 #endif
