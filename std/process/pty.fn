@@ -284,10 +284,19 @@ fn OpenPTY(
     configurePTY(&active, command, environment, Term) else error {
         return .Err(error)
     }
+    PreparePTY($active, Columns, Rows)
+}
+
+fn PreparePTY(
+    $command own Command,
+    columns u16,
+    rows u16
+) Result<own PTYCommand, Error> {
+    if columns == 0 || rows == 0 return .Err(.InvalidArgument)
     .Ok(own PTYCommand {
-        command = active
-        columns = Columns
-        rows = Rows
+        command = command
+        columns = columns
+        rows = rows
     })
 }
 

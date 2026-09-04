@@ -515,6 +515,15 @@ void foundation_runtime_process_pty_writer_close(uint64_t handle);
 void foundation_runtime_process_pty_controller_close(uint64_t handle);
 void foundation_runtime_process_pty_waiter_close(uint64_t handle);
 uint64_t foundation_runtime_process_pty_live_handles(void);
+int32_t foundation_runtime_terminal_open(uint64_t *reader, uint64_t *controller,
+                                         uint16_t *columns, uint16_t *rows);
+int32_t foundation_runtime_terminal_read(uint64_t reader, uint64_t limit,
+                                         uint32_t *kind, uint16_t *columns,
+                                         uint16_t *rows, uint64_t *value);
+void foundation_runtime_terminal_abort(uint64_t controller);
+void foundation_runtime_terminal_reader_close(uint64_t reader);
+void foundation_runtime_terminal_controller_close(uint64_t controller);
+uint64_t foundation_runtime_terminal_live_handles(void);
 int32_t foundation_runtime_net_resolve(const fdn_string *host, uint64_t port,
                                        uint64_t *addresses);
 void foundation_runtime_net_addresses_close(uint64_t addresses);

@@ -1,0 +1,21 @@
+import std.terminal
+
+fn main() i32 {
+    const opened = terminal.Open() else error {
+        match error {
+            Unavailable: {
+                print("terminal unavailable")
+                return 0
+            }
+            _: { return 1 }
+        }
+    }
+    const terminal.Terminal { Size Reader Controller } = opened
+    discard Size
+    discard Reader
+    var controller = Controller
+    discard controller.Close()
+    discard controller
+    print("terminal available")
+    0
+}

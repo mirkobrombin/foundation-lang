@@ -1,0 +1,152 @@
+package std.terminal
+
+import std.bytes
+import std.concurrent
+
+enum Error {
+    InvalidArgument
+    Unavailable
+    Io
+    Closed
+}
+
+struct Size {
+    Columns u16
+    Rows u16
+}
+
+enum Event {
+    Data(value own bytes.Bytes)
+    Resize(value Size)
+    EOF
+}
+
+@concurrent.Transferable()
+struct Reader {
+    handle u64
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            closeReaderNative(handle)
+        }
+    }
+}
+
+@concurrent.Transferable()
+struct Controller {
+    handle u64
+
+    fn Close(&self) bool {
+        const handle = replace self.handle with 0
+        if handle == 0 return false
+        abortNative(handle)
+        closeControllerNative(handle)
+        true
+    }
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            abortNative(handle)
+            closeControllerNative(handle)
+        }
+    }
+}
+
+@concurrent.Transferable()
+struct Terminal {
+    Size Size
+    Reader own Reader
+    Controller own Controller
+}
+
+struct ReadOutcome {
+    Reader own Reader
+    Value Result<Event, Error>
+}
+
+extern c fn openNative(
+    &reader u64,
+    &controller u64,
+    &columns u16,
+    &rows u16
+) i32 as foundation_runtime_terminal_open
+
+@blocking
+extern c fn readNative(
+    reader u64,
+    limit u64,
+    &kind u32,
+    &columns u16,
+    &rows u16,
+    &value u64
+) i32 as foundation_runtime_terminal_read
+
+extern c fn abortNative(
+    controller u64
+) void as foundation_runtime_terminal_abort
+
+extern c fn closeReaderNative(
+    reader u64
+) void as foundation_runtime_terminal_reader_close
+
+extern c fn closeControllerNative(
+    controller u64
+) void as foundation_runtime_terminal_controller_close
+
+fn Open() Result<own Terminal, Error> {
+    var reader u64 = 0
+    var controller u64 = 0
+    var columns u16 = 0
+    var rows u16 = 0
+    const status = openNative(&reader, &controller, &columns, &rows)
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own Terminal {
+        Size = Size { Columns = columns Rows = rows }
+        Reader = own Reader { handle = reader }
+        Controller = own Controller { handle = controller }
+    })
+}
+
+task Read($reader own Reader, limit u64) ReadOutcome {
+    var kind u32 = 0
+    var columns u16 = 0
+    var rows u16 = 0
+    var value u64 = 0
+    const status = readNative(
+        reader.handle,
+        limit,
+        &kind,
+        &columns,
+        &rows,
+        &value
+    )
+    if status != 0 {
+        return ReadOutcome { Reader = reader Value = .Err(errorFor(status)) }
+    }
+    if kind == 2 {
+        return ReadOutcome {
+            Reader = reader
+            Value = .Ok(.Resize(value = Size {
+                Columns = columns
+                Rows = rows
+            }))
+        }
+    }
+    if kind == 3 {
+        return ReadOutcome { Reader = reader Value = .Ok(.EOF) }
+    }
+    const claimed = bytes.ClaimRuntimeHandle(value) else error {
+        discard error
+        return ReadOutcome { Reader = reader Value = .Err(.Io) }
+    }
+    ReadOutcome { Reader = reader Value = .Ok(.Data(value = claimed)) }
+}
+
+fn errorFor(status i32) Error {
+    if status == 1 return .InvalidArgument
+    if status == 2 return .Unavailable
+    if status == 4 return .Closed
+    .Io
+}

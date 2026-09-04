@@ -13,6 +13,11 @@ fn OpenPTY(
     environment [String],
     $options PTYOptions
 ) Result<own PTYCommand, Error>
+fn PreparePTY(
+    $command own Command,
+    columns u16,
+    rows u16
+) Result<own PTYCommand, Error>
 task StartPTY($prepared own PTYCommand) Result<own PTY, Error>
 task ReadPTY($reader own PTYReader, limit u64) PTYReadOutcome
 task WritePTY($writer own PTYWriter, $value own bytes.Bytes) PTYWriteOutcome
@@ -30,6 +35,9 @@ error. Set `InheritEnvironment` to `false` to start from an empty environment.
 Windows, with a platform fallback when the variable is absent. The default working directory is
 the current user's home directory. `TERM` defaults to `xterm-256color`; a caller-provided `TERM`
 entry is replaced by `PTYOptions.Term`.
+
+`PreparePTY` accepts a `Command` assembled by another package. It preserves the command's
+arguments, environment, and working directory while adding the initial terminal size.
 
 `StartPTY` uses a POSIX pseudo-terminal or Windows ConPTY. It returns four independent owners so a
 reader task, writer task, controller, and waiter can be moved into separate scopes without shared
