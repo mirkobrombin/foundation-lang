@@ -53,6 +53,19 @@ extern c fn closeListenerNative(
     listener u64
 ) void as foundation_runtime_net_listener_close
 
+extern c fn controlListenerNative(
+    listener u64,
+    &controller u64
+) i32 as foundation_runtime_net_listener_control
+
+extern c fn closeListenerControllerNative(
+    controller u64
+) void as foundation_runtime_net_listener_controller_close
+
+extern c fn releaseListenerControllerNative(
+    controller u64
+) void as foundation_runtime_net_listener_controller_release
+
 @callback(cancel = foundation_runtime_net_accept_cancel)
 extern c fn acceptNative(
     listener u64,
@@ -237,6 +250,16 @@ struct TcpListener {
     // Reports the actual local port, including an OS-selected port.
     Port u64
 
+    // Creates independent ownership of the listener stop capability.
+    fn Control(self) Result<own TcpListenerController, Error> {
+        var controller u64 = 0
+        const status = controlListenerNative(self.handle, &controller)
+        if status == 0 {
+            return .Ok(own TcpListenerController { handle = controller })
+        }
+        .Err(errorFor(status))
+    }
+
     // Closes a pending accept explicitly so an owning server lifecycle can stop promptly.
     fn Close(&self) bool {
         const handle = replace self.handle with 0
@@ -249,6 +272,27 @@ struct TcpListener {
         const handle = replace self.handle with 0
         if handle != 0 {
             closeListenerNative(handle)
+        }
+    }
+}
+
+// Owns the capability to stop one TCP listener and its pending accepts.
+@concurrent.Transferable()
+struct TcpListenerController {
+    handle u64
+
+    // Closes the listener and releases this controller.
+    fn Close(&self) bool {
+        const handle = replace self.handle with 0
+        if handle == 0 return false
+        closeListenerControllerNative(handle)
+        true
+    }
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            releaseListenerControllerNative(handle)
         }
     }
 }

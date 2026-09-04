@@ -520,6 +520,32 @@ fn controlledAbort() bool {
     aborted && stopped
 }
 
+fn controlledListenerClose() bool {
+    const listener = listenerOr(net.Listen("127.0.0.1", 0))
+    const controllerValue = listener.Control() else error {
+        discard error
+        discard listener
+        return false
+    }
+    var controller = controllerValue
+    const accepting = spawn net.Accept($listener)
+    const closed = controller.Close()
+    const net.AcceptOutcome { Listener Value } = $accepting.wait()
+    const stopped = match Value {
+        Ok(connection): {
+            discard connection
+            false
+        }
+        Err(error): match error {
+            Closed: true
+            _: false
+        }
+    }
+    discard controller
+    discard Listener
+    closed && stopped
+}
+
 fn deadlineRoundTrip() bool {
     const listener = listenerOr(net.Listen("127.0.0.1", 0))
     const port = listener.Port
@@ -582,6 +608,9 @@ fn main() i32 {
     }
     if !controlledAbort() {
         return 12
+    }
+    if !controlledListenerClose() {
+        return 13
     }
     var port u64 = 0
     const server = startServer(&port)

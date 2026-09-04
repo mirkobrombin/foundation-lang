@@ -503,7 +503,10 @@ void foundation_runtime_net_addresses_close(uint64_t addresses);
 int32_t foundation_runtime_net_listen(const fdn_string *address, uint64_t port,
                                       uint64_t backlog, uint64_t *listener,
                                       uint64_t *bound_port);
+int32_t foundation_runtime_net_listener_control(uint64_t listener, uint64_t* controller);
 void foundation_runtime_net_listener_close(uint64_t listener);
+void foundation_runtime_net_listener_controller_close(uint64_t controller);
+void foundation_runtime_net_listener_controller_release(uint64_t controller);
 void foundation_runtime_net_accept_start(uint64_t listener, uint64_t *connection,
                                          fdn_reactor_operation *operation);
 void foundation_runtime_net_accept_cancel(fdn_reactor_operation *operation);

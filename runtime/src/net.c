@@ -93,6 +93,12 @@ typedef struct fdn_net_connection {
 
 typedef struct fdn_net_listener {
     fdn_net_socket socket;
+    size_t references;
+#if defined(_WIN32)
+    CRITICAL_SECTION lock;
+#else
+    pthread_mutex_t lock;
+#endif
 } fdn_net_listener;
 
 typedef enum fdn_net_request_kind {
@@ -116,6 +122,7 @@ typedef struct fdn_net_request {
     fdn_net_socket socket;
     uint64_t deadline;
     bool cancelled;
+    bool closed;
     union {
         struct {
             fdn_net_listener *listener;
@@ -175,6 +182,8 @@ static atomic_uint_fast64_t fdn_net_services_count;
 
 static fdn_net_service *fdn_net_current_service;
 
+static void fdn_net_service_signal(fdn_net_service* service);
+
 static void fdn_net_global_enter(void) {
 #if defined(_WIN32)
     AcquireSRWLockExclusive(&fdn_net_global_lock);
@@ -231,6 +240,26 @@ static void fdn_net_connection_leave(fdn_net_connection *connection) {
 #else
     if (pthread_mutex_unlock(&connection->lock) != 0) {
         fdn_panic_cstr("network connection unlock failed");
+    }
+#endif
+}
+
+static void fdn_net_listener_enter(fdn_net_listener* listener) {
+#if defined(_WIN32)
+    EnterCriticalSection(&listener->lock);
+#else
+    if (pthread_mutex_lock(&listener->lock) != 0) {
+        fdn_panic_cstr("network listener lock failed");
+    }
+#endif
+}
+
+static void fdn_net_listener_leave(fdn_net_listener* listener) {
+#if defined(_WIN32)
+    LeaveCriticalSection(&listener->lock);
+#else
+    if (pthread_mutex_unlock(&listener->lock) != 0) {
+        fdn_panic_cstr("network listener unlock failed");
     }
 #endif
 }
@@ -754,19 +783,130 @@ int32_t foundation_runtime_net_listen(const fdn_string *address, uint64_t port,
     }
     listener = fdn_alloc(sizeof(*listener));
     listener->socket = native_socket;
+    listener->references = 1;
+#if defined(_WIN32)
+    InitializeCriticalSection(&listener->lock);
+#else
+    if (pthread_mutex_init(&listener->lock, NULL) != 0) {
+        fdn_dealloc(listener);
+        fdn_net_close_socket(native_socket);
+        fdn_panic_cstr("network listener initialization failed");
+    }
+#endif
     fdn_net_count_add(&fdn_net_listeners_count);
     *handle = (uint64_t)(uintptr_t)listener;
     return FDN_NET_OK;
 }
 
-void foundation_runtime_net_listener_close(uint64_t handle) {
-    fdn_net_listener *listener = (fdn_net_listener *)(uintptr_t)handle;
-    if (listener == NULL) {
-        return;
+static void fdn_net_listener_destroy(fdn_net_listener *listener) {
+    if (listener->socket != FDN_NET_INVALID_SOCKET) {
+        fdn_net_close_socket(listener->socket);
     }
-    fdn_net_close_socket(listener->socket);
+#if defined(_WIN32)
+    DeleteCriticalSection(&listener->lock);
+#else
+    if (pthread_mutex_destroy(&listener->lock) != 0) {
+        fdn_panic_cstr("network listener destroy failed");
+    }
+#endif
     fdn_dealloc(listener);
     fdn_net_count_remove(&fdn_net_listeners_count);
+}
+
+static void fdn_net_listener_release(fdn_net_listener *listener) {
+    bool destroy;
+    fdn_net_listener_enter(listener);
+    if (listener->references == 0) {
+        fdn_net_listener_leave(listener);
+        fdn_panic_cstr("network listener reference underflow");
+    }
+    --listener->references;
+    destroy = listener->references == 0;
+    fdn_net_listener_leave(listener);
+    if (destroy) {
+        fdn_net_listener_destroy(listener);
+    }
+}
+
+static void fdn_net_listener_stop_accepts(fdn_net_listener *listener) {
+    fdn_net_service *service;
+    fdn_net_request *request;
+    fdn_net_global_enter();
+    service = fdn_net_current_service;
+    if (service != NULL) {
+        fdn_net_service_enter(service);
+        for (request = service->requests; request != NULL; request = request->next) {
+            if (request->kind == FDN_NET_REQUEST_ACCEPT &&
+                request->value.accept.listener == listener) {
+                request->closed = true;
+            }
+        }
+        fdn_net_service_signal(service);
+        fdn_net_service_leave(service);
+    }
+    fdn_net_global_leave();
+}
+
+static void fdn_net_listener_close(fdn_net_listener *listener) {
+    fdn_net_socket socket = FDN_NET_INVALID_SOCKET;
+    fdn_net_listener_enter(listener);
+    if (listener->socket != FDN_NET_INVALID_SOCKET) {
+        socket = listener->socket;
+        listener->socket = FDN_NET_INVALID_SOCKET;
+    }
+    fdn_net_listener_leave(listener);
+    if (socket != FDN_NET_INVALID_SOCKET) {
+        fdn_net_close_socket(socket);
+        fdn_net_listener_stop_accepts(listener);
+    }
+}
+
+int32_t foundation_runtime_net_listener_control(uint64_t handle,
+                                                uint64_t *controller) {
+    fdn_net_listener *listener = (fdn_net_listener *)(uintptr_t)handle;
+    if (controller == NULL) {
+        fdn_panic_cstr("network listener controller output is null");
+    }
+    *controller = 0;
+    if (listener == NULL) {
+        return FDN_NET_CLOSED;
+    }
+    fdn_net_listener_enter(listener);
+    if (listener->socket == FDN_NET_INVALID_SOCKET) {
+        fdn_net_listener_leave(listener);
+        return FDN_NET_CLOSED;
+    }
+    if (listener->references == SIZE_MAX) {
+        fdn_net_listener_leave(listener);
+        fdn_panic_cstr("network listener reference overflow");
+    }
+    ++listener->references;
+    fdn_net_listener_leave(listener);
+    *controller = handle;
+    return FDN_NET_OK;
+}
+
+void foundation_runtime_net_listener_close(uint64_t handle) {
+    fdn_net_listener* listener = (fdn_net_listener*)(uintptr_t)handle;
+    if (listener != NULL) {
+        fdn_net_listener_close(listener);
+        fdn_net_listener_release(listener);
+    }
+}
+
+void foundation_runtime_net_listener_controller_close(uint64_t handle) {
+    fdn_net_listener* listener = (fdn_net_listener*)(uintptr_t)handle;
+    if (listener != NULL) {
+        fdn_net_listener_close(listener);
+        fdn_net_listener_release(listener);
+    }
+}
+
+void foundation_runtime_net_listener_controller_release(uint64_t handle) {
+    fdn_net_listener* listener = (fdn_net_listener*)(uintptr_t)handle;
+    if (listener != NULL) {
+        fdn_net_listener_release(listener);
+    }
 }
 
 static fdn_net_connection *fdn_net_connection_open(fdn_net_socket socket) {
@@ -1216,16 +1356,25 @@ static bool fdn_net_service_finish(fdn_net_service *service,
 }
 
 static int32_t fdn_net_accept_ready(fdn_net_request *request) {
+    fdn_net_listener *listener = request->value.accept.listener;
+    fdn_net_listener_enter(listener);
+    if (listener->socket == FDN_NET_INVALID_SOCKET ||
+        listener->socket != request->socket) {
+        fdn_net_listener_leave(listener);
+        return FDN_NET_CLOSED;
+    }
     for (;;) {
         fdn_net_socket native_socket =
             (fdn_net_socket)accept(request->socket, NULL, NULL);
         if (native_socket != FDN_NET_INVALID_SOCKET) {
             if (!fdn_net_nonblocking(native_socket)) {
                 fdn_net_close_socket(native_socket);
+                fdn_net_listener_leave(listener);
                 return FDN_NET_IO;
             }
             fdn_net_connection *connection = fdn_net_connection_open(native_socket);
             *request->value.accept.result = (uint64_t)(uintptr_t)connection;
+            fdn_net_listener_leave(listener);
             return FDN_NET_OK;
         }
         const int error = fdn_net_last_error();
@@ -1233,8 +1382,10 @@ static int32_t fdn_net_accept_ready(fdn_net_request *request) {
             continue;
         }
         if (fdn_net_would_block(error)) {
+            fdn_net_listener_leave(listener);
             return FDN_NET_PENDING;
         }
+        fdn_net_listener_leave(listener);
         return fdn_net_closed_error(error) ? FDN_NET_CLOSED : FDN_NET_IO;
     }
 }
@@ -1561,8 +1712,11 @@ static int fdn_net_poll(fdn_net_pollfd *descriptors, size_t count,
 #endif
 }
 
-static int32_t fdn_net_process_request(fdn_net_request *request, short events,
+static int32_t fdn_net_process_request(fdn_net_request* request, short events, bool closed,
                                        bool cancelled, bool timed_out) {
+    if (closed) {
+        return FDN_NET_CLOSED;
+    }
     if (cancelled) {
         return FDN_NET_CANCELLED;
     }
@@ -1669,6 +1823,7 @@ static void *fdn_net_service_thread(void *raw)
         for (index = 0; index < count; ++index) {
             request = requests[index];
             fdn_net_service_enter(service);
+            const bool closed = request->closed;
             const bool cancelled = request->cancelled;
             fdn_net_service_leave(service);
             const bool timed_out = fdn_net_deadline_expired(
@@ -1677,8 +1832,8 @@ static void *fdn_net_service_thread(void *raw)
                 descriptors[index + 1].revents == 0) {
                 continue;
             }
-            completion_status = fdn_net_process_request(
-                request, descriptors[index + 1].revents, cancelled, timed_out);
+            completion_status = fdn_net_process_request(request, descriptors[index + 1].revents,
+                                                        closed, cancelled, timed_out);
             if (completion_status != FDN_NET_PENDING) {
                 completed = request;
                 break;
@@ -1788,12 +1943,17 @@ void foundation_runtime_net_accept_start(uint64_t listener_handle,
     fdn_net_listener *listener =
         (fdn_net_listener *)(uintptr_t)listener_handle;
     fdn_net_request *request;
-    int32_t status;
     if (connection == NULL || operation == NULL) {
         fdn_panic_cstr("invalid network accept operation");
     }
     *connection = 0;
-    if (listener == NULL || listener->socket == FDN_NET_INVALID_SOCKET) {
+    if (listener == NULL) {
+        fdn_reactor_complete(operation, FDN_NET_CLOSED);
+        return;
+    }
+    fdn_net_listener_enter(listener);
+    if (listener->socket == FDN_NET_INVALID_SOCKET) {
+        fdn_net_listener_leave(listener);
         fdn_reactor_complete(operation, FDN_NET_CLOSED);
         return;
     }
@@ -1805,16 +1965,13 @@ void foundation_runtime_net_accept_start(uint64_t listener_handle,
     request->deadline = UINT64_MAX;
     request->value.accept.listener = listener;
     request->value.accept.result = connection;
-    status = fdn_net_accept_ready(request);
-    if (status != FDN_NET_PENDING) {
-        fdn_dealloc(request);
-        fdn_reactor_complete(operation, status);
-        return;
-    }
     if (!fdn_net_submit(request)) {
+        fdn_net_listener_leave(listener);
         fdn_dealloc(request);
         fdn_reactor_complete(operation, FDN_NET_IO);
+        return;
     }
+    fdn_net_listener_leave(listener);
 }
 
 void foundation_runtime_net_accept_cancel(fdn_reactor_operation *operation) {

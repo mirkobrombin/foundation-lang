@@ -17,6 +17,7 @@ int main(void) {
     const fdn_string loopback = fdn_string_static("127.0.0.1", 9);
     uint64_t addresses = 0;
     uint64_t listener = 0;
+    uint64_t listener_controller = 0;
     uint64_t second_listener = 0;
     uint64_t bound_port = 0;
     uint64_t second_port = 0;
@@ -53,10 +54,19 @@ int main(void) {
     require(listener != 0);
     require(bound_port != 0);
     require(foundation_runtime_net_live_listeners() == 1);
+    require(foundation_runtime_net_listener_control(listener, &listener_controller) == 0);
+    require(listener_controller == listener);
+    foundation_runtime_net_listener_controller_release(listener_controller);
+    listener_controller = 0;
+    require(foundation_runtime_net_listener_control(listener, &listener_controller) == 0);
     require(foundation_runtime_net_listen(&loopback, bound_port, UINT64_C(16),
                                           &second_listener, &second_port) == 10);
     require(second_listener == 0);
     require(second_port == 0);
+    foundation_runtime_net_listener_controller_close(listener_controller);
+    require(foundation_runtime_net_listener_control(listener, &listener_controller) == 4);
+    require(listener_controller == 0);
+    require(foundation_runtime_net_live_listeners() == 1);
     foundation_runtime_net_listener_close(listener);
     require(foundation_runtime_net_live_listeners() == 0);
     require(foundation_runtime_net_live_connections() == 0);

@@ -9,6 +9,8 @@ task Connect($host String, port u64) Result<own TcpConnection, Error>
 fn DeadlineAfter(duration time.Duration) Result<Deadline, Error>
 task ConnectUntil($host String, port u64, deadline Deadline) Result<own TcpConnection, Error>
 fn Listen($address String, port u64) Result<own TcpListener, Error>
+fn TcpListener.Control(self) Result<own TcpListenerController, Error>
+fn TcpListenerController.Close(&self) bool
 task Accept(listener own TcpListener) AcceptOutcome
 fn TcpConnection.Split($self) Result<StreamPair, Error>
 fn TcpConnection.SplitControlled($self) Result<ControlledStream, Error>
@@ -52,6 +54,12 @@ resolver call, but an expired deadline prevents the following connection attempt
 asks the operating system to choose an available port. `TcpListener.Port` reports the actual bound
 port. `Accept` waits through the callback reactor and returns the still-owned listener beside the
 accepted connection, so repeated acceptance never relies on a hidden shared lifetime.
+
+`TcpListener.Control` creates an independently owned stop capability before the listener moves
+into an accept loop. `TcpListenerController.Close` closes the listening socket, wakes every pending
+accept with `Error.Closed`, and releases the controller. Dropping the controller without closing it
+leaves the listener active. Servers can therefore close the controller, wait for their accept task,
+and release the returned listener in that order.
 
 `ReadLine` strips LF and one preceding CR, validates UTF-8, and caps the returned line at 16 MiB.
 `ReadLineLimited` uses the caller's byte limit. The limit covers returned UTF-8 bytes, excluding
