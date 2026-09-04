@@ -65,6 +65,179 @@ fn removeIsInvalidPath($value Result<void, fs.HostError>) bool {
     }
 }
 
+task exerciseStreaming($rootPath String) i32 {
+    const openedRoot = fs.OpenRoot(rootPath) else error {
+        discard error
+        return 1
+    }
+    const opening = spawn fs.OpenRootFile(
+        $openedRoot,
+        "stream.bin",
+        .Truncate
+    )
+    const openedOutcome = $opening.wait()
+    const fs.RootFileOpenOutcome {
+        Root as root
+        Value as openedValue
+    } = openedOutcome
+    const openedFile = openedValue else error {
+        discard error
+        discard root
+        return 2
+    }
+    const streamPayload = binaryPayload()
+    const writing = spawn fs.WriteFileChunk($openedFile, $streamPayload)
+    const writtenOutcome = $writing.wait()
+    const fs.FileOutcome { File as writtenFile Value as writtenValue } =
+        writtenOutcome
+    writtenValue else error {
+        discard error
+        discard writtenFile
+        discard root
+        return 3
+    }
+    const syncing = spawn fs.SyncFile($writtenFile)
+    const syncedOutcome = $syncing.wait()
+    const fs.FileOutcome { File as syncedFile Value as syncedValue } =
+        syncedOutcome
+    syncedValue else error {
+        discard error
+        discard syncedFile
+        discard root
+        return 4
+    }
+    var completedFile = syncedFile
+    const fileClosed = completedFile.Close() else error {
+        discard error
+        discard root
+        return 5
+    }
+    if !fileClosed {
+        discard root
+        return 5
+    }
+    var completedRoot = root
+    const rootClosed = completedRoot.Close() else error {
+        discard error
+        return 6
+    }
+    if !rootClosed return 6
+
+    const filePath = path.Join(rootPath, "stream.bin")
+    const readingOpen = spawn fs.OpenFile($filePath, .Read)
+    const readingValue = $readingOpen.wait()
+    const readingFile = readingValue else error {
+        discard error
+        return 7
+    }
+    const sizing = spawn fs.SizeFile($readingFile)
+    const sizedOutcome = $sizing.wait()
+    const fs.FileSizeOutcome { File as sizedFile Value as sizeValue } =
+        sizedOutcome
+    const size = sizeValue else error {
+        discard error
+        discard sizedFile
+        return 8
+    }
+    if size != 4 {
+        discard sizedFile
+        return 9
+    }
+    const seeking = spawn fs.SeekFile($sizedFile, 1)
+    const soughtOutcome = $seeking.wait()
+    const fs.FileOutcome { File as soughtFile Value as soughtValue } =
+        soughtOutcome
+    soughtValue else error {
+        discard error
+        discard soughtFile
+        return 10
+    }
+    const firstReading = spawn fs.ReadFileChunk($soughtFile, 2)
+    const firstOutcome = $firstReading.wait()
+    const fs.FileReadOutcome { File as firstFile Value as firstValue } =
+        firstOutcome
+    const firstOptional = firstValue else error {
+        discard error
+        discard firstFile
+        return 11
+    }
+    const first = match firstOptional {
+        None: {
+            discard firstFile
+            return 12
+        }
+        Some(value): value
+    }
+    const firstLength = first.Len() else error {
+        discard error
+        discard firstFile
+        return 13
+    }
+    const firstByte = first.At(0) else error {
+        discard error
+        discard firstFile
+        return 14
+    }
+    const secondByte = first.At(1) else error {
+        discard error
+        discard firstFile
+        return 15
+    }
+    if firstLength != 2 || firstByte != 255 || secondByte != 70 {
+        discard firstFile
+        return 16
+    }
+    const secondReading = spawn fs.ReadFileChunk($firstFile, 8)
+    const secondOutcome = $secondReading.wait()
+    const fs.FileReadOutcome { File as secondFile Value as secondValue } =
+        secondOutcome
+    const secondOptional = secondValue else error {
+        discard error
+        discard secondFile
+        return 17
+    }
+    const second = match secondOptional {
+        None: {
+            discard secondFile
+            return 18
+        }
+        Some(value): value
+    }
+    const secondLength = second.Len() else error {
+        discard error
+        discard secondFile
+        return 19
+    }
+    const newline = second.At(0) else error {
+        discard error
+        discard secondFile
+        return 20
+    }
+    if secondLength != 1 || newline != 10 {
+        discard secondFile
+        return 21
+    }
+    const eofReading = spawn fs.ReadFileChunk($secondFile, 8)
+    const eofOutcome = $eofReading.wait()
+    const fs.FileReadOutcome { File as eofFile Value as eofValue } = eofOutcome
+    const eofOptional = eofValue else error {
+        discard error
+        discard eofFile
+        return 22
+    }
+    const atEOF = match eofOptional {
+        None: true
+        Some(value): {
+            discard value
+            false
+        }
+    }
+    var completedRead = eofFile
+    discard completedRead.Close()
+    if !atEOF return 23
+    0
+}
+
 fn main(args [String]) i32 {
     const root = fs.CreateTempDirectory(args[0], "fdn-package") else error {
         discard error
@@ -105,6 +278,10 @@ fn main(args [String]) i32 {
         return 9
     }
     if length != 4 || first != 0 || second != 255 return 10
+
+    const streaming = spawn exerciseStreaming(text.Copy(root))
+    const streamingStatus = $streaming.wait()
+    if streamingStatus != 0 return 30 + streamingStatus
 
     var sha256 = bytes.NewSha256()
     sha256.WriteText("abc") else error {

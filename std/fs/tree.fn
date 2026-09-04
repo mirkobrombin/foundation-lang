@@ -1,6 +1,7 @@
 package std.fs
 
 import std.bytes
+import std.concurrent
 
 extern c fn openTreeNative(
     path String,
@@ -128,6 +129,7 @@ struct TreeReader {
 }
 
 // Creates directories and atomically writes files beneath one secure root.
+@concurrent.Transferable()
 struct RootWriter {
     handle u64
 

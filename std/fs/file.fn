@@ -1,0 +1,233 @@
+package std.fs
+
+import std.bytes
+import std.concurrent
+
+enum FileMode {
+    Read
+    Write
+    Truncate
+}
+
+@blocking
+extern c fn openFileNative(
+    path String,
+    mode u32,
+    &handle u64
+) i32 as foundation_runtime_fs_file_open
+
+@blocking
+extern c fn openRootFileNative(
+    rootHandle u64,
+    path String,
+    mode u32,
+    &handle u64
+) i32 as foundation_runtime_fs_root_file_open
+
+@blocking
+extern c fn readFileNative(
+    handle u64,
+    limit u64,
+    &result u64
+) i32 as foundation_runtime_fs_file_read
+
+@blocking
+extern c fn writeFileNative(
+    handle u64,
+    value u64
+) i32 as foundation_runtime_fs_file_write
+
+@blocking
+extern c fn seekFileNative(
+    handle u64,
+    offset u64
+) i32 as foundation_runtime_fs_file_seek
+
+@blocking
+extern c fn fileSizeNative(
+    handle u64,
+    &size u64
+) i32 as foundation_runtime_fs_file_size
+
+@blocking
+extern c fn syncFileNative(
+    handle u64
+) i32 as foundation_runtime_fs_file_sync
+
+extern c fn closeFileNative(
+    &handle u64
+) i32 as foundation_runtime_fs_file_close
+
+@concurrent.Transferable()
+struct File {
+    handle u64
+
+    fn Close(&self) Result<bool, HostError> {
+        if self.handle == 0 return .Ok(false)
+        const status = closeFileNative(&self.handle)
+        if status == 0 return .Ok(true)
+        .Err(hostErrorFor(status))
+    }
+
+    fn drop(&self) void {
+        discard closeFileNative(&self.handle)
+    }
+}
+
+struct FileOutcome {
+    File own File
+    Value Result<void, HostError>
+}
+
+struct FileReadOutcome {
+    File own File
+    Value Result<Option<own bytes.Bytes>, HostError>
+}
+
+struct FileSizeOutcome {
+    File own File
+    Value Result<u64, HostError>
+}
+
+struct RootFileOpenOutcome {
+    Root own RootWriter
+    Value Result<own File, HostError>
+}
+
+task OpenFile(
+    $path String,
+    mode FileMode
+) Result<own File, HostError> {
+    var handle u64 = 0
+    const status = openFileNative(path, fileModeCode(mode), &handle)
+    if status == 0 return .Ok(own File { handle = handle })
+    .Err(hostErrorFor(status))
+}
+
+task OpenRootFile(
+    $root own RootWriter,
+    $path String,
+    mode FileMode
+) RootFileOpenOutcome {
+    if root.handle == 0 {
+        return RootFileOpenOutcome {
+            Root = root
+            Value = .Err(.Closed)
+        }
+    }
+    var handle u64 = 0
+    const status = openRootFileNative(
+        root.handle,
+        path,
+        fileModeCode(mode),
+        &handle
+    )
+    if status == 0 {
+        return RootFileOpenOutcome {
+            Root = root
+            Value = .Ok(own File { handle = handle })
+        }
+    }
+    RootFileOpenOutcome {
+        Root = root
+        Value = .Err(hostErrorFor(status))
+    }
+}
+
+task ReadFileChunk(
+    $file own File,
+    limit u64
+) FileReadOutcome {
+    if file.handle == 0 {
+        return FileReadOutcome {
+            File = file
+            Value = .Err(.Closed)
+        }
+    }
+    if limit == 0 {
+        return FileReadOutcome {
+            File = file
+            Value = .Err(.TooLarge)
+        }
+    }
+    var handle u64 = 0
+    const status = readFileNative(file.handle, limit, &handle)
+    if status != 0 {
+        return FileReadOutcome {
+            File = file
+            Value = .Err(hostErrorFor(status))
+        }
+    }
+    if handle == 0 {
+        return FileReadOutcome {
+            File = file
+            Value = .Ok(.None)
+        }
+    }
+    const value = bytes.ClaimRuntimeHandle(handle) else error {
+        discard error
+        return FileReadOutcome {
+            File = file
+            Value = .Err(.Io)
+        }
+    }
+    FileReadOutcome {
+        File = file
+        Value = .Ok(.Some(value))
+    }
+}
+
+task WriteFileChunk(
+    $file own File,
+    $value own bytes.Bytes
+) FileOutcome {
+    if file.handle == 0 {
+        discard value
+        return FileOutcome { File = file Value = .Err(.Closed) }
+    }
+    const status = writeFileNative(file.handle, bytes.RuntimeHandle(value))
+    discard value
+    if status == 0 return FileOutcome { File = file Value = .Ok }
+    FileOutcome { File = file Value = .Err(hostErrorFor(status)) }
+}
+
+task SeekFile(
+    $file own File,
+    offset u64
+) FileOutcome {
+    if file.handle == 0 {
+        return FileOutcome { File = file Value = .Err(.Closed) }
+    }
+    const status = seekFileNative(file.handle, offset)
+    if status == 0 return FileOutcome { File = file Value = .Ok }
+    FileOutcome { File = file Value = .Err(hostErrorFor(status)) }
+}
+
+task SizeFile($file own File) FileSizeOutcome {
+    if file.handle == 0 {
+        return FileSizeOutcome { File = file Value = .Err(.Closed) }
+    }
+    var size u64 = 0
+    const status = fileSizeNative(file.handle, &size)
+    if status == 0 {
+        return FileSizeOutcome { File = file Value = .Ok(size) }
+    }
+    FileSizeOutcome { File = file Value = .Err(hostErrorFor(status)) }
+}
+
+task SyncFile($file own File) FileOutcome {
+    if file.handle == 0 {
+        return FileOutcome { File = file Value = .Err(.Closed) }
+    }
+    const status = syncFileNative(file.handle)
+    if status == 0 return FileOutcome { File = file Value = .Ok }
+    FileOutcome { File = file Value = .Err(hostErrorFor(status)) }
+}
+
+fn fileModeCode(mode FileMode) u32 {
+    match mode {
+        Read: 1
+        Write: 2
+        Truncate: 3
+    }
+}

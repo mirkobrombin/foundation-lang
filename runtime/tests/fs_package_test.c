@@ -154,6 +154,7 @@ static int filesystem_root_is_rejected(const fdn_string *path) {
 
 static int run_test(int argc, char **argv) {
     static const uint8_t payload_data[] = {0, 0xff, 'F', '\n'};
+    static const uint8_t patched_data[] = {0, 0xff, 'o', 'k'};
     fdn_string parent;
     fdn_string prefix = fdn_string_static("fdn-package", 11);
     fdn_string root = fdn_string_static("", 0);
@@ -161,12 +162,18 @@ static int run_test(int argc, char **argv) {
     fdn_string nested = fdn_string_static("nested/deep", 11);
     fdn_string payload_relative = fdn_string_static("nested/deep/payload.bin", 23);
     fdn_string keep_relative = fdn_string_static("keep.bin", 8);
+    fdn_string file_link_relative = fdn_string_static("payload-link", 12);
     fdn_string payload_value = fdn_string_static(
         (const char *)payload_data, sizeof(payload_data));
+    fdn_string patch_value = fdn_string_static("ok", 2);
     uint64_t payload = 0;
+    uint64_t patch = 0;
     uint64_t root_writer = 0;
     uint64_t outside_writer = 0;
     uint64_t read = 0;
+    uint64_t file = 0;
+    uint64_t chunk = 0;
+    uint64_t size = 0;
     const uint8_t *read_data = NULL;
     size_t read_length = 0;
     char payload_path[4096];
@@ -185,7 +192,8 @@ static int run_test(int argc, char **argv) {
     }
     parent = text(argv[1]);
     payload = foundation_runtime_bytes_from_text(&payload_value);
-    if (payload == 0 ||
+    patch = foundation_runtime_bytes_from_text(&patch_value);
+    if (payload == 0 || patch == 0 ||
         foundation_runtime_fs_create_temp_directory(&parent, &prefix, &root) != 0 ||
         foundation_runtime_fs_create_temp_directory(&parent, &prefix, &outside) != 0 ||
         !join_path(payload_path, sizeof(payload_path), &root,
@@ -207,7 +215,6 @@ static int run_test(int argc, char **argv) {
         foundation_runtime_fs_root_create_directory(root_writer, &nested) != 0 ||
         foundation_runtime_fs_root_write_file(root_writer, &payload_relative,
                                               payload, 416) != 0 ||
-        foundation_runtime_fs_root_close(&root_writer) != 0 ||
         foundation_runtime_fs_root_open(&outside, &outside_writer) != 0 ||
         foundation_runtime_fs_root_write_file(outside_writer, &keep_relative,
                                               payload, 384) != 0 ||
@@ -225,43 +232,106 @@ static int run_test(int argc, char **argv) {
         return 4;
     }
     foundation_runtime_bytes_close(&read);
+    if (foundation_runtime_fs_file_open(&payload_path_value, 1, &file) != 0 ||
+        foundation_runtime_fs_file_size(file, &size) != 0 ||
+        size != sizeof(payload_data) ||
+        foundation_runtime_fs_file_read(file, 2, &chunk) != 0 ||
+        fdn_bytes_view(chunk, &read_data, &read_length) != 0 ||
+        read_length != 2 || memcmp(read_data, payload_data, 2) != 0) {
+        return 5;
+    }
+    foundation_runtime_bytes_close(&chunk);
+    if (foundation_runtime_fs_file_seek(file, 2) != 0 ||
+        foundation_runtime_fs_file_read(file, 8, &chunk) != 0 ||
+        fdn_bytes_view(chunk, &read_data, &read_length) != 0 ||
+        read_length != 2 || memcmp(read_data, payload_data + 2, 2) != 0) {
+        return 6;
+    }
+    foundation_runtime_bytes_close(&chunk);
+    if (foundation_runtime_fs_file_read(file, 8, &chunk) != 0 || chunk != 0 ||
+        foundation_runtime_fs_file_close(&file) != 0 || file != 0 ||
+        foundation_runtime_fs_file_close(&file) != 0) {
+        return 7;
+    }
+    if (foundation_runtime_fs_file_open(&payload_path_value, 2, &file) != 0 ||
+        foundation_runtime_fs_file_seek(file, 2) != 0 ||
+        foundation_runtime_fs_file_write(file, patch) != 0 ||
+        foundation_runtime_fs_file_sync(file) != 0 ||
+        foundation_runtime_fs_file_close(&file) != 0 ||
+        foundation_runtime_fs_read_bytes_sync_limited(
+            &payload_path_value, sizeof(patched_data), &read) != 0 ||
+        fdn_bytes_view(read, &read_data, &read_length) != 0 ||
+        read_length != sizeof(patched_data) ||
+        memcmp(read_data, patched_data, sizeof(patched_data)) != 0) {
+        return 8;
+    }
+    foundation_runtime_bytes_close(&read);
+    if (foundation_runtime_fs_file_open(&payload_path_value, 3, &file) != 0 ||
+        foundation_runtime_fs_file_write(file, payload) != 0 ||
+        foundation_runtime_fs_file_sync(file) != 0 ||
+        foundation_runtime_fs_file_close(&file) != 0 ||
+        foundation_runtime_fs_root_file_open(root_writer, &payload_relative,
+                                             1, &file) != 0 ||
+        foundation_runtime_fs_file_read(file, sizeof(payload_data), &chunk) != 0 ||
+        fdn_bytes_view(chunk, &read_data, &read_length) != 0 ||
+        read_length != sizeof(payload_data) ||
+        memcmp(read_data, payload_data, sizeof(payload_data)) != 0 ||
+        foundation_runtime_fs_file_close(&file) != 0) {
+        return 9;
+    }
+    foundation_runtime_bytes_close(&chunk);
+    {
+        fdn_string invalid_relative = fdn_string_static("../outside", 10);
+        if (foundation_runtime_fs_root_file_open(
+                root_writer, &invalid_relative, 1, &file) != 3 ||
+            file != 0) {
+            return 10;
+        }
+    }
     if (foundation_runtime_fs_remove_tree(&alias_path_value, 64, 8) != 3 ||
         foundation_runtime_fs_remove_tree(&root, 64, 129) != 5 ||
         !filesystem_root_is_rejected(&root) ||
         foundation_runtime_fs_exists(&payload_path_value, &exists) != 0 ||
         !exists) {
-        return 5;
+        return 11;
     }
     links_created = create_links(file_link, keep_path, directory_link,
                                  outside_path);
 #if !defined(_WIN32)
     if (links_created == 0) {
-        return 6;
+        return 12;
     }
 #endif
     if (links_created != 0 &&
         (foundation_runtime_fs_read_bytes_sync_limited(
              &file_link_value, sizeof(payload_data), &read) != 3 ||
-         read != 0)) {
-        return 7;
+         read != 0 ||
+         foundation_runtime_fs_root_file_open(root_writer, &file_link_relative,
+                                              1, &file) != 3 ||
+         file != 0)) {
+        return 13;
+    }
+    if (foundation_runtime_fs_root_close(&root_writer) != 0) {
+        return 14;
     }
     if (foundation_runtime_fs_remove_tree(&root, 1, 8) != 5 ||
         foundation_runtime_fs_exists(&root, &exists) != 0 || !exists ||
         foundation_runtime_fs_remove_tree(&root, 64, 8) != 0 ||
         foundation_runtime_fs_exists(&root, &exists) != 0 || exists) {
-        return 8;
+        return 15;
     }
     {
         fdn_string keep_value = text(keep_path);
         if (foundation_runtime_fs_exists(&keep_value, &exists) != 0 || !exists ||
             foundation_runtime_fs_remove_tree(&outside, 8, 4) != 0) {
-            return 9;
+            return 16;
         }
     }
     foundation_runtime_bytes_close(&payload);
+    foundation_runtime_bytes_close(&patch);
     fdn_string_drop(&root);
     fdn_string_drop(&outside);
-    return fdn_live_allocations() == 0 ? 0 : 10;
+    return fdn_live_allocations() == 0 ? 0 : 17;
 }
 
 int main(int argc, char **argv) {

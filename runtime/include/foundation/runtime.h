@@ -444,6 +444,22 @@ int32_t foundation_runtime_fs_root_write_file(
     uint64_t handle, const fdn_string *relative_path, uint64_t bytes_handle,
     uint32_t permissions);
 int32_t foundation_runtime_fs_root_close(uint64_t *handle);
+int32_t foundation_runtime_fs_file_open(const fdn_string *path,
+                                        uint32_t mode,
+                                        uint64_t *handle);
+int32_t foundation_runtime_fs_root_file_open(uint64_t root_handle,
+                                             const fdn_string *path,
+                                             uint32_t mode,
+                                             uint64_t *handle);
+int32_t foundation_runtime_fs_file_read(uint64_t handle,
+                                        uint64_t limit,
+                                        uint64_t *bytes_handle);
+int32_t foundation_runtime_fs_file_write(uint64_t handle,
+                                         uint64_t bytes_handle);
+int32_t foundation_runtime_fs_file_seek(uint64_t handle, uint64_t offset);
+int32_t foundation_runtime_fs_file_size(uint64_t handle, uint64_t *size);
+int32_t foundation_runtime_fs_file_sync(uint64_t handle);
+int32_t foundation_runtime_fs_file_close(uint64_t *handle);
 void foundation_runtime_fs_watch_start(const fdn_string* path, uint64_t interval_milliseconds,
                                        uint32_t* kind, fdn_string* event_path,
                                        fdn_reactor_operation* operation);

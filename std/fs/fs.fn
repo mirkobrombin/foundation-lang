@@ -29,6 +29,7 @@ enum HostError {
     Unsupported
     NotEmpty
     CrossDevice
+    Closed
 }
 
 enum EntryKind {

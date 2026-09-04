@@ -11,6 +11,13 @@ fn OpenLines(path String) Result<own LineReader, Error>
 fn OpenDir(path String) Result<own DirReader, Error>
 fn OpenTree(path String, maxEntries u64, maxPathLength u64) Result<own TreeReader, Error>
 fn OpenRoot(path String) Result<own RootWriter, Error>
+task OpenFile($path String, mode FileMode) Result<own File, HostError>
+task OpenRootFile($root own RootWriter, $path String, mode FileMode) RootFileOpenOutcome
+task ReadFileChunk($file own File, limit u64) FileReadOutcome
+task WriteFileChunk($file own File, $value own bytes.Bytes) FileOutcome
+task SeekFile($file own File, offset u64) FileOutcome
+task SizeFile($file own File) FileSizeOutcome
+task SyncFile($file own File) FileOutcome
 fn LineReader.NextLimited(&self, limit u64) Result<Option<String>, Error>
 fn TreeReader.Next(&self) Result<Option<TreeEntry>, Error>
 fn TreeReader.ReadFile(self, path String, limit u64) Result<own bytes.Bytes, Error>
@@ -60,6 +67,18 @@ empty components, `.`, `..`, backslashes, absolute roots, and embedded zero byte
 creation refuses symbolic links and reparse points. File writes use an exclusive temporary file,
 flush its contents, and replace the destination atomically. POSIX applies the requested lower nine
 permission bits; Windows keeps the destination ACL because POSIX modes do not exist there.
+
+`File` streams regular binary files through the bounded blocking executor. `ReadFileChunk`
+returns at most the requested positive byte count and distinguishes clean EOF with `None`.
+`WriteFileChunk` writes the complete supplied value. `SeekFile` uses an absolute byte offset,
+`SizeFile` reads the current file length, and `SyncFile` flushes written data before an explicit
+close. `Write` mode creates a missing file and preserves existing contents; `Truncate` creates or
+empties it. Reads and writes reject symbolic final components and non-regular files.
+
+`OpenRootFile` applies the same streaming operations to a relative path beneath a held
+`RootWriter`. It validates every relative component and holds parent directories against
+replacement while opening the file. Call `RootWriter.CreateDirectory` first when a writable
+nested parent does not exist. The returned file remains valid after the root closes.
 
 `ReadPrivateTextLimited` accepts only regular files and refuses symbolic links on POSIX and
 reparse points on Windows. `CreatePrivateDirectory` creates missing ancestors without changing
