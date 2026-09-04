@@ -517,9 +517,15 @@ int32_t foundation_runtime_net_peer_address(uint64_t connection,
                                             fdn_string *address);
 int32_t foundation_runtime_net_split(uint64_t connection, uint64_t *reader,
                                      uint64_t *writer);
+int32_t foundation_runtime_net_split_controlled(uint64_t connection,
+                                                uint64_t *reader,
+                                                uint64_t *writer,
+                                                uint64_t *controller);
 void foundation_runtime_net_connection_close(uint64_t connection);
 void foundation_runtime_net_reader_close(uint64_t reader);
 void foundation_runtime_net_writer_close(uint64_t writer);
+void foundation_runtime_net_controller_close(uint64_t controller);
+void foundation_runtime_net_controller_abort(uint64_t controller);
 void foundation_runtime_net_read_line_start(uint64_t reader, uint64_t limit,
                                             fdn_string *line,
                                             fdn_reactor_operation *operation);

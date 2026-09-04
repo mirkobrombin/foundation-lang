@@ -885,6 +885,34 @@ int32_t foundation_runtime_net_split(uint64_t handle, uint64_t *reader,
     return FDN_NET_OK;
 }
 
+int32_t foundation_runtime_net_split_controlled(uint64_t handle,
+                                                uint64_t *reader,
+                                                uint64_t *writer,
+                                                uint64_t *controller) {
+    fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)handle;
+    if (reader == NULL || writer == NULL || controller == NULL) {
+        fdn_panic_cstr("network controlled split output is null");
+    }
+    *reader = 0;
+    *writer = 0;
+    *controller = 0;
+    if (connection == NULL) {
+        return FDN_NET_CLOSED;
+    }
+    fdn_net_connection_enter(connection);
+    if (!connection->full_open || connection->socket == FDN_NET_INVALID_SOCKET) {
+        fdn_net_connection_leave(connection);
+        return FDN_NET_CLOSED;
+    }
+    connection->full_open = false;
+    connection->references = 4;
+    fdn_net_connection_leave(connection);
+    *reader = handle;
+    *writer = handle;
+    *controller = handle;
+    return FDN_NET_OK;
+}
+
 int32_t foundation_runtime_net_peer_address(uint64_t handle,
                                             fdn_string *address) {
     fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)handle;
@@ -978,6 +1006,29 @@ void foundation_runtime_net_writer_close(uint64_t handle) {
         fdn_net_close_half(connection, false);
         fdn_net_connection_release(connection);
     }
+}
+
+void foundation_runtime_net_controller_close(uint64_t handle) {
+    fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)handle;
+    if (connection != NULL) {
+        fdn_net_connection_release(connection);
+    }
+}
+
+void foundation_runtime_net_controller_abort(uint64_t handle) {
+    fdn_net_connection *connection = (fdn_net_connection *)(uintptr_t)handle;
+    if (connection == NULL) {
+        return;
+    }
+    fdn_net_connection_enter(connection);
+    if (connection->socket != FDN_NET_INVALID_SOCKET) {
+        connection->read_open = false;
+        connection->write_open = false;
+        fdn_net_shutdown(connection->socket, 0);
+        fdn_net_shutdown(connection->socket, 1);
+    }
+    fdn_net_connection_leave(connection);
+    fdn_net_connection_release(connection);
 }
 
 static bool fdn_net_service_wake_open(fdn_net_service *service) {

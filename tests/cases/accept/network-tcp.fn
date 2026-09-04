@@ -43,6 +43,16 @@ fn pairOr($value Result<net.StreamPair, net.Error>) net.StreamPair {
     pair
 }
 
+fn controlledOr(
+    $value Result<net.ControlledStream, net.Error>
+) net.ControlledStream {
+    const stream = value else error {
+        discard error
+        panic("TCP controlled split failed")
+    }
+    stream
+}
+
 fn lineOr($value Result<Option<String>, net.Error>) String {
     match value {
         Ok(optional): match optional {
@@ -188,6 +198,31 @@ fn isByteEof(
             false
         }
     }
+}
+
+fn isStoppedRead(
+    $value Result<Option<own bytes.Bytes>, net.Error>
+) bool {
+    match value {
+        Ok(optional): match optional {
+            None: true
+            Some(content): {
+                discard content
+                false
+            }
+        }
+        Err(error): match error {
+            Closed: true
+            _: false
+        }
+    }
+}
+
+task abortTcp($controller own net.TcpController) bool {
+    var active = controller
+    const aborted = active.Abort()
+    discard active
+    aborted
 }
 
 fn isInvalidLimit(
@@ -460,6 +495,31 @@ fn listenerRoundTrip() bool {
     success
 }
 
+fn controlledAbort() bool {
+    const listener = listenerOr(net.Listen("127.0.0.1", 0))
+    const port = listener.Port
+    const accepting = spawn net.Accept($listener)
+    const connecting = spawn net.Connect("127.0.0.1", port)
+    const client = connectionOr($connecting.wait())
+    const net.AcceptOutcome {
+        Listener
+        Value as accepted
+    } = $accepting.wait()
+    const server = connectionOr($accepted)
+    const stream = controlledOr(client.SplitControlled())
+    const net.ControlledStream { Reader Writer Controller } = stream
+    const reading = spawn net.ReadSomeBytes($Reader, 1)
+    const aborting = spawn abortTcp($Controller)
+    const net.ReadSomeBytesOutcome { Reader as restored Value } = $reading.wait()
+    const aborted = $aborting.wait()
+    const stopped = isStoppedRead($Value)
+    discard restored
+    discard Writer
+    discard server
+    discard Listener
+    aborted && stopped
+}
+
 fn deadlineRoundTrip() bool {
     const listener = listenerOr(net.Listen("127.0.0.1", 0))
     const port = listener.Port
@@ -519,6 +579,9 @@ fn main() i32 {
     }
     if !deadlineRoundTrip() {
         return 10
+    }
+    if !controlledAbort() {
+        return 12
     }
     var port u64 = 0
     const server = startServer(&port)

@@ -11,6 +11,7 @@ task ConnectUntil($host String, port u64, deadline Deadline) Result<own TcpConne
 fn Listen($address String, port u64) Result<own TcpListener, Error>
 task Accept(listener own TcpListener) AcceptOutcome
 fn TcpConnection.Split($self) Result<StreamPair, Error>
+fn TcpConnection.SplitControlled($self) Result<ControlledStream, Error>
 task ReadLine(reader own TcpReader) ReadLineOutcome
 task ReadLineLimited(reader own TcpReader, limit u64) ReadLineOutcome
 task ReadLineLimitedUntil(reader own TcpReader, limit u64, deadline Deadline) ReadLineOutcome
@@ -35,6 +36,10 @@ renders the same portable form and adds IPv6 brackets when required.
 through the callback reactor. A successful call owns one connection. `Split` consumes that
 connection and returns independently owned read and write halves, so one read task and one write
 task can run at the same time without sharing mutable Foundation state.
+
+`SplitControlled` also returns a `TcpController`. Its `Abort` method shuts down both socket
+directions and releases the controller, which lets a full-duplex relay unblock both pending halves
+before joining their tasks. Dropping the controller without aborting leaves the two halves active.
 
 `DeadlineAfter` converts one positive duration into an absolute monotonic `Deadline`. The four
 `Until` operations share that value, so a protocol can enforce one deadline across connection,
@@ -87,5 +92,4 @@ The error enum distinguishes `InvalidAddress`, `ResolveFailed`, `Refused`, `Clos
 be in the range 1 through 65535. Listen ports may also be zero. Allocation failure remains a fatal
 panic.
 
-TLS is not part of this package yet. A future TLS package will wrap the same owned stream model
-without exposing platform TLS handles to Foundation code.
+TLS streams use the same controlled split model through `foundation.tls`.

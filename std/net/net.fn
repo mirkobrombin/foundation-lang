@@ -77,6 +77,12 @@ extern c fn splitNative(
     &reader u64,
     &writer u64
 ) i32 as foundation_runtime_net_split
+extern c fn splitControlledNative(
+    connection u64,
+    &reader u64,
+    &writer u64,
+    &controller u64
+) i32 as foundation_runtime_net_split_controlled
 extern c fn peerAddressNative(
     connection u64,
     &address String
@@ -90,6 +96,12 @@ extern c fn closeReaderNative(
 extern c fn closeWriterNative(
     writer u64
 ) void as foundation_runtime_net_writer_close
+extern c fn closeControllerNative(
+    controller u64
+) void as foundation_runtime_net_controller_close
+extern c fn abortControllerNative(
+    controller u64
+) void as foundation_runtime_net_controller_abort
 
 @callback(cancel = foundation_runtime_net_read_line_cancel)
 extern c fn readLineNative(
@@ -267,6 +279,27 @@ struct TcpConnection {
         .Err(errorFor(status))
     }
 
+    // Consumes the connection and keeps independent control for aborting both halves.
+    fn SplitControlled($self) Result<ControlledStream, Error> {
+        var reader u64 = 0
+        var writer u64 = 0
+        var controller u64 = 0
+        const status = splitControlledNative(
+            self.handle,
+            &reader,
+            &writer,
+            &controller
+        )
+        if status == 0 {
+            return .Ok(ControlledStream {
+                Reader = own TcpReader { handle = reader }
+                Writer = own TcpWriter { handle = writer }
+                Controller = own TcpController { handle = controller }
+            })
+        }
+        .Err(errorFor(status))
+    }
+
     fn drop(&self) void {
         const handle = replace self.handle with 0
         if handle != 0 {
@@ -301,6 +334,27 @@ struct TcpWriter {
     }
 }
 
+// Owns cancellation control for both halves of one split TCP connection.
+@concurrent.Transferable()
+struct TcpController {
+    handle u64
+
+    // Closes both halves and releases this controller.
+    fn Abort(&self) bool {
+        const handle = replace self.handle with 0
+        if handle == 0 return false
+        abortControllerNative(handle)
+        true
+    }
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            closeControllerNative(handle)
+        }
+    }
+}
+
 // Returns independent read and write owners for one connection.
 @concurrent.Transferable()
 struct StreamPair {
@@ -308,6 +362,14 @@ struct StreamPair {
     Reader own TcpReader
     // Owns all future writes to the connection.
     Writer own TcpWriter
+}
+
+// Owns independent TCP stream halves and shared abort control.
+@concurrent.Transferable()
+struct ControlledStream {
+    Reader own TcpReader
+    Writer own TcpWriter
+    Controller own TcpController
 }
 
 // Restores a listener owner beside one accepted connection result.
