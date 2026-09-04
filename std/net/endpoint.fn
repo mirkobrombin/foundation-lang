@@ -1,0 +1,126 @@
+package std.net
+
+import std.format
+import std.parse
+import std.text
+
+// Identifies one TCP host and port parsed from a portable endpoint string.
+struct Endpoint {
+    // Contains a DNS name or an IPv4 or IPv6 literal without brackets.
+    Host String
+
+    // Contains a connectable TCP port in the range 1 through 65535.
+    Port u16
+
+    // Renders the endpoint with brackets around an IPv6 literal.
+    fn Address(self) String {
+        const port = format.U16(self.Port)
+        if text.Contains(self.Host, ":") {
+            return "[" + self.Host + "]:" + port
+        }
+        self.Host + ":" + port
+    }
+}
+
+// Parses `host:port` or `[IPv6]:port` and requires a nonzero TCP port.
+fn ParseEndpoint(value String) Result<Endpoint, Error> {
+    const length = text.ByteLen(value)
+    if length < 3 return .Err(.InvalidAddress)
+    if endpointByte(value, 0) == 91 {
+        return parseBracketedEndpoint(value, length)
+    }
+    const separator = lastEndpointByte(value, length, 58)
+    if separator == 0 || separator >= length - 1 {
+        return .Err(.InvalidAddress)
+    }
+    if firstEndpointByte(value, separator, 58) != separator {
+        return .Err(.InvalidAddress)
+    }
+    const host = text.Slice(value, 0, separator) else error {
+        discard error
+        return .Err(.InvalidAddress)
+    }
+    const portText = text.Slice(value, separator + 1, length) else error {
+        discard error
+        discard host
+        return .Err(.InvalidAddress)
+    }
+    endpointFrom($host, $portText)
+}
+
+fn parseBracketedEndpoint(
+    value String,
+    length u64
+) Result<Endpoint, Error> {
+    const closing = firstEndpointByte(value, length, 93)
+    if closing <= 1 || closing + 2 >= length ||
+        endpointByte(value, closing + 1) != 58 {
+        return .Err(.InvalidAddress)
+    }
+    const host = text.Slice(value, 1, closing) else error {
+        discard error
+        return .Err(.InvalidAddress)
+    }
+    const portText = text.Slice(value, closing + 2, length) else error {
+        discard error
+        discard host
+        return .Err(.InvalidAddress)
+    }
+    endpointFrom($host, $portText)
+}
+
+fn endpointFrom(
+    $host String,
+    $portText String
+) Result<Endpoint, Error> {
+    const parsed = parse.U64(portText) else error {
+        discard error
+        discard host
+        return .Err(.InvalidAddress)
+    }
+    discard portText
+    if parsed == 0 || parsed > 65535 {
+        discard host
+        return .Err(.InvalidAddress)
+    }
+    const port = u16.From(parsed) else error {
+        discard error
+        discard host
+        return .Err(.InvalidAddress)
+    }
+    .Ok(Endpoint { Host = host Port = port })
+}
+
+fn firstEndpointByte(
+    value String,
+    limit u64,
+    expected u64
+) u64 {
+    var offset u64 = 0
+    while offset < limit {
+        if endpointByte(value, offset) == expected return offset
+        offset += 1
+    }
+    limit
+}
+
+fn lastEndpointByte(
+    value String,
+    limit u64,
+    expected u64
+) u64 {
+    var offset = limit
+    while offset > 0 {
+        if endpointByte(value, offset - 1) == expected return offset - 1
+        offset -= 1
+    }
+    limit
+}
+
+fn endpointByte(value String, offset u64) u64 {
+    const result = text.ByteAt(value, offset) else error {
+        discard error
+        panic("endpoint byte boundary invariant failed")
+    }
+    result
+}

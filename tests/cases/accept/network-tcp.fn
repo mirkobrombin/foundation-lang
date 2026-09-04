@@ -319,6 +319,44 @@ fn listenerOr($value Result<own net.TcpListener, net.Error>) own net.TcpListener
     listener
 }
 
+fn invalidEndpoint(value String) bool {
+    match net.ParseEndpoint(value) {
+        Ok(endpoint): {
+            discard endpoint
+            false
+        }
+        Err(error): match error {
+            InvalidAddress: true
+            _: false
+        }
+    }
+}
+
+fn endpointChecks() bool {
+    const domain = net.ParseEndpoint("example.com:443") else error {
+        discard error
+        return false
+    }
+    const ipv4 = net.ParseEndpoint("127.0.0.1:8080") else error {
+        discard error
+        return false
+    }
+    const ipv6 = net.ParseEndpoint("[::1]:65535") else error {
+        discard error
+        return false
+    }
+    domain.Host == "example.com" && domain.Port == 443 &&
+        domain.Address() == "example.com:443" &&
+        ipv4.Host == "127.0.0.1" && ipv4.Port == 8080 &&
+        ipv4.Address() == "127.0.0.1:8080" &&
+        ipv6.Host == "::1" && ipv6.Port == 65535 &&
+        ipv6.Address() == "[::1]:65535" &&
+        invalidEndpoint(":80") && invalidEndpoint("example.com") &&
+        invalidEndpoint("example.com:0") &&
+        invalidEndpoint("example.com:65536") &&
+        invalidEndpoint("::1:80") && invalidEndpoint("[::1]x:80")
+}
+
 fn listenerRoundTrip() bool {
     const listener = listenerOr(net.Listen("127.0.0.1", 0))
     const port = listener.Port
@@ -473,6 +511,9 @@ fn deadlineRoundTrip() bool {
 }
 
 fn main() i32 {
+    if !endpointChecks() {
+        return 11
+    }
     if !listenerRoundTrip() {
         return 9
     }

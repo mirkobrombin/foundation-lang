@@ -24,7 +24,12 @@ task WriteAll(writer own TcpWriter, $text String) WriteOutcome
 task WriteAllUntil(writer own TcpWriter, $text String, deadline Deadline) WriteOutcome
 task WriteAllBytes(writer own TcpWriter, value own bytes.Bytes) WriteOutcome
 task WriteAllBytesUntil(writer own TcpWriter, value own bytes.Bytes, deadline Deadline) WriteOutcome
+fn ParseEndpoint(value String) Result<Endpoint, Error>
 ```
+
+`ParseEndpoint` accepts `host:port` and bracketed `[IPv6]:port` strings. It rejects an empty host,
+an absent or zero port, ports above 65535, trailing data, and unbracketed IPv6. `Endpoint.Address`
+renders the same portable form and adds IPv6 brackets when required.
 
 `Connect` resolves the host on the bounded blocking executor, then attempts the returned addresses
 through the callback reactor. A successful call owns one connection. `Split` consumes that
