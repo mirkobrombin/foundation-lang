@@ -1,7 +1,8 @@
 package foundation.web
 
-import std.collections
+import foundation.worker
 import std.bytes
+import std.collections
 import std.concurrent
 import std.format
 import std.net
@@ -989,7 +990,13 @@ struct Server<E> {
         spawn serveOne<E>($self)
     }
 
-    // Serves sequential requests until cancellation is observed between accepted requests.
+    // Accepts a bounded batch while serving established connections concurrently.
+    fn ServeBatch($self, requests u64) Task<own ServeOutcome<E>> {
+        const source = concurrent.NewCancellationSource()
+        spawn serveConcurrent<E>($self, source.Token(), requests, true)
+    }
+
+    // Serves established connections concurrently until cancellation is observed before accept.
     fn ServeUntil(
         $self,
         $cancellation concurrent.Cancellation
@@ -1012,6 +1019,27 @@ struct ConnectionOutcome<E> {
     Router own Application<E>
     cors corsPolicy
     Value Result<void, ServeError<E>>
+}
+
+struct applicationDispatch<E> {
+    request Request
+    reply Sender<applicationDispatchResult<E>>
+}
+
+struct applicationDispatchResult<E> {
+    Value Result<Response, DispatchError<E>>
+}
+
+struct sharedApplication<E> implements Application<E> {
+    sender Sender<applicationDispatch<E>>
+
+    fn Dispatch(
+        &self,
+        $request Request
+    ) Result<Response, DispatchError<E>> {
+        const pending = spawn dispatchShared<E>(self.sender.clone(), $request)
+        $pending.wait()
+    }
 }
 
 // Creates an empty router whose handlers share one explicit error type.
@@ -1048,17 +1076,14 @@ task serveUntil<E>(
     $server own Server<E>,
     $cancellation concurrent.Cancellation
 ) Result<own Server<E>, ServeError<E>> {
-    var active = server
-    while !cancellation.IsRequested() {
-        const serving = active.ServeOne()
-        const outcome = $serving.wait()
-        const ServeOutcome { Server Value } = outcome
-        active = Server
-        Value else error {
-            return .Err(error)
-        }
+    const serving = spawn serveConcurrent<E>($server, $cancellation, 0, false)
+    const outcome = $serving.wait()
+    const ServeOutcome { Server Value } = outcome
+    Value else error {
+        discard Server
+        return .Err(error)
     }
-    .Ok(active)
+    .Ok(Server)
 }
 
 fn Empty(status i32) Response {
@@ -1095,6 +1120,194 @@ fn Binary(status i32, $body own bytes.Bytes, contentType String) Response {
         Value = text.Copy(contentType)
     })
     Response { Status = status Headers = headers Body = body }
+}
+
+task serveConcurrent<E>(
+    $server own Server<E>,
+    $cancellation concurrent.Cancellation,
+    requests u64,
+    bounded bool
+) own ServeOutcome<E> {
+    if bounded && requests == 0 {
+        discard cancellation
+        return own ServeOutcome<E> { Server = server Value = .Ok }
+    }
+
+    const Server { listener router cors } = server
+    const capacity u64 = 256
+    const Channel { sender receiver } = channel<applicationDispatch<E>>(capacity)
+    const application = spawn serveApplication<E>($receiver, $router)
+    var connections = worker.NewGroup<bool>(capacity)
+    var activeListener = listener
+    var accepted u64 = 0
+    var failure Option<net.Error> = .None
+
+    while !cancellation.IsRequested() && (!bounded || accepted < requests) {
+        if connections.Count() >= 256 {
+            const waiting = $connections.Next()
+            const completed = $waiting.wait()
+            const worker.GroupNext { Group Value } = completed
+            connections = Group
+            requireConnectionCompletion($Value)
+        }
+        const accepting = activeListener.Accept()
+        const acceptedValue = $accepting.wait()
+        const ServerAcceptOutcome { Listener Value } = acceptedValue
+        activeListener = Listener
+        const connection = Value else error {
+            failure = .Some(error)
+            break
+        }
+        const proxy own Application<E> = own sharedApplication<E> {
+            sender = sender.clone()
+        }
+        const handling = spawn handleConcurrentConnection<E>(
+            $proxy,
+            cloneCORSPolicy(cors),
+            $connection
+        )
+        requireConnectionAdmission(connections.Add($handling))
+        accepted += 1
+    }
+
+    while connections.Count() > 0 {
+        const waiting = $connections.Next()
+        const completed = $waiting.wait()
+        const worker.GroupNext { Group Value } = completed
+        connections = Group
+        requireConnectionCompletion($Value)
+    }
+    connections.Shutdown()
+    discard sender
+    const restored = $application.wait()
+    const active = own Server<E> {
+        listener = activeListener
+        router = restored
+        cors = cors
+    }
+    match failure {
+        None: own ServeOutcome<E> { Server = active Value = .Ok }
+        Some(error): own ServeOutcome<E> {
+            Server = active
+            Value = .Err(.Network(error = error))
+        }
+    }
+}
+
+task serveApplication<E>(
+    $receiver Receiver<applicationDispatch<E>>,
+    $application own Application<E>
+) own Application<E> {
+    var inbox = receiver
+    var active = application
+    while true {
+        const received = inbox.receive()
+        match received {
+            Ok(dispatch): {
+                const applicationDispatch { request reply } = dispatch
+                const value = dispatchApplication<E>(&active, $request)
+                const delivered = reply.send(applicationDispatchResult<E> {
+                    Value = value
+                })
+                match delivered {
+                    Ok: {}
+                    Err(error): { discard error }
+                }
+            }
+            Err(error): {
+                discard error
+                break
+            }
+        }
+    }
+    active
+}
+
+fn dispatchApplication<E>(
+    &application Application<E>,
+    $request Request
+) Result<Response, DispatchError<E>> {
+    const dispatched = application.Dispatch($request)
+    const response = responseForDispatch(application, $dispatched)
+    match response {
+        Ok(value): .Ok(value)
+        Err(error): .Err(.Handler(error = error))
+    }
+}
+
+task dispatchShared<E>(
+    $sender Sender<applicationDispatch<E>>,
+    $request Request
+) Result<Response, DispatchError<E>> {
+    const Channel { sender as reply receiver } =
+        channel<applicationDispatchResult<E>>(0)
+    select {
+        sender.send(applicationDispatch<E> {
+            request = request
+            reply = reply
+        }): {
+            const received = receiver.receive()
+            return match received {
+                Ok(value): {
+                    const applicationDispatchResult { Value } = value
+                    Value
+                }
+                Err(error): sharedDispatchFailed<E>(error)
+            }
+        }
+        else error: return sharedDispatchFailed<E>(error)
+    }
+}
+
+fn sharedDispatchFailed<E>(error ChannelError) never {
+    discard error
+    panic("web application dispatcher invariant failed")
+}
+
+task handleConcurrentConnection<E>(
+    $application own Application<E>,
+    $cors corsPolicy,
+    $connection own ServerConnection
+) bool {
+    const handling = spawn handleConnection<E>($application, $cors, $connection)
+    const outcome = $handling.wait()
+    const ConnectionOutcome { Router cors as completedCORS Value } = outcome
+    discard Router
+    discard completedCORS
+    discard Value
+    true
+}
+
+fn cloneCORSPolicy(value corsPolicy) corsPolicy {
+    corsPolicy {
+        enabled = value.enabled
+        allowAny = value.allowAny
+        origins = text.Copy(value.origins)
+    }
+}
+
+fn requireConnectionAdmission($value Result<void, worker.GroupError>) void {
+    match value {
+        Ok: {}
+        Err(error): {
+            discard error
+            panic("web connection admission invariant failed")
+        }
+    }
+}
+
+fn requireConnectionCompletion($value Result<bool, worker.GroupError>) void {
+    match value {
+        Ok(completed): {
+            if !completed {
+                panic("web connection completion invariant failed")
+            }
+        }
+        Err(error): {
+            discard error
+            panic("web connection completion invariant failed")
+        }
+    }
 }
 
 task serveOne<E>($server own Server<E>) own ServeOutcome<E> {

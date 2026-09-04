@@ -248,8 +248,10 @@ selection, and registration failures.
 
 `foundationc emit-openapi` now consumes this same validated route graph; see
 `docs/framework/openapi.md`. This is not the completed `app/web` compatibility boundary.
-`CompressionMiddleware` applies an explicitly installed `Compressor`, `Server.ServeUntil` owns
-continuous serving and graceful close, and `HealthResponse` renders an explicitly registered
-health registry. `NewOpenSSLServer` installs an optional OpenSSL 3.5.6 listener with explicit PEM
-certificate owners, exact SNI selection, and the same typed application dispatch. The web package
-never falls back to plaintext for an HTTPS boundary.
+`CompressionMiddleware` applies an explicitly installed `Compressor`. `Server.ServeBatch` accepts
+an exact bounded batch and serves established connections concurrently. `Server.ServeUntil` keeps
+accepting with the same connection isolation until cancellation is observed before the next
+accept. Application dispatch stays serialized under its exclusive edit loan. `HealthResponse`
+renders an explicitly registered health registry. `NewOpenSSLServer` installs an optional OpenSSL
+3.5.6 listener with explicit PEM certificate owners, exact SNI selection, and the same typed
+application dispatch. The web package never falls back to plaintext for an HTTPS boundary.

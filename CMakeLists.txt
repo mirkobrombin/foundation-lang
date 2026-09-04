@@ -4935,6 +4935,7 @@ if(BUILD_TESTING)
             -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+            -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
             -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
             -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
             -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c
@@ -8385,6 +8386,7 @@ if(BUILD_TESTING)
                 -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
+                -DRUNTIME_CHANNEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/channel.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
                 -DRUNTIME_REACTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/reactor.c
                 -DRUNTIME_NET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/net.c

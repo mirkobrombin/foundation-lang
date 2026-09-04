@@ -1431,6 +1431,7 @@ test("grammar and completions track compiler keywords", () => {
         "web.Request.Header", "web.Request.Form", "web.Request.IsJSON",
         "web.Response.Header", "web.Response.TextBody", "web.Response.SetHeader", "web.Response.AddHeader",
         "web.Application.ErrorResponse", "web.Server.ConfigureCORS", "web.Server.ServeOne",
+        "web.Server.ServeBatch",
         "foundation.logger", "logger.Level", "logger.Field", "logger.Trace", "logger.Entry",
         "logger.RenderError", "logger.Sink", "logger.ConsoleSink", "logger.CLEFSink", "logger.Logger",
         "logger.Pipeline", "logger.AsyncError", "logger.Publisher", "logger.Async",
@@ -1615,6 +1616,14 @@ test("grammar and completions track compiler keywords", () => {
         kind: "Method",
         detail: "fn ServeOne($self) Task<own web.ServeOutcome<E>>",
         insertText: "ServeOne()"
+    });
+    const webServerServeBatch = staticCompletions.find((completion) =>
+        completion.label === "web.Server.ServeBatch");
+    assert.deepEqual(webServerServeBatch, {
+        label: "web.Server.ServeBatch",
+        kind: "Method",
+        detail: "fn ServeBatch($self, requests u64) Task<own web.ServeOutcome<E>>",
+        insertText: "ServeBatch(${1:requests})"
     });
     const parsedGrammar = JSON.parse(grammar);
     const rawPointer = parsedGrammar.repository.types.patterns[0];

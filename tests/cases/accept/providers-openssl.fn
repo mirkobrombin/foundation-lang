@@ -89,7 +89,9 @@ fn invalidServerCertificate() bool {
     )
     match opened {
         Ok(server): {
-            discard server
+            const serving = server.ServeBatch(0)
+            const outcome = $serving.wait()
+            discard outcome
             false
         }
         Err(error): {

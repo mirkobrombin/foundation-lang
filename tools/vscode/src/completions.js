@@ -1159,6 +1159,12 @@ const staticCompletions = [
         insertText: "ServeOne()"
     },
     {
+        label: "web.Server.ServeBatch",
+        kind: "Method",
+        detail: "fn ServeBatch($self, requests u64) Task<own web.ServeOutcome<E>>",
+        insertText: "ServeBatch(${1:requests})"
+    },
+    {
         label: "httpx.New",
         kind: "Function",
         detail: "fn New<E>($transport own httpx.Transport<E>) own httpx.Builder<E>",

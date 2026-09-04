@@ -9,6 +9,8 @@ enum AppError {
 
 struct HelloHandler implements web.Handler<AppError> {}
 
+struct ReadyHandler implements web.Handler<AppError> {}
+
 methods HelloHandler {
     fn Handle(self, $request web.Request) Result<web.Response, AppError> {
         var active = request
@@ -34,6 +36,13 @@ methods HelloHandler {
             return .Err(.Failed)
         }
         .Ok(web.Text(200, $requestID))
+    }
+}
+
+methods ReadyHandler {
+    fn Handle(self, $request web.Request) Result<web.Response, AppError> {
+        discard request
+        .Ok(web.Text(200, "ready"))
     }
 }
 
@@ -192,6 +201,95 @@ fn validExchange(
         connectionHeader == "Connection: close" && separator == "" && requestIDValid
 }
 
+task publishStatus(
+    $reader own net.TcpReader,
+    $sender Sender<String>
+) void {
+    const reading = spawn net.ReadLine($reader)
+    const outcome = $reading.wait()
+    const net.ReadLineOutcome { Reader Value } = outcome
+    discard Reader
+    const delivered = sender.send(lineOr($Value))
+    match delivered {
+        Ok: {}
+        Err(error): { discard error }
+    }
+}
+
+task concurrentBatch() bool {
+    var router = web.NewRouter<AppError>()
+    const registered = router.Map(.GET, "/ready", own ReadyHandler {})
+    if !registrationAccepted($registered) return false
+    const server = serverOr(web.NewServer<AppError>("127.0.0.1", 0, $router))
+    const port = server.Port()
+    const serving = server.ServeBatch(2)
+
+    const firstConnecting = spawn net.Connect("127.0.0.1", port)
+    const firstConnected = $firstConnecting.wait()
+    const firstConnection = connectionOr($firstConnected)
+    const firstPair = pairOr(firstConnection.Split())
+    const net.StreamPair { Reader as firstReader Writer as firstWriter } = firstPair
+    const firstWriting = spawn net.WriteAll(
+        $firstWriter,
+        $"GET /ready HTTP/1.1\r\nHost: localhost\r\n"
+    )
+    const firstWritten = $firstWriting.wait()
+    const net.WriteOutcome { Writer as openWriter Value as firstWrite } = firstWritten
+    if !writeAccepted($firstWrite) {
+        discard firstReader
+        discard openWriter
+        discard serving
+        return false
+    }
+
+    const secondConnecting = spawn net.Connect("127.0.0.1", port)
+    const secondConnected = $secondConnecting.wait()
+    const secondConnection = connectionOr($secondConnected)
+    const secondPair = pairOr(secondConnection.Split())
+    const net.StreamPair { Reader as secondReader Writer as secondWriter } = secondPair
+    const secondWriting = spawn net.WriteAll(
+        $secondWriter,
+        $"GET /ready HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    )
+    const secondWritten = $secondWriting.wait()
+    const net.WriteOutcome { Writer as closedWriter Value as secondWrite } = secondWritten
+    discard closedWriter
+    if !writeAccepted($secondWrite) {
+        discard firstReader
+        discard openWriter
+        discard secondReader
+        discard serving
+        return false
+    }
+
+    const Channel { sender receiver } = channel<String>(1)
+    const statusReading = spawn publishStatus($secondReader, $sender)
+    var statusEndpoint = receiver
+    var secondReady = false
+    const responseTimeout u64 = 1000000000
+    select {
+        const status = statusEndpoint.receive(): {
+            secondReady = status == "HTTP/1.1 200 OK"
+        }
+        timeout responseTimeout: {}
+        else error: { discard error }
+    }
+
+    const firstFinishing = spawn net.WriteAll($openWriter, $"\r\n")
+    const firstFinished = $firstFinishing.wait()
+    const net.WriteOutcome { Writer as finishedWriter Value as finishValue } = firstFinished
+    discard finishedWriter
+    discard firstReader
+    const firstReady = writeAccepted($finishValue)
+    $statusReading.wait()
+    discard statusEndpoint
+
+    const servedBatch = $serving.wait()
+    const web.ServeOutcome { Server Value } = servedBatch
+    discard Server
+    firstReady && secondReady && served($Value)
+}
+
 fn main() i32 {
     var headerResponse = web.Text(200, "headers")
     headerResponse.SetHeader("X-Value", "first")
@@ -307,6 +405,9 @@ fn main() i32 {
     ) || regeneratedID == "invalid" {
         return 5
     }
+
+    const concurrent = spawn concurrentBatch()
+    if !$concurrent.wait() return 6
 
     print("web ok")
     0

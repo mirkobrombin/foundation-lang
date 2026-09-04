@@ -78,6 +78,11 @@ struct OpenSSLServer<E> {
         spawn serveOneOpenSSL<E>($self)
     }
 
+    // Accepts a bounded batch and serves established connections concurrently.
+    fn ServeBatch($self, requests u64) Task<own OpenSSLServeOutcome<E>> {
+        spawn serveBatchOpenSSL<E>($self, requests)
+    }
+
     fn ServeUntil(
         $self,
         $cancellation concurrent.Cancellation
@@ -354,6 +359,20 @@ task serveOneOpenSSL<E>(
     const outcome = $serving.wait()
     const ServeOutcome { Server Value } = outcome
     own OpenSSLServeOutcome<E> { Server = own OpenSSLServer<E> { server = Server } Value = Value }
+}
+
+task serveBatchOpenSSL<E>(
+    $server own OpenSSLServer<E>,
+    requests u64
+) own OpenSSLServeOutcome<E> {
+    const OpenSSLServer { server as base } = server
+    const serving = base.ServeBatch(requests)
+    const outcome = $serving.wait()
+    const ServeOutcome { Server Value } = outcome
+    own OpenSSLServeOutcome<E> {
+        Server = own OpenSSLServer<E> { server = Server }
+        Value = Value
+    }
 }
 
 task serveUntilOpenSSL<E>(
