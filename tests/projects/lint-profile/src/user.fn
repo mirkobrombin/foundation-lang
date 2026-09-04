@@ -11,3 +11,12 @@ methods User {
         self.Score
     }
 }
+
+fn consumeResult(
+    $result Result<own Documented, i32>
+) i32 {
+    match result {
+        Ok(value): value.Value
+        Err(error): error
+    }
+}

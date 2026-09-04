@@ -248,6 +248,8 @@ void findSignatureLayout(const ProjectAnalysis &analysis, std::size_t source,
         }
 
         depth = 1;
+        auto genericDepth = std::size_t{};
+        auto bracketDepth = std::size_t{};
         std::optional<std::size_t> parameterLine;
         std::set<std::size_t> occupiedLines;
         auto invalidParameterLine = false;
@@ -263,7 +265,24 @@ void findSignatureLayout(const ProjectAnalysis &analysis, std::size_t source,
             if (depth != 1) {
                 continue;
             }
-            if (tokens[cursor].kind == TokenKind::Comma) {
+            if (tokens[cursor].kind == TokenKind::Less) {
+                ++genericDepth;
+                continue;
+            }
+            if (tokens[cursor].kind == TokenKind::Greater && genericDepth != 0) {
+                --genericDepth;
+                continue;
+            }
+            if (tokens[cursor].kind == TokenKind::LeftBracket) {
+                ++bracketDepth;
+                continue;
+            }
+            if (tokens[cursor].kind == TokenKind::RightBracket && bracketDepth != 0) {
+                --bracketDepth;
+                continue;
+            }
+            if (tokens[cursor].kind == TokenKind::Comma && genericDepth == 0 &&
+                bracketDepth == 0) {
                 parameterLine.reset();
                 continue;
             }
