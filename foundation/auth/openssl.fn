@@ -19,10 +19,25 @@ extern c fn generateEd25519Native(
     &publicKey u64,
     &rawPublicKey u64
 ) i32 as foundation_openssl_ed25519_generate
+extern c fn ed25519PublicNative(
+    privateKey u64,
+    &publicKey u64,
+    &rawPublicKey u64
+) i32 as foundation_openssl_ed25519_public
+extern c fn ed25519PublicPEMNative(
+    rawPublicKey u64,
+    &publicKey u64
+) i32 as foundation_openssl_ed25519_public_pem
 
 // Owns one generated Ed25519 keypair in provider and wire formats.
 struct OpenSSLEd25519KeyPair {
     PrivateKeyPEM own bytes.Bytes
+    PublicKeyPEM own bytes.Bytes
+    RawPublicKey own bytes.Bytes
+}
+
+// Owns the public representations derived from one Ed25519 private key.
+struct OpenSSLEd25519PublicKey {
     PublicKeyPEM own bytes.Bytes
     RawPublicKey own bytes.Bytes
 }
@@ -98,6 +113,51 @@ fn GenerateOpenSSLEd25519() Result<OpenSSLEd25519KeyPair, AsymmetricProviderErro
         PublicKeyPEM = claimedPublic
         RawPublicKey = claimedRaw
     })
+}
+
+// Validates an Ed25519 private PEM and derives its public key forms.
+fn OpenSSLEd25519Public(
+    privateKeyPEM bytes.Bytes
+) Result<OpenSSLEd25519PublicKey, AsymmetricProviderError> {
+    var publicKey u64 = 0
+    var rawPublicKey u64 = 0
+    const status = ed25519PublicNative(
+        bytes.RuntimeHandle(privateKeyPEM),
+        &publicKey,
+        &rawPublicKey
+    )
+    if status == 2 return .Err(.InvalidPrivateKey)
+    if status != 0 return .Err(.Failed)
+    const claimedPublic = bytes.ClaimRuntimeHandle(publicKey) else error {
+        discard error
+        return .Err(.Failed)
+    }
+    const claimedRaw = bytes.ClaimRuntimeHandle(rawPublicKey) else error {
+        discard error
+        return .Err(.Failed)
+    }
+    .Ok(OpenSSLEd25519PublicKey {
+        PublicKeyPEM = claimedPublic
+        RawPublicKey = claimedRaw
+    })
+}
+
+// Encodes a raw 32-byte Ed25519 public key as provider PEM material.
+fn OpenSSLEd25519PublicPEM(
+    rawPublicKey bytes.Bytes
+) Result<own bytes.Bytes, AsymmetricProviderError> {
+    var publicKey u64 = 0
+    const status = ed25519PublicPEMNative(
+        bytes.RuntimeHandle(rawPublicKey),
+        &publicKey
+    )
+    if status == 3 return .Err(.InvalidPublicKey)
+    if status != 0 return .Err(.Failed)
+    const claimed = bytes.ClaimRuntimeHandle(publicKey) else error {
+        discard error
+        return .Err(.Failed)
+    }
+    .Ok(claimed)
 }
 
 fn openSSLAlgorithm(algorithm AsymmetricAlgorithm) u64 {

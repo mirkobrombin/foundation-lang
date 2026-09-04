@@ -87,6 +87,9 @@ static int test_ed25519_generation(void) {
     uint64_t raw_public_key = 0;
     uint64_t input = 0;
     uint64_t signature = 0;
+    uint64_t derived_public_key = 0;
+    uint64_t derived_raw_public_key = 0;
+    uint64_t converted_public_key = 0;
     uint64_t raw_length = 0;
     int result = 0;
     if (foundation_openssl_ed25519_generate(&private_key, &public_key,
@@ -98,9 +101,20 @@ static int test_ed25519_generation(void) {
         foundation_openssl_sign(FOUNDATION_OPENSSL_EDDSA, private_key,
                                 input, &signature) != FOUNDATION_OPENSSL_OK ||
         foundation_openssl_verify(FOUNDATION_OPENSSL_EDDSA, public_key,
-                                  input, signature) != FOUNDATION_OPENSSL_OK) goto cleanup;
+                                  input, signature) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_ed25519_public(private_key, &derived_public_key,
+                                          &derived_raw_public_key) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_ed25519_public_pem(raw_public_key,
+                                              &converted_public_key) != FOUNDATION_OPENSSL_OK ||
+        !foundation_runtime_bytes_constant_time_equal(public_key, derived_public_key) ||
+        !foundation_runtime_bytes_constant_time_equal(public_key, converted_public_key) ||
+        !foundation_runtime_bytes_constant_time_equal(raw_public_key,
+                                                      derived_raw_public_key)) goto cleanup;
     result = 1;
 cleanup:
+    foundation_runtime_bytes_close(&converted_public_key);
+    foundation_runtime_bytes_close(&derived_raw_public_key);
+    foundation_runtime_bytes_close(&derived_public_key);
     foundation_runtime_bytes_close(&signature);
     foundation_runtime_bytes_close(&input);
     foundation_runtime_bytes_close(&raw_public_key);

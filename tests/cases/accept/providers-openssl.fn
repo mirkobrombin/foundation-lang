@@ -109,12 +109,24 @@ fn generatedEd25519Works() bool {
     } = generated
     const rawLength = RawPublicKey.Len() else { return false }
     if rawLength != 32 return false
+    const derived = auth.OpenSSLEd25519Public(PrivateKeyPEM) else {
+        return false
+    }
+    const auth.OpenSSLEd25519PublicKey {
+        PublicKeyPEM as DerivedPublicKeyPEM
+        RawPublicKey as DerivedRawPublicKey
+    } = derived
+    if !bytes.ConstantTimeEqual(RawPublicKey, DerivedRawPublicKey) return false
+    const convertedPublicKeyPEM = auth.OpenSSLEd25519PublicPEM(RawPublicKey) else {
+        return false
+    }
+    if !bytes.ConstantTimeEqual(PublicKeyPEM, convertedPublicKeyPEM) return false
     var provider = auth.OpenSSLAsymmetricProvider {}
     const input = bytes.FromText("generated Ed25519 key")
     const signature = provider.Sign(.EdDSA, PrivateKeyPEM, input) else {
         return false
     }
-    provider.Verify(.EdDSA, PublicKeyPEM, input, signature) else {
+    provider.Verify(.EdDSA, DerivedPublicKeyPEM, input, signature) else {
         return false
     }
     true

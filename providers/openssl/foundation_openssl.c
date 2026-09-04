@@ -459,6 +459,84 @@ cleanup:
     return status;
 }
 
+int32_t foundation_openssl_ed25519_public(uint64_t private_key,
+                                           uint64_t *public_key,
+                                           uint64_t *raw_public_key) {
+    foundation_openssl_bytes private_bytes = {0};
+    EVP_PKEY *key = NULL;
+    BIO *public_bio = NULL;
+    BUF_MEM *public_data = NULL;
+    unsigned char raw_public[32];
+    size_t raw_public_length = sizeof(raw_public);
+    int32_t status = FOUNDATION_OPENSSL_FAILED;
+
+    if (public_key == NULL || raw_public_key == NULL) {
+        return FOUNDATION_OPENSSL_FAILED;
+    }
+    *public_key = 0;
+    *raw_public_key = 0;
+    if (!foundation_openssl_copy_bytes(private_key, &private_bytes)) goto cleanup;
+    key = foundation_openssl_private_key(&private_bytes);
+    if (key == NULL || !foundation_openssl_key_matches(FOUNDATION_OPENSSL_EDDSA, key)) {
+        status = FOUNDATION_OPENSSL_INVALID_PRIVATE_KEY;
+        goto cleanup;
+    }
+    public_bio = BIO_new(BIO_s_mem());
+    if (public_bio == NULL || PEM_write_bio_PUBKEY(public_bio, key) != 1 ||
+        EVP_PKEY_get_raw_public_key(key, raw_public, &raw_public_length) != 1 ||
+        raw_public_length != sizeof(raw_public)) goto cleanup;
+    BIO_get_mem_ptr(public_bio, &public_data);
+    if (public_data == NULL ||
+        foundation_openssl_output_bytes((const unsigned char *)public_data->data,
+                                        public_data->length, public_key) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_output_bytes(raw_public, raw_public_length,
+                                        raw_public_key) != FOUNDATION_OPENSSL_OK) goto cleanup;
+    status = FOUNDATION_OPENSSL_OK;
+cleanup:
+    OPENSSL_cleanse(raw_public, sizeof(raw_public));
+    BIO_free(public_bio);
+    EVP_PKEY_free(key);
+    foundation_openssl_free_bytes(&private_bytes);
+    if (status != FOUNDATION_OPENSSL_OK) {
+        foundation_runtime_bytes_close(raw_public_key);
+        foundation_runtime_bytes_close(public_key);
+    }
+    return status;
+}
+
+int32_t foundation_openssl_ed25519_public_pem(uint64_t raw_public_key,
+                                               uint64_t *public_key) {
+    foundation_openssl_bytes raw_bytes = {0};
+    EVP_PKEY *key = NULL;
+    BIO *public_bio = NULL;
+    BUF_MEM *public_data = NULL;
+    int32_t status = FOUNDATION_OPENSSL_FAILED;
+
+    if (public_key == NULL) return FOUNDATION_OPENSSL_FAILED;
+    *public_key = 0;
+    if (!foundation_openssl_copy_bytes(raw_public_key, &raw_bytes) ||
+        raw_bytes.length != 32) {
+        status = FOUNDATION_OPENSSL_INVALID_PUBLIC_KEY;
+        goto cleanup;
+    }
+    key = EVP_PKEY_new_raw_public_key_ex(NULL, "ED25519", NULL,
+                                         raw_bytes.data, raw_bytes.length);
+    public_bio = BIO_new(BIO_s_mem());
+    if (key == NULL || public_bio == NULL ||
+        PEM_write_bio_PUBKEY(public_bio, key) != 1) goto cleanup;
+    BIO_get_mem_ptr(public_bio, &public_data);
+    if (public_data == NULL ||
+        foundation_openssl_output_bytes((const unsigned char *)public_data->data,
+                                        public_data->length, public_key) != FOUNDATION_OPENSSL_OK) goto cleanup;
+    status = FOUNDATION_OPENSSL_OK;
+cleanup:
+    BIO_free(public_bio);
+    EVP_PKEY_free(key);
+    foundation_openssl_free_bytes(&raw_bytes);
+    if (status != FOUNDATION_OPENSSL_OK) foundation_runtime_bytes_close(public_key);
+    return status;
+}
+
 static int foundation_openssl_es256_raw_signature(const unsigned char *der, size_t der_length,
                                                    unsigned char output[64]) {
     const unsigned char *cursor = der;

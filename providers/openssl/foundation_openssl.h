@@ -35,6 +35,11 @@ int32_t foundation_openssl_verify(uint32_t algorithm, uint64_t public_key,
 int32_t foundation_openssl_ed25519_generate(uint64_t *private_key,
                                             uint64_t *public_key,
                                             uint64_t *raw_public_key);
+int32_t foundation_openssl_ed25519_public(uint64_t private_key,
+                                          uint64_t *public_key,
+                                          uint64_t *raw_public_key);
+int32_t foundation_openssl_ed25519_public_pem(uint64_t raw_public_key,
+                                              uint64_t *public_key);
 
 // Opens a TLS client connection after SNI and hostname verification. The handle
 // is intentionally opaque: callers cannot downgrade it into a plain socket.
