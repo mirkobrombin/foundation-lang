@@ -279,7 +279,7 @@ static int run_test(int argc, char **argv) {
         bool executable = false;
         bool link_directory = false;
         bool link_created = false;
-        uint64_t modified = 0;
+        uint64_t entry_modified = 0;
         const uint8_t *read_data = NULL;
         size_t read_length = 0;
 #if defined(_WIN32)
@@ -348,7 +348,7 @@ static int run_test(int argc, char **argv) {
         }
         if (foundation_runtime_fs_tree_next_metadata(
                 tree, &entry_path, &kind, &executable, &size,
-                &permissions, &modified) != 1 ||
+                &permissions, &entry_modified) != 1 ||
             !line_is(entry_path, "nested") || kind != 2 || size != 0) {
             fdn_string_drop(&entry_path);
             foundation_runtime_bytes_close(&payload);
@@ -357,10 +357,10 @@ static int run_test(int argc, char **argv) {
         }
         if (foundation_runtime_fs_tree_next_metadata(
                 tree, &entry_path, &kind, &executable, &size,
-                &permissions, &modified) != 1 ||
+                &permissions, &entry_modified) != 1 ||
             !line_is(entry_path, "nested/payload.bin") || kind != 1 ||
             executable != expected_executable || size != 14 ||
-            permissions != expected_input_permissions || modified == 0 ||
+            permissions != expected_input_permissions || entry_modified == 0 ||
             foundation_runtime_fs_tree_read(tree, &relative_file, 13, &read_payload) != 5 ||
             read_payload != 0 ||
             foundation_runtime_fs_tree_read(tree, &relative_file, 14, &read_payload) != 0 ||
@@ -368,7 +368,7 @@ static int run_test(int argc, char **argv) {
             read_length != 14 || memcmp(read_data, "binary\0payload", 14) != 0 ||
             foundation_runtime_fs_tree_next_metadata(
                 tree, &entry_path, &kind, &executable, &size,
-                &permissions, &modified) != 0 ||
+                &permissions, &entry_modified) != 0 ||
             foundation_runtime_fs_tree_close(&tree) != 0 || tree != 0 ||
             foundation_runtime_fs_live_directories() != 0) {
             fdn_string_drop(&entry_path);
@@ -421,14 +421,14 @@ static int run_test(int argc, char **argv) {
                 &link_directory) != 3 ||
             foundation_runtime_fs_tree_next_metadata(
                 tree, &entry_path, &kind, &executable, &size,
-                &permissions, &modified) != 1 ||
+                &permissions, &entry_modified) != 1 ||
             !line_is(entry_path, "nested") || kind != 2) {
             return 43;
         }
         if (link_created &&
             (foundation_runtime_fs_tree_next_metadata(
                  tree, &entry_path, &kind, &executable, &size,
-                 &permissions, &modified) != 1 ||
+                 &permissions, &entry_modified) != 1 ||
              !line_is(entry_path, "nested-link") || kind != 3 ||
              foundation_runtime_fs_tree_read_symbolic_link(
                  tree, &relative_link, 5, &read_target,
@@ -445,13 +445,13 @@ static int run_test(int argc, char **argv) {
         }
         if (foundation_runtime_fs_tree_next_metadata(
                 tree, &entry_path, &kind, &executable, &size,
-                &permissions, &modified) != 1 ||
+                &permissions, &entry_modified) != 1 ||
             !line_is(entry_path, "nested/payload.bin") || kind != 1 ||
             permissions != expected_output_permissions ||
-            modified != UINT64_C(1700000000) ||
+            entry_modified != UINT64_C(1700000000) ||
             foundation_runtime_fs_tree_next_metadata(
                 tree, &entry_path, &kind, &executable, &size,
-                &permissions, &modified) != 0 ||
+                &permissions, &entry_modified) != 0 ||
             foundation_runtime_fs_tree_close(&tree) != 0) {
             fdn_string_drop(&entry_path);
             (void)foundation_runtime_fs_tree_close(&tree);
