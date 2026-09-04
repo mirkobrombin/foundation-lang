@@ -39,6 +39,12 @@ test("registers Foundation source files", () => {
 
     assert.equal(language.id, "foundation");
     assert.deepEqual(language.extensions, [".fn"]);
+    assert.deepEqual(language.icon, {
+        light: "./icons/foundation-light.svg",
+        dark: "./icons/foundation-dark.svg"
+    });
+    assert.ok(fs.existsSync(path.join(extensionRoot, language.icon.light)));
+    assert.ok(fs.existsSync(path.join(extensionRoot, language.icon.dark)));
     assert.equal(grammar.language, "foundation");
     assert.equal(grammar.scopeName, "source.foundation");
     assert.ok(fs.existsSync(path.join(extensionRoot, grammar.path)));
@@ -46,6 +52,7 @@ test("registers Foundation source files", () => {
     assert.deepEqual(packageLanguage.filenames, ["foundation.package"]);
     assert.deepEqual(lockLanguage.filenames, ["foundation.lock"]);
     for (const value of [packageLanguage, lockLanguage]) {
+        assert.deepEqual(value.icon, language.icon);
         assert.ok(fs.existsSync(path.join(extensionRoot, value.configuration)));
         const valueGrammar = manifest.contributes.grammars.find((candidate) =>
             candidate.language === value.id);
@@ -58,6 +65,11 @@ test("registers Foundation source files", () => {
         "utf8"
     );
     assert.match(vsixManifest, new RegExp(`Version="${manifest.version}"`));
+    const contentTypes = fs.readFileSync(
+        path.join(extensionRoot, "vsix/Content_Types.xml"),
+        "utf8"
+    );
+    assert.match(contentTypes, /Extension="svg" ContentType="image\/svg\+xml"/);
 
     const packagingScript = fs.readFileSync(
         path.join(extensionRoot, "scripts/package.sh"),
@@ -79,6 +91,8 @@ test("registers Foundation source files", () => {
     assert.match(packagingScript, /foundation-package\.tmLanguage\.json/);
     assert.match(packagingScript, /foundation-lock\.tmLanguage\.json/);
     assert.match(packagingScript, /package-language-configuration\.json/);
+    assert.match(packagingScript, /icons\/foundation-light\.svg/);
+    assert.match(packagingScript, /icons\/foundation-dark\.svg/);
     assert.match(languageClient, /registerDocumentSymbolProvider/);
     assert.match(languageClient, /registerWorkspaceSymbolProvider/);
     assert.match(languageClient, /registerCompletionItemProvider/);
@@ -122,7 +136,7 @@ test("registers Foundation source files", () => {
     assert.match(languageClient, /createFileSystemWatcher\(\s*"\*\*\/foundation\.package"/);
     assert.match(languageClient, /createFileSystemWatcher\("\*\*\/foundation\.lock"\)/);
     assert.match(languageClient, /workspace\/didChangeWatchedFiles/);
-    assert.equal(manifest.version, "0.141.0");
+    assert.equal(manifest.version, "0.142.0");
     assert.equal(manifest.contributes.commands[0].command,
         "foundation.openCompositeType");
     assert.equal(manifest.contributes.commands[1].command,

@@ -41,6 +41,7 @@ fi
 
 mkdir -p "$repository_root/build"
 mkdir -p "$work_dir/extension/bin/$platform"
+mkdir -p "$work_dir/extension/icons"
 mkdir -p "$work_dir/extension/src"
 mkdir -p "$work_dir/extension/snippets"
 mkdir -p "$work_dir/extension/syntaxes"
@@ -53,6 +54,10 @@ cp "$extension_root/package.json" "$work_dir/extension/package.json"
 cp "$extension_root/language-configuration.json" "$work_dir/extension/language-configuration.json"
 cp "$extension_root/package-language-configuration.json" \
     "$work_dir/extension/package-language-configuration.json"
+cp "$extension_root/icons/foundation-light.svg" \
+    "$work_dir/extension/icons/foundation-light.svg"
+cp "$extension_root/icons/foundation-dark.svg" \
+    "$work_dir/extension/icons/foundation-dark.svg"
 cp "$extension_root/README.md" "$work_dir/extension/README.md"
 cp "$extension_root/src/extension.js" "$work_dir/extension/src/extension.js"
 cp "$extension_root/src/languageClient.js" "$work_dir/extension/src/languageClient.js"

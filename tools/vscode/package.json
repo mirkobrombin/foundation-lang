@@ -2,7 +2,7 @@
     "name": "foundation-lang",
     "displayName": "Foundation Lang",
     "description": "Language support for Foundation Lang",
-    "version": "0.141.0",
+    "version": "0.142.0",
     "publisher": "mirkobrombin",
     "license": "MIT",
     "engines": {
@@ -32,6 +32,10 @@
                 "extensions": [
                     ".fn"
                 ],
+                "icon": {
+                    "light": "./icons/foundation-light.svg",
+                    "dark": "./icons/foundation-dark.svg"
+                },
                 "configuration": "./language-configuration.json"
             },
             {
@@ -42,6 +46,10 @@
                 "filenames": [
                     "foundation.package"
                 ],
+                "icon": {
+                    "light": "./icons/foundation-light.svg",
+                    "dark": "./icons/foundation-dark.svg"
+                },
                 "configuration": "./package-language-configuration.json"
             },
             {
@@ -52,6 +60,10 @@
                 "filenames": [
                     "foundation.lock"
                 ],
+                "icon": {
+                    "light": "./icons/foundation-light.svg",
+                    "dark": "./icons/foundation-dark.svg"
+                },
                 "configuration": "./package-language-configuration.json"
             }
         ],
