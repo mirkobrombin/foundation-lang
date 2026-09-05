@@ -898,14 +898,14 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
         addError(result.errors, path, 1, 1, "FDN4015",
                  "native links and foreign provenance require native_library c or native_source");
     }
-    for (const auto &source : manifest.nativeSources) {
+    for (const auto &nativeSource : manifest.nativeSources) {
         const auto owned = std::any_of(
             manifest.foreign.begin(), manifest.foreign.end(), [&](const auto &foreign) {
                 if (foreign.ecosystem != "c" || foreign.kind != "path") {
                     return false;
                 }
                 const auto root = std::filesystem::path(foreign.resolver).lexically_normal();
-                const auto relative = source.path.lexically_relative(root);
+                const auto relative = nativeSource.path.lexically_relative(root);
                 return !relative.empty() && !relative.is_absolute() && *relative.begin() != "..";
             });
         if (!owned) {
@@ -1069,22 +1069,22 @@ parsePackageLock(const std::filesystem::path &path, std::string_view source) {
             }
             targetSeen = true;
         } else if (directive == "native") {
-            const auto soVersion = tokens.size() == 5 && tokens[3] != "-"
-                                       ? number(tokens[3])
-                                       : std::optional<std::size_t>{};
-            const auto validSO = tokens.size() == 5 &&
-                                 (tokens[3] == "-" ||
-                                  (soVersion.has_value() &&
-                                   *soVersion <= std::numeric_limits<std::uint32_t>::max()));
+            std::optional<std::uint32_t> storedSO;
+            auto validSO = tokens.size() == 5;
+            if (validSO && tokens[3] != "-") {
+                const auto parsed = number(tokens[3]);
+                if (!parsed.has_value() ||
+                    *parsed > std::numeric_limits<std::uint32_t>::max()) {
+                    validSO = false;
+                } else {
+                    storedSO = static_cast<std::uint32_t>(*parsed);
+                }
+            }
             if (tokens.size() != 5 || tokens[1] != "c" || !identifier(tokens[2]) ||
                 !validSO || !digest(tokens[4]) || nativeSeen) {
                 addError(result.errors, path, line, 1, "FDN4028",
                          "invalid native library lock entry");
             } else {
-                std::optional<std::uint32_t> storedSO;
-                if (soVersion.has_value()) {
-                    storedSO = static_cast<std::uint32_t>(*soVersion);
-                }
                 lock.nativeLibrary = LockedNativeLibrary{tokens[2], storedSO, tokens[4]};
             }
             nativeSeen = true;
