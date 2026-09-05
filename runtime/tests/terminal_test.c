@@ -49,7 +49,7 @@ static int same_mode(const struct termios* left, const struct termios* right) {
 }
 
 int main(void) {
-    const struct winsize initial_size = {24, 80, 0, 0};
+    struct winsize initial_size = {24, 80, 0, 0};
     const struct winsize resized = {37, 111, 0, 0};
     const uint8_t expected[] = {'x'};
     const uint8_t* data = NULL;
