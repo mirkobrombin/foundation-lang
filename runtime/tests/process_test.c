@@ -194,7 +194,11 @@ static int run_pty(const char *program) {
         foundation_runtime_process_pty_resize(controller, 120, 40) != 0) {
         goto cleanup;
     }
+#if defined(_WIN32)
+    input = bytes_from("MARKER-OK\r\n");
+#else
     input = bytes_from("MARKER-OK\n");
+#endif
     if (input == 0 || foundation_runtime_process_pty_write(writer, input) != 0) {
         goto cleanup;
     }

@@ -49,17 +49,28 @@ fn main(args [String]) i32 {
         discard error
         return 4
     }
-    const reading = spawn process.ReadPTY($Reader, 4096)
-    const process.PTYReadOutcome { Reader as restoredReader Value } = $reading.wait()
-    discard restoredReader
-    const output = Value else error {
-        discard error
-        return 5
+    var reader = Reader
+    var content = ""
+    var attempts u64 = 0
+    while attempts < 16 && !text.Contains(content, "foundation-pty") {
+        const reading = spawn process.ReadPTY($reader, 4096)
+        const process.PTYReadOutcome {
+            Reader as restoredReader
+            Value
+        } = $reading.wait()
+        reader = restoredReader
+        const output = Value else error {
+            discard error
+            return 5
+        }
+        const chunk = outputText($output) else error {
+            discard error
+            return 5
+        }
+        content = content + chunk
+        attempts += 1
     }
-    const content = outputText($output) else error {
-        discard error
-        return 5
-    }
+    discard reader
     const waiting = spawn process.WaitPTY($Waiter)
     const result = ptyResult($waiting.wait())
     discard controller
