@@ -119,6 +119,10 @@ extern c fn runNative(
     &stdoutHandle u64,
     &stderrHandle u64
 ) i32 as foundation_runtime_process_run
+extern c fn currentIDNative() u64 as foundation_runtime_process_current_id
+extern c fn executableNative(
+    &result String
+) i32 as foundation_runtime_process_executable
 extern c fn closeNative(
     &handle u64
 ) void as foundation_runtime_process_close
@@ -142,6 +146,17 @@ fn DefaultOptions() Options {
         InheritEnvironment = true
         OutputLimit = 16777216
     }
+}
+
+fn CurrentID() u64 {
+    currentIDNative()
+}
+
+fn Executable() Result<String, Error> {
+    var result = ""
+    const status = executableNative(&result)
+    if status == 0 return .Ok(result)
+    .Err(errorFor(status))
 }
 
 fn Open(

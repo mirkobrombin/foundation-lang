@@ -501,6 +501,8 @@ int32_t foundation_runtime_process_add_environment(uint64_t handle,
 int32_t foundation_runtime_process_run(uint64_t handle, int32_t *exit_code,
                                        uint64_t *stdout_handle,
                                        uint64_t *stderr_handle);
+uint64_t foundation_runtime_process_current_id(void);
+int32_t foundation_runtime_process_executable(fdn_string *result);
 void foundation_runtime_process_close(uint64_t *handle);
 uint64_t foundation_runtime_process_live_handles(void);
 int32_t foundation_runtime_process_pty_start(uint64_t process_handle, uint16_t columns,

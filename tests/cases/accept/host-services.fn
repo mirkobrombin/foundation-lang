@@ -158,6 +158,12 @@ fn executableChecks(file String) bool {
 
 fn main(args [String]) i32 {
     if !pathChecks() return 1
+    if process.CurrentID() == 0 return 29
+    const executable = process.Executable() else error {
+        discard error
+        return 30
+    }
+    if text.IsEmpty(executable) return 31
 
     const root = fs.CreateTempDirectory(args[1], "fdn-host") else error {
         discard error

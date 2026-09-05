@@ -36,6 +36,10 @@
 extern char **environ;
 #endif
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
 enum {
     FDN_PROCESS_NOT_FOUND = 1,
     FDN_PROCESS_PERMISSION = 2,
@@ -46,6 +50,7 @@ enum {
     FDN_PROCESS_RESOURCE_LIMIT = 7,
     FDN_PROCESS_IO = 8,
     FDN_PROCESS_CLOSED = 9,
+    FDN_PROCESS_UNAVAILABLE = 10,
 };
 
 struct fdn_process {
@@ -108,6 +113,124 @@ uint64_t foundation_runtime_process_live_handles(void) {
     return (uint64_t)InterlockedCompareExchange64(&fdn_live_process_count, 0, 0);
 #else
     return atomic_load_explicit(&fdn_live_process_count, memory_order_relaxed);
+#endif
+}
+
+uint64_t foundation_runtime_process_current_id(void) {
+#if defined(_WIN32)
+    return (uint64_t)GetCurrentProcessId();
+#else
+    return (uint64_t)getpid();
+#endif
+}
+
+int32_t foundation_runtime_process_executable(fdn_string *result) {
+    if (result == NULL) {
+        fdn_panic_cstr("process executable output is null");
+    }
+    fdn_string_drop(result);
+    *result = fdn_string_static("", 0);
+#if defined(_WIN32)
+    {
+        DWORD capacity = 256;
+        wchar_t *wide = NULL;
+        DWORD length = 0;
+        int utf8_length;
+        char *utf8;
+        while (capacity <= 32768) {
+            fdn_dealloc(wide);
+            wide = fdn_alloc((size_t)capacity * sizeof(*wide));
+            SetLastError(ERROR_SUCCESS);
+            length = GetModuleFileNameW(NULL, wide, capacity);
+            if (length == 0) {
+                fdn_dealloc(wide);
+                return FDN_PROCESS_IO;
+            }
+            if (length < capacity) {
+                break;
+            }
+            if (capacity == 32768) {
+                fdn_dealloc(wide);
+                return FDN_PROCESS_RESOURCE_LIMIT;
+            }
+            capacity *= 2;
+        }
+        utf8_length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide,
+                                          (int)length, NULL, 0, NULL, NULL);
+        if (utf8_length <= 0) {
+            fdn_dealloc(wide);
+            return FDN_PROCESS_IO;
+        }
+        utf8 = fdn_alloc((size_t)utf8_length);
+        if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, (int)length,
+                                utf8, utf8_length, NULL, NULL) != utf8_length) {
+            fdn_dealloc(wide);
+            fdn_dealloc(utf8);
+            return FDN_PROCESS_IO;
+        }
+        fdn_dealloc(wide);
+        result->data = utf8;
+        result->length = (size_t)utf8_length;
+        result->owned = 1;
+        return 0;
+    }
+#elif defined(__APPLE__)
+    {
+        char probe = '\0';
+        uint32_t capacity = 1;
+        char *path;
+        size_t length;
+        if (_NSGetExecutablePath(&probe, &capacity) == 0) {
+            return FDN_PROCESS_IO;
+        }
+        if (capacity == 0 || capacity > 1048576) {
+            return FDN_PROCESS_RESOURCE_LIMIT;
+        }
+        path = fdn_alloc((size_t)capacity);
+        if (_NSGetExecutablePath(path, &capacity) != 0) {
+            fdn_dealloc(path);
+            return FDN_PROCESS_IO;
+        }
+        length = strlen(path);
+        if (!fdn_utf8_valid(path, length)) {
+            fdn_dealloc(path);
+            return FDN_PROCESS_IO;
+        }
+        result->data = path;
+        result->length = length;
+        result->owned = 1;
+        return 0;
+    }
+#elif defined(__linux__)
+    {
+        size_t capacity = 256;
+        char *path = NULL;
+        ssize_t length;
+        while (capacity <= 1048576) {
+            fdn_dealloc(path);
+            path = fdn_alloc(capacity);
+            length = readlink("/proc/self/exe", path, capacity);
+            if (length < 0) {
+                fdn_dealloc(path);
+                return FDN_PROCESS_IO;
+            }
+            if ((size_t)length < capacity) {
+                if (!fdn_utf8_valid(path, (size_t)length)) {
+                    fdn_dealloc(path);
+                    return FDN_PROCESS_IO;
+                }
+                result->data = path;
+                result->length = (size_t)length;
+                result->owned = 1;
+                return 0;
+            }
+            capacity *= 2;
+        }
+        fdn_dealloc(path);
+        return FDN_PROCESS_RESOURCE_LIMIT;
+    }
+#else
+    return FDN_PROCESS_UNAVAILABLE;
 #endif
 }
 

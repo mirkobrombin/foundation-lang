@@ -65,6 +65,18 @@ static uint64_t bytes_from(const char *value) {
     return handle;
 }
 
+static int current_process_is_valid(void) {
+    fdn_string executable = fdn_string_static("", 0);
+    int result = 0;
+    if (foundation_runtime_process_current_id() == 0 ||
+        foundation_runtime_process_executable(&executable) != 0 ||
+        executable.length == 0) {
+        result = 1;
+    }
+    fdn_string_drop(&executable);
+    return result;
+}
+
 static int path_bytes_are(uint64_t handle, const char *expected) {
 #if defined(_WIN32)
     const uint8_t *data = NULL;
@@ -398,6 +410,9 @@ int main(int argc, char **argv) {
     }
     if (argc != 2) {
         return 1;
+    }
+    if (current_process_is_valid() != 0) {
+        return 9;
     }
     status = run_process(argv[0], argv[1]);
     if (status == 0) {

@@ -7,6 +7,8 @@ its native configuration and accepts arguments, a working directory, and environ
 fn Open(program String, $options Options) Result<own Command, Error>
 fn Command.AddArgument(&self, argument String) Result<void, Error>
 fn Command.AddEnvironment(&self, entry String) Result<void, Error>
+fn CurrentID() u64
+fn Executable() Result<String, Error>
 task Run($command own Command) Result<Output, Error>
 fn OpenPTY(
     command [String],
@@ -30,6 +32,9 @@ fn PTYController.Abort(&self) bool
 their combined size. The default environment is inherited from the parent process. Entries added
 with `AddEnvironment` replace inherited entries with the same name; duplicate additions remain an
 error. Set `InheritEnvironment` to `false` to start from an empty environment.
+
+`CurrentID` returns the current process identifier. `Executable` returns the path used by the host
+system for the running executable.
 
 `OpenPTY` prepares an interactive process. An empty command uses `SHELL` on POSIX and `COMSPEC` on
 Windows, with a platform fallback when the variable is absent. The default working directory is
