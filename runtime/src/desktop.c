@@ -1,5 +1,8 @@
 #if !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE
+#endif
 #endif
 
 #include "bytes_internal.h"
