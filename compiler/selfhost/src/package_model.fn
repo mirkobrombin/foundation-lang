@@ -64,6 +64,11 @@ struct packageNativeLink {
     target Option<targetPlatform>
 }
 
+struct packageNativeSource {
+    path String
+    target Option<targetPlatform>
+}
+
 struct packageForeign {
     ecosystem String
     identifier String
@@ -87,6 +92,7 @@ struct packageManifest {
     nativeLibrary bool
     nativeName Option<String>
     nativeSOVersion Option<u32>
+    nativeSources own arena<packageNativeSource>
     nativeLinks own arena<packageNativeLink>
     foreign own arena<packageForeign>
 }
@@ -210,6 +216,7 @@ fn newPackageManifest() own packageManifest {
         nativeLibrary = false
         nativeName = .None
         nativeSOVersion = .None
+        nativeSources = newArena<packageNativeSource>()
         nativeLinks = newArena<packageNativeLink>()
         foreign = newArena<packageForeign>()
     }

@@ -289,6 +289,14 @@ class LlvmEmitter {
     struct LoopTarget {
         llvm::BasicBlock *breakBlock{};
         llvm::BasicBlock *continueBlock{};
+        std::size_t matchCleanupDepth{};
+    };
+
+    struct MatchCleanup {
+        std::optional<FirLocalId> local;
+        llvm::Value *storage{};
+        llvm::Value *value{};
+        Type type{invalidType};
     };
 
     struct DefaultContractSupport {
@@ -3274,6 +3282,7 @@ class LlvmEmitter {
             }
             if (!value.diverges) {
                 dropLocals(returned->drops);
+                dropMatchValues(0);
                 if (taskPoll_) {
                     emitTaskReady(returned->value.has_value() ? value.value : nullptr);
                 } else {
@@ -3296,6 +3305,7 @@ class LlvmEmitter {
             if (loops_.empty()) {
                 fail(statement.span, "LLVM backend received break outside a loop");
             } else {
+                dropMatchValues(loops_.back().matchCleanupDepth);
                 builder_.CreateBr(loops_.back().breakBlock);
             }
         } else if (const auto *continued = std::get_if<FirContinueStatement>(&statement.value)) {
@@ -3303,6 +3313,7 @@ class LlvmEmitter {
             if (loops_.empty()) {
                 fail(statement.span, "LLVM backend received continue outside a loop");
             } else {
+                dropMatchValues(loops_.back().matchCleanupDepth);
                 builder_.CreateBr(loops_.back().continueBlock);
             }
         } else if (const auto *unsafe = std::get_if<FirUnsafeStatement>(&statement.value)) {
@@ -3509,7 +3520,7 @@ class LlvmEmitter {
         }
         builder_.CreateCondBr(condition.value, bodyBlock, exitBlock);
         builder_.SetInsertPoint(bodyBlock);
-        loops_.push_back({exitBlock, conditionBlock});
+        loops_.push_back({exitBlock, conditionBlock, matchCleanups_.size()});
         const auto exits = emitBlock(loop.body);
         loops_.pop_back();
         if (!exits) {
@@ -3599,7 +3610,7 @@ class LlvmEmitter {
             builder_.CreateUnreachable();
 
             builder_.SetInsertPoint(bodyBlock);
-            loops_.push_back({exitBlock, nextBlock});
+            loops_.push_back({exitBlock, nextBlock, matchCleanups_.size()});
             const auto exits = emitBlock(loop.body);
             loops_.pop_back();
             if (!exits) {
@@ -3642,7 +3653,7 @@ class LlvmEmitter {
         } else {
             builder_.CreateStore(builder_.CreateLoad(elementType, element), locals_[loop.value]);
         }
-        loops_.push_back({exitBlock, nextBlock});
+        loops_.push_back({exitBlock, nextBlock, matchCleanups_.size()});
         const auto exits = emitBlock(loop.body);
         loops_.pop_back();
         if (!exits) {
@@ -4523,6 +4534,10 @@ class LlvmEmitter {
                 }
             }
 
+            const auto cleanupDepth = matchCleanups_.size();
+            matchCleanups_.push_back(
+                {taskPoll_ ? match.valueStorage : std::nullopt, storage, inspected.value,
+                 inspectedType});
             auto exits = builder_.GetInsertBlock()->getTerminator() != nullptr;
             if (!exits) {
                 for (const auto statement : function_->blocks[arm.block].statements) {
@@ -4562,6 +4577,7 @@ class LlvmEmitter {
                     hasMergeIncoming = true;
                 }
             }
+            matchCleanups_.resize(cleanupDepth);
             builder_.SetInsertPoint(next);
         }
 
@@ -5675,6 +5691,17 @@ class LlvmEmitter {
         dropAddress(storage, type);
     }
 
+    void dropMatchValues(std::size_t first) {
+        for (auto index = matchCleanups_.size(); index > first; --index) {
+            const auto &cleanup = matchCleanups_[index - 1];
+            if (cleanup.local.has_value()) {
+                dropLocal(*cleanup.local);
+            } else {
+                dropMatchValue(cleanup.storage, cleanup.value, cleanup.type);
+            }
+        }
+    }
+
     unsigned int structFieldIndex(const Type &type, FirFieldId field) const {
         return llvmIndex(field +
                          (type.kind == TypeKind::Struct &&
@@ -6399,6 +6426,7 @@ class LlvmEmitter {
     std::vector<llvm::Value *> captureAddresses_;
     std::vector<llvm::Value *> localActive_;
     std::vector<LoopTarget> loops_;
+    std::vector<MatchCleanup> matchCleanups_;
     bool taskPoll_{};
     TaskAdapter *taskAdapter_{};
     llvm::Value *taskFrame_{};

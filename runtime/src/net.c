@@ -35,6 +35,8 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 #endif
 
@@ -101,6 +103,7 @@ typedef struct fdn_net_connection {
 
 typedef struct fdn_net_listener {
     fdn_net_socket socket;
+    char *local_path;
     size_t references;
 #if defined(_WIN32)
     CRITICAL_SECTION lock;
@@ -112,6 +115,8 @@ typedef struct fdn_net_listener {
 typedef struct fdn_net_datagram {
     fdn_net_socket socket;
 } fdn_net_datagram;
+
+static fdn_net_connection *fdn_net_connection_open(fdn_net_socket socket);
 
 typedef struct fdn_net_local_address {
     char *text;
@@ -813,6 +818,7 @@ int32_t foundation_runtime_net_listen(const fdn_string *address, uint64_t port,
     }
     listener = fdn_alloc(sizeof(*listener));
     listener->socket = native_socket;
+    listener->local_path = NULL;
     listener->references = 1;
 #if defined(_WIN32)
     InitializeCriticalSection(&listener->lock);
@@ -828,9 +834,125 @@ int32_t foundation_runtime_net_listen(const fdn_string *address, uint64_t port,
     return FDN_NET_OK;
 }
 
+int32_t foundation_runtime_net_local_listen(const fdn_string *path,
+                                            uint64_t backlog,
+                                            uint64_t *handle) {
+#if defined(_WIN32)
+    (void)path;
+    (void)backlog;
+    if (handle == NULL) fdn_panic_cstr("local listener output is null");
+    *handle = 0;
+    return FDN_NET_IO;
+#else
+    struct sockaddr_un address;
+    fdn_net_socket native_socket = FDN_NET_INVALID_SOCKET;
+    fdn_net_listener *listener;
+    char *native_path;
+    int error;
+    if (handle == NULL) fdn_panic_cstr("local listener output is null");
+    *handle = 0;
+    if (!fdn_net_host_valid(path) || backlog == 0 || backlog > (uint64_t)INT_MAX ||
+        path->length >= sizeof(address.sun_path)) {
+        return FDN_NET_INVALID_ADDRESS;
+    }
+    native_path = fdn_alloc(path->length + 1);
+    (void)memcpy(native_path, path->data, path->length);
+    native_path[path->length] = '\0';
+    (void)memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    (void)memcpy(address.sun_path, native_path, path->length + 1);
+    native_socket = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (native_socket == FDN_NET_INVALID_SOCKET) {
+        fdn_dealloc(native_path);
+        return FDN_NET_IO;
+    }
+    if (bind(native_socket, (const struct sockaddr *)&address,
+             (socklen_t)sizeof(address)) != 0) {
+        error = fdn_net_last_error();
+        fdn_net_close_socket(native_socket);
+        fdn_dealloc(native_path);
+        return fdn_net_address_in_use(error) ? FDN_NET_ADDRESS_IN_USE
+                                             : FDN_NET_IO;
+    }
+    if (chmod(native_path, S_IRUSR | S_IWUSR) != 0 ||
+        listen(native_socket, (int)backlog) != 0 ||
+        !fdn_net_socket_nonblocking(native_socket)) {
+        (void)unlink(native_path);
+        fdn_net_close_socket(native_socket);
+        fdn_dealloc(native_path);
+        return FDN_NET_IO;
+    }
+    listener = fdn_alloc(sizeof(*listener));
+    listener->socket = native_socket;
+    listener->local_path = native_path;
+    listener->references = 1;
+    if (pthread_mutex_init(&listener->lock, NULL) != 0) {
+        (void)unlink(native_path);
+        fdn_dealloc(native_path);
+        fdn_dealloc(listener);
+        fdn_net_close_socket(native_socket);
+        fdn_panic_cstr("local listener initialization failed");
+    }
+    fdn_net_count_add(&fdn_net_listeners_count);
+    *handle = (uint64_t)(uintptr_t)listener;
+    return FDN_NET_OK;
+#endif
+}
+
+int32_t foundation_runtime_net_local_dial(const fdn_string *path,
+                                          uint64_t *handle) {
+#if defined(_WIN32)
+    (void)path;
+    if (handle == NULL) fdn_panic_cstr("local connection output is null");
+    *handle = 0;
+    return FDN_NET_IO;
+#else
+    struct sockaddr_un address;
+    fdn_net_socket native_socket = FDN_NET_INVALID_SOCKET;
+    char *native_path;
+    int error;
+    if (handle == NULL) fdn_panic_cstr("local connection output is null");
+    *handle = 0;
+    if (!fdn_net_host_valid(path) || path->length >= sizeof(address.sun_path)) {
+        return FDN_NET_INVALID_ADDRESS;
+    }
+    native_path = fdn_alloc(path->length + 1);
+    (void)memcpy(native_path, path->data, path->length);
+    native_path[path->length] = '\0';
+    (void)memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    (void)memcpy(address.sun_path, native_path, path->length + 1);
+    native_socket = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (native_socket == FDN_NET_INVALID_SOCKET) {
+        fdn_dealloc(native_path);
+        return FDN_NET_IO;
+    }
+    if (connect(native_socket, (const struct sockaddr *)&address,
+                (socklen_t)sizeof(address)) != 0) {
+        error = fdn_net_last_error();
+        fdn_net_close_socket(native_socket);
+        fdn_dealloc(native_path);
+        return fdn_net_refused(error) ? FDN_NET_REFUSED : FDN_NET_IO;
+    }
+    fdn_dealloc(native_path);
+    if (!fdn_net_socket_nonblocking(native_socket)) {
+        fdn_net_close_socket(native_socket);
+        return FDN_NET_IO;
+    }
+    *handle = (uint64_t)(uintptr_t)fdn_net_connection_open(native_socket);
+    return FDN_NET_OK;
+#endif
+}
+
 static void fdn_net_listener_destroy(fdn_net_listener *listener) {
     if (listener->socket != FDN_NET_INVALID_SOCKET) {
         fdn_net_close_socket(listener->socket);
+    }
+    if (listener->local_path != NULL) {
+#if !defined(_WIN32)
+        (void)unlink(listener->local_path);
+#endif
+        fdn_dealloc(listener->local_path);
     }
 #if defined(_WIN32)
     DeleteCriticalSection(&listener->lock);

@@ -526,26 +526,27 @@ fn lockRootPackageMetadata(
     var errors = newPackageErrors()
     lock.nativeLibrary = .None
     lock.foreign.clear()
-    if !manifest.nativeLibrary return errors
-    var name = text.Copy(manifest.name)
-    match copyPackageStringOption(manifest.nativeName) {
-        None: {}
-        Some(value): {
-            name = text.Copy(value)
+    if manifest.nativeLibrary {
+        var name = text.Copy(manifest.name)
+        match copyPackageStringOption(manifest.nativeName) {
+            None: {}
+            Some(value): {
+                name = text.Copy(value)
+            }
         }
-    }
-    var soVersion Option<u32> = .None
-    match manifest.nativeSOVersion {
-        None: {}
-        Some(value): {
-            soVersion = .Some(value)
+        var soVersion Option<u32> = .None
+        match manifest.nativeSOVersion {
+            None: {}
+            Some(value): {
+                soVersion = .Some(value)
+            }
         }
+        lock.nativeLibrary = .Some(lockedNativeLibrary {
+            name = name
+            soVersion = soVersion
+            digest = nativePackageDigest(manifest, target)
+        })
     }
-    lock.nativeLibrary = .Some(lockedNativeLibrary {
-        name = name
-        soVersion = soVersion
-        digest = nativePackageDigest(manifest, target)
-    })
     const projectRoot = path.Parent(rootManifestPath)
     var index u64 = 0
     while index < manifest.foreign.len() {

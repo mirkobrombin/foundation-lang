@@ -69,16 +69,24 @@ fn removeIsInvalidPath($value Result<void, fs.HostError>) bool {
     }
 }
 
+task resizeStreamFile($file own fs.File) fs.FileOutcome {
+    const growing = spawn fs.ResizeFile($file, 6)
+    const grownOutcome = $growing.wait()
+    const fs.FileOutcome { File as grownFile Value as grownValue } = grownOutcome
+    grownValue else error {
+        return fs.FileOutcome { File = grownFile Value = .Err(error) }
+    }
+    const shrinking = spawn fs.ResizeFile($grownFile, 4)
+    const result = $shrinking.wait()
+    result
+}
+
 task exerciseStreaming($rootPath String) i32 {
     const openedRoot = fs.OpenRoot(rootPath) else error {
         discard error
         return 1
     }
-    const opening = spawn fs.OpenRootFile(
-        $openedRoot,
-        "stream.bin",
-        .Truncate
-    )
+    const opening = spawn fs.CreateRootFile($openedRoot, "stream.bin")
     const openedOutcome = $opening.wait()
     const fs.RootFileOpenOutcome {
         Root as root
@@ -100,7 +108,17 @@ task exerciseStreaming($rootPath String) i32 {
         discard root
         return 3
     }
-    const syncing = spawn fs.SyncFile($writtenFile)
+    const resizing = spawn resizeStreamFile($writtenFile)
+    const shrunkOutcome = $resizing.wait()
+    const fs.FileOutcome { File as shrunkFile Value as shrunkValue } =
+        shrunkOutcome
+    shrunkValue else error {
+        discard error
+        discard shrunkFile
+        discard root
+        return 4
+    }
+    const syncing = spawn fs.SyncFile($shrunkFile)
     const syncedOutcome = $syncing.wait()
     const fs.FileOutcome { File as syncedFile Value as syncedValue } =
         syncedOutcome

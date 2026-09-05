@@ -1177,7 +1177,8 @@ task serveConcurrent<E>(
         connections = Group
         requireConnectionCompletion($Value)
     }
-    connections.Shutdown()
+    const stopping = connections.ShutdownTask()
+    discard $stopping.wait()
     discard sender
     const restored = $application.wait()
     const active = own Server<E> {

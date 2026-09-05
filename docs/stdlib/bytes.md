@@ -48,3 +48,8 @@ opaque handle for a call. `TakeRuntimeHandle` consumes a `Bytes` owner and trans
 the callback. `ClaimRuntimeHandle` transfers one runtime allocation back into a `Bytes` owner.
 Mutable storage is never exposed. Application code should use typed byte operations instead of
 persisting or comparing handles.
+
+`CopyFromRaw` copies a native byte range into owned `Bytes`. `Bytes.CopyToRaw` copies the complete
+value into caller-owned native storage and rejects a destination with insufficient capacity. These
+operations are for native adapters that cannot exchange runtime handles. The caller remains
+responsible for proving pointer validity at the raw boundary.

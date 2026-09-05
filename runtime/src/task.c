@@ -27,6 +27,8 @@ static FDN_THREAD_LOCAL fdn_task *fdn_task_queue_head;
 static FDN_THREAD_LOCAL fdn_task *fdn_task_queue_tail;
 static FDN_THREAD_LOCAL size_t fdn_task_count;
 static FDN_THREAD_LOCAL bool fdn_task_current_cancellation;
+static FDN_THREAD_LOCAL fdn_task_cancel_check_fn fdn_task_cancellation_check;
+static FDN_THREAD_LOCAL void *fdn_task_cancellation_context;
 static FDN_THREAD_LOCAL fdn_task *fdn_task_current;
 static FDN_THREAD_LOCAL fdn_task_idle_wake_fn fdn_task_timer_wake;
 static FDN_THREAD_LOCAL fdn_task_idle_deadline_fn fdn_task_timer_deadline;
@@ -176,6 +178,13 @@ typedef struct fdn_supervisor {
     fdn_task *tail;
     bool closed;
 } fdn_supervisor;
+
+typedef struct fdn_supervisor_join_frame {
+    fdn_supervisor *supervisor;
+    fdn_task *current;
+    bool cancel;
+    bool started;
+} fdn_supervisor_join_frame;
 
 uint64_t fdn_monotonic_nanoseconds(void) {
     return foundation_runtime_time_monotonic_nanoseconds();
@@ -649,7 +658,30 @@ void fdn_task_cancellation_leave(bool previous) {
 }
 
 bool fdn_task_cancellation_current(void) {
-    return fdn_task_current_cancellation;
+    return fdn_task_current_cancellation ||
+           (fdn_task_cancellation_check != NULL &&
+            fdn_task_cancellation_check(fdn_task_cancellation_context));
+}
+
+void fdn_task_cancellation_bind(fdn_task_cancel_check_fn cancel,
+                                void *context) {
+    if (cancel == NULL || context == NULL ||
+        fdn_task_cancellation_check != NULL ||
+        fdn_task_cancellation_context != NULL) {
+        fdn_panic_cstr("invalid task cancellation binding");
+    }
+    fdn_task_cancellation_check = cancel;
+    fdn_task_cancellation_context = context;
+}
+
+void fdn_task_cancellation_unbind(fdn_task_cancel_check_fn cancel,
+                                  void *context) {
+    if (fdn_task_cancellation_check != cancel ||
+        fdn_task_cancellation_context != context) {
+        fdn_panic_cstr("invalid task cancellation unbinding");
+    }
+    fdn_task_cancellation_check = NULL;
+    fdn_task_cancellation_context = NULL;
 }
 
 fdn_task *fdn_task_current_get(void) { return fdn_task_current; }
@@ -816,21 +848,136 @@ static fdn_supervisor *fdn_supervisor_from_handle(uint64_t handle) {
     return supervisor;
 }
 
-static void fdn_supervisor_join(fdn_supervisor *supervisor, bool cancel) {
+static bool fdn_supervisor_close(fdn_supervisor *supervisor, bool cancel) {
     fdn_task *task;
     if (supervisor->closed) {
         if (supervisor->head != NULL || supervisor->tail != NULL) {
             fdn_panic_cstr("closed supervisor still owns tasks");
         }
-        return;
+        return false;
     }
     supervisor->closed = true;
-    if (cancel) {
-        task = supervisor->head;
-        while (task != NULL) {
-            fdn_task_request_cancellation(task);
-            task = task->supervisor_next;
+    if (!cancel) {
+        return true;
+    }
+    task = supervisor->head;
+    while (task != NULL) {
+        fdn_task_request_cancellation(task);
+        task = task->supervisor_next;
+    }
+    return true;
+}
+
+static void fdn_supervisor_release_closed(fdn_supervisor *supervisor) {
+    if (!supervisor->closed || supervisor->head != NULL || supervisor->tail != NULL) {
+        fdn_panic_cstr("supervisor must join before release");
+    }
+    --fdn_supervisor_count;
+    fdn_dealloc(supervisor);
+}
+
+static bool fdn_task_poll_discard(fdn_task **task) {
+    fdn_task *owned;
+    if (fdn_task_current == NULL) {
+        fdn_panic_cstr("task poll discard requires an active task");
+    }
+    if (task == NULL || *task == NULL) {
+        fdn_panic_cstr("task handle was already consumed");
+    }
+    owned = *task;
+    if (owned == fdn_task_current) {
+        fdn_panic_cstr("task cannot wait on itself");
+    }
+    if (owned->ready) {
+        if (fdn_task_current->waiting_on != NULL || fdn_task_current->cancel_wait != NULL ||
+            owned->waiter != NULL) {
+            fdn_panic_cstr("invalid completed task waiter");
         }
+        *task = NULL;
+        fdn_task_release(owned, NULL, false);
+        return true;
+    }
+    if (fdn_task_current->waiting_on != NULL || fdn_task_current->cancel_wait != NULL ||
+        owned->waiter != NULL) {
+        fdn_panic_cstr("task already has a waiter");
+    }
+    if (fdn_task_current->cancellation_requested) {
+        fdn_task_request_cancellation(owned);
+    }
+    fdn_task_current->waiting_on = owned;
+    owned->waiter = fdn_task_current;
+    return false;
+}
+
+static void fdn_supervisor_join_cancel_remaining(fdn_supervisor_join_frame *frame) {
+    fdn_task *task;
+    if (frame->current != NULL) {
+        fdn_task_request_cancellation(frame->current);
+    }
+    task = frame->supervisor->head;
+    while (task != NULL) {
+        fdn_task_request_cancellation(task);
+        task = task->supervisor_next;
+    }
+}
+
+static fdn_task_poll fdn_supervisor_join_poll(void *raw, bool cancellation_requested) {
+    fdn_supervisor_join_frame *frame = raw;
+    if (!frame->started) {
+        (void)fdn_supervisor_close(frame->supervisor, frame->cancel);
+        frame->started = true;
+    }
+    if (cancellation_requested && !frame->cancel) {
+        frame->cancel = true;
+        fdn_supervisor_join_cancel_remaining(frame);
+    }
+    while (true) {
+        if (frame->current != NULL && !fdn_task_poll_discard(&frame->current)) {
+            return FDN_TASK_PENDING;
+        }
+        if (frame->supervisor->head == NULL) {
+            fdn_supervisor_release_closed(frame->supervisor);
+            frame->supervisor = NULL;
+            return FDN_TASK_READY;
+        }
+        frame->current = frame->supervisor->head;
+        frame->supervisor->head = frame->current->supervisor_next;
+        if (frame->supervisor->head == NULL) {
+            frame->supervisor->tail = NULL;
+        }
+        frame->current->supervisor_next = NULL;
+        frame->current->supervisor = NULL;
+    }
+}
+
+static void fdn_supervisor_join_move_result(void *raw, void *output) {
+    (void)raw;
+    (void)output;
+}
+
+static void fdn_supervisor_join_drop_frame(void *raw) {
+    fdn_supervisor_join_frame *frame = raw;
+    if (frame->supervisor != NULL || frame->current != NULL) {
+        fdn_panic_cstr("supervisor join task is incomplete");
+    }
+    fdn_dealloc(frame);
+}
+
+static fdn_task *fdn_supervisor_join_task(uint64_t handle, bool cancel) {
+    fdn_supervisor_join_frame *frame = fdn_alloc(sizeof(*frame));
+    frame->supervisor = fdn_supervisor_from_handle(handle);
+    frame->current = NULL;
+    frame->cancel = cancel;
+    frame->started = false;
+    return fdn_task_spawn(frame, fdn_supervisor_join_poll,
+                          fdn_supervisor_join_move_result,
+                          fdn_supervisor_join_drop_frame);
+}
+
+static void fdn_supervisor_join(fdn_supervisor *supervisor, bool cancel) {
+    fdn_task *task;
+    if (!fdn_supervisor_close(supervisor, cancel)) {
+        return;
     }
     while (supervisor->head != NULL) {
         task = supervisor->head;
@@ -880,13 +1027,16 @@ void foundation_runtime_supervisor_cancel(uint64_t handle) {
     fdn_supervisor_join(fdn_supervisor_from_handle(handle), true);
 }
 
+fdn_task *foundation_runtime_supervisor_wait_task(uint64_t handle) {
+    return fdn_supervisor_join_task(handle, false);
+}
+
+fdn_task *foundation_runtime_supervisor_cancel_task(uint64_t handle) {
+    return fdn_supervisor_join_task(handle, true);
+}
+
 void foundation_runtime_supervisor_release(uint64_t handle) {
-    fdn_supervisor *supervisor = fdn_supervisor_from_handle(handle);
-    if (!supervisor->closed || supervisor->head != NULL || supervisor->tail != NULL) {
-        fdn_panic_cstr("supervisor must join before release");
-    }
-    --fdn_supervisor_count;
-    fdn_dealloc(supervisor);
+    fdn_supervisor_release_closed(fdn_supervisor_from_handle(handle));
 }
 
 uint64_t foundation_runtime_supervisor_live_count(void) {

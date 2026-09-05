@@ -47,6 +47,16 @@ fn kindIs(kind fs.TreeKind, expected i32) bool {
     }
 }
 
+fn requireAlreadyExists(value Result<void, fs.HostError>) void {
+    match value {
+        Ok: panic("filesystem operation replaced an occupied path")
+        Err(error): match error {
+            AlreadyExists: {}
+            _: panic("filesystem operation returned the wrong occupied-path error")
+        }
+    }
+}
+
 @target(linux)
 fn expectedPermissions() u32 {
     385
@@ -62,16 +72,8 @@ fn expectedPermissions() u32 {
     438
 }
 
-fn main(args [String]) i32 {
-    const compatible = fs.TreeEntry {
-        Path = "legacy"
-        Kind = .Other
-        Executable = false
-        Size = 0
-    }
-    if compatible.Permissions != 0 || compatible.Modified != 0 return 21
-
-    const openedSource = fs.OpenTree(args[0], 10, 4096) else error {
+fn verifySource(path String) i32 {
+    const openedSource = fs.OpenTree(path, 10, 4096) else error {
         discard error
         return 1
     }
@@ -95,32 +97,56 @@ fn main(args [String]) i32 {
     }
     if !text.Contains(sourceText, "last") return 6
     discard source.Close()
+    0
+}
 
-    const openedRoot = fs.OpenRoot(args[1]) else error {
+fn writeTarget(path String, payload bytes.Bytes) i32 {
+    const openedRoot = fs.OpenRoot(path) else error {
         discard error
         return 7
     }
     var root = openedRoot
-    root.CreateDirectory("nested") else error {
+    root.CreateDirectoryEntry("nested", 448) else error {
         discard error
         return 8
     }
-    const payload = binaryPayload()
+    const duplicate = root.CreateDirectoryEntry("nested", 448)
+    requireAlreadyExists(duplicate)
     root.WriteFile("nested/payload.bin", payload, 416) else error {
         discard error
         return 9
     }
-    root.SetPermissions("nested/payload.bin", 385) else error {
+    root.Rename("nested/payload.bin", "nested/renamed.bin") else error {
+        discard error
+        return 9
+    }
+    root.WriteFile("nested/conflict.bin", payload, 416) else error {
+        discard error
+        return 24
+    }
+    const occupied = root.Rename(
+        "nested/conflict.bin",
+        "nested/renamed.bin"
+    )
+    requireAlreadyExists(occupied)
+    root.RemoveFile("nested/conflict.bin") else error {
+        discard error
+        return 27
+    }
+    root.SetPermissions("nested/renamed.bin", 385) else error {
         discard error
         return 10
     }
-    root.SetModified("nested/payload.bin", 1700000000) else error {
+    root.SetModified("nested/renamed.bin", 1700000000) else error {
         discard error
         return 11
     }
     discard root.Close()
+    0
+}
 
-    const openedOutput = fs.OpenTree(args[1], 10, 4096) else error {
+fn verifyTarget(path String, payload bytes.Bytes) i32 {
+    const openedOutput = fs.OpenTree(path, 10, 4096) else error {
         discard error
         return 12
     }
@@ -136,7 +162,7 @@ fn main(args [String]) i32 {
     }
     const file = requiredEntry($fileNext)
     if !text.Equal(directory.Path, "nested") || !kindIs(directory.Kind, 2) ||
-        !text.Equal(file.Path, "nested/payload.bin") || !kindIs(file.Kind, 1) ||
+        !text.Equal(file.Path, "nested/renamed.bin") || !kindIs(file.Kind, 1) ||
         file.Size != 14 || file.Permissions != expectedPermissions() ||
         file.Modified != 1700000000 {
         return 15
@@ -147,13 +173,16 @@ fn main(args [String]) i32 {
     }
     if !bytes.ConstantTimeEqual(payload, copied) return 17
     discard output.Close()
+    0
+}
 
-    const reopenedRoot = fs.OpenRoot(args[1]) else error {
+fn cleanTarget(path String) i32 {
+    const reopenedRoot = fs.OpenRoot(path) else error {
         discard error
         return 18
     }
     var cleanup = reopenedRoot
-    cleanup.RemoveFile("nested/payload.bin") else error {
+    cleanup.RemoveFile("nested/renamed.bin") else error {
         discard error
         return 19
     }
@@ -162,6 +191,27 @@ fn main(args [String]) i32 {
         return 20
     }
     discard cleanup.Close()
+    0
+}
+
+fn main(args [String]) i32 {
+    const compatible = fs.TreeEntry {
+        Path = "legacy"
+        Kind = .Other
+        Executable = false
+        Size = 0
+    }
+    if compatible.Permissions != 0 || compatible.Modified != 0 return 21
+
+    const sourceStatus = verifySource(args[0])
+    if sourceStatus != 0 return sourceStatus
+    const payload = binaryPayload()
+    const writeStatus = writeTarget(args[1], payload)
+    if writeStatus != 0 return writeStatus
+    const verifyStatus = verifyTarget(args[1], payload)
+    if verifyStatus != 0 return verifyStatus
+    const cleanStatus = cleanTarget(args[1])
+    if cleanStatus != 0 return cleanStatus
 
     print("fs tree ok")
     0

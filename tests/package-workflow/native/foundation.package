@@ -1,0 +1,10 @@
+format foundation.package/v1
+name example.native
+version 1.0.0
+language 1
+source src
+native_library c
+native_name example_native
+native_soversion 1
+native_source foreign/native.c
+foreign c example-native 1.0.0 path foreign abi c/v1

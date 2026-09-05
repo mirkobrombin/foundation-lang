@@ -17,6 +17,7 @@
 #define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
 #endif
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -160,7 +161,11 @@ static int run_test(int argc, char **argv) {
     fdn_string root = fdn_string_static("", 0);
     fdn_string outside = fdn_string_static("", 0);
     fdn_string nested = fdn_string_static("nested/deep", 11);
+    fdn_string single = fdn_string_static("single", 6);
     fdn_string payload_relative = fdn_string_static("nested/deep/payload.bin", 23);
+    fdn_string rename_source = fdn_string_static("rename-source.bin", 17);
+    fdn_string rename_conflict = fdn_string_static("rename-conflict.bin", 19);
+    fdn_string rename_destination = fdn_string_static("single/renamed.bin", 18);
     fdn_string keep_relative = fdn_string_static("keep.bin", 8);
     fdn_string file_link_relative = fdn_string_static("payload-link", 12);
     fdn_string payload_value = fdn_string_static(
@@ -177,16 +182,23 @@ static int run_test(int argc, char **argv) {
     const uint8_t *read_data = NULL;
     size_t read_length = 0;
     char payload_path[4096];
+    char exclusive_path[4096];
+    char single_path[4096];
     char keep_path[4096];
     char outside_path[4096];
     char file_link[4096];
     char directory_link[4096];
     char alias_path[4096];
     fdn_string payload_path_value;
+    fdn_string exclusive_path_value;
     fdn_string file_link_value;
     fdn_string alias_path_value;
     bool exists = false;
     int links_created;
+#if !defined(_WIN32)
+    mode_t previous_mask;
+    struct stat single_info;
+#endif
     if (argc != 2) {
         return 1;
     }
@@ -198,6 +210,9 @@ static int run_test(int argc, char **argv) {
         foundation_runtime_fs_create_temp_directory(&parent, &prefix, &outside) != 0 ||
         !join_path(payload_path, sizeof(payload_path), &root,
                    "nested/deep/payload.bin") ||
+        !join_path(exclusive_path, sizeof(exclusive_path), &root,
+                   "exclusive.bin") ||
+        !join_path(single_path, sizeof(single_path), &root, "single") ||
         !join_path(file_link, sizeof(file_link), &root, "payload-link") ||
         !join_path(directory_link, sizeof(directory_link), &root, "outside-link") ||
         !join_path(alias_path, sizeof(alias_path), &root,
@@ -209,12 +224,44 @@ static int run_test(int argc, char **argv) {
         return 2;
     }
     payload_path_value = text(payload_path);
+    exclusive_path_value = text(exclusive_path);
     file_link_value = text(file_link);
     alias_path_value = text(alias_path);
     if (foundation_runtime_fs_root_open(&root, &root_writer) != 0 ||
-        foundation_runtime_fs_root_create_directory(root_writer, &nested) != 0 ||
+        foundation_runtime_fs_root_create_directory(root_writer, &nested) != 0) {
+        return 3;
+    }
+#if !defined(_WIN32)
+    previous_mask = umask(0077);
+    if (foundation_runtime_fs_root_create_directory_entry(
+            root_writer, &single, 488) != 0) {
+        (void)umask(previous_mask);
+        return 3;
+    }
+    (void)umask(previous_mask);
+    if (stat(single_path, &single_info) != 0 ||
+        (single_info.st_mode & 0777) != 0750) {
+        return 3;
+    }
+#else
+    if (foundation_runtime_fs_root_create_directory_entry(
+            root_writer, &single, 488) != 0) {
+        return 3;
+    }
+#endif
+    if (
+        foundation_runtime_fs_root_create_directory_entry(
+            root_writer, &single, 488) != 7 ||
         foundation_runtime_fs_root_write_file(root_writer, &payload_relative,
                                               payload, 416) != 0 ||
+        foundation_runtime_fs_root_write_file(root_writer, &rename_source,
+                                              payload, 416) != 0 ||
+        foundation_runtime_fs_root_rename(root_writer, &rename_source,
+                                          &rename_destination) != 0 ||
+        foundation_runtime_fs_root_write_file(root_writer, &rename_conflict,
+                                              payload, 416) != 0 ||
+        foundation_runtime_fs_root_rename(root_writer, &rename_conflict,
+                                          &rename_destination) != 7 ||
         foundation_runtime_fs_root_open(&outside, &outside_writer) != 0 ||
         foundation_runtime_fs_root_write_file(outside_writer, &keep_relative,
                                               payload, 384) != 0 ||
@@ -256,6 +303,12 @@ static int run_test(int argc, char **argv) {
     if (foundation_runtime_fs_file_open(&payload_path_value, 2, &file) != 0 ||
         foundation_runtime_fs_file_seek(file, 2) != 0 ||
         foundation_runtime_fs_file_write(file, patch) != 0 ||
+        foundation_runtime_fs_file_resize(file, 6) != 0 ||
+        foundation_runtime_fs_file_write(file, patch) != 0 ||
+        foundation_runtime_fs_file_size(file, &size) != 0 || size != 6 ||
+        foundation_runtime_fs_file_resize(file, sizeof(patched_data)) != 0 ||
+        foundation_runtime_fs_file_size(file, &size) != 0 ||
+        size != sizeof(patched_data) ||
         foundation_runtime_fs_file_sync(file) != 0 ||
         foundation_runtime_fs_file_close(&file) != 0 ||
         foundation_runtime_fs_read_bytes_sync_limited(
@@ -266,6 +319,12 @@ static int run_test(int argc, char **argv) {
         return 8;
     }
     foundation_runtime_bytes_close(&read);
+    if (foundation_runtime_fs_file_open(&exclusive_path_value, 4, &file) != 0 ||
+        foundation_runtime_fs_file_close(&file) != 0 ||
+        foundation_runtime_fs_file_open(&exclusive_path_value, 4, &file) != 7 ||
+        file != 0) {
+        return 9;
+    }
     if (foundation_runtime_fs_file_open(&payload_path_value, 3, &file) != 0 ||
         foundation_runtime_fs_file_write(file, payload) != 0 ||
         foundation_runtime_fs_file_sync(file) != 0 ||
@@ -277,7 +336,7 @@ static int run_test(int argc, char **argv) {
         read_length != sizeof(payload_data) ||
         memcmp(read_data, payload_data, sizeof(payload_data)) != 0 ||
         foundation_runtime_fs_file_close(&file) != 0) {
-        return 9;
+        return 10;
     }
     foundation_runtime_bytes_close(&chunk);
     {
@@ -285,7 +344,7 @@ static int run_test(int argc, char **argv) {
         if (foundation_runtime_fs_root_file_open(
                 root_writer, &invalid_relative, 1, &file) != 3 ||
             file != 0) {
-            return 10;
+            return 11;
         }
     }
     if (foundation_runtime_fs_remove_tree(&alias_path_value, 64, 8) != 3 ||
@@ -293,13 +352,13 @@ static int run_test(int argc, char **argv) {
         !filesystem_root_is_rejected(&root) ||
         foundation_runtime_fs_exists(&payload_path_value, &exists) != 0 ||
         !exists) {
-        return 11;
+        return 12;
     }
     links_created = create_links(file_link, keep_path, directory_link,
                                  outside_path);
 #if !defined(_WIN32)
     if (links_created == 0) {
-        return 12;
+        return 13;
     }
 #endif
     if (links_created != 0 &&
@@ -309,29 +368,29 @@ static int run_test(int argc, char **argv) {
          foundation_runtime_fs_root_file_open(root_writer, &file_link_relative,
                                               1, &file) != 3 ||
          file != 0)) {
-        return 13;
+        return 14;
     }
     if (foundation_runtime_fs_root_close(&root_writer) != 0) {
-        return 14;
+        return 15;
     }
     if (foundation_runtime_fs_remove_tree(&root, 1, 8) != 5 ||
         foundation_runtime_fs_exists(&root, &exists) != 0 || !exists ||
         foundation_runtime_fs_remove_tree(&root, 64, 8) != 0 ||
         foundation_runtime_fs_exists(&root, &exists) != 0 || exists) {
-        return 15;
+        return 16;
     }
     {
         fdn_string keep_value = text(keep_path);
         if (foundation_runtime_fs_exists(&keep_value, &exists) != 0 || !exists ||
             foundation_runtime_fs_remove_tree(&outside, 8, 4) != 0) {
-            return 16;
+            return 17;
         }
     }
     foundation_runtime_bytes_close(&payload);
     foundation_runtime_bytes_close(&patch);
     fdn_string_drop(&root);
     fdn_string_drop(&outside);
-    return fdn_live_allocations() == 0 ? 0 : 17;
+    return fdn_live_allocations() == 0 ? 0 : 18;
 }
 
 int main(int argc, char **argv) {

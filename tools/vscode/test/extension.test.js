@@ -208,6 +208,11 @@ test("recognizes package and lock directives with dedicated scopes", () => {
     const nativeLibrary = new RegExp(packageGrammar.repository.nativeLibrary.patterns[0].match)
         .exec("native_library c");
     assert.deepEqual(nativeLibrary?.slice(1), ["native_library", "c"]);
+    const nativeSource = new RegExp(packageGrammar.repository.nativeSource.patterns[0].match)
+        .exec("native_source native/fuse.c target linux");
+    assert.deepEqual(nativeSource?.slice(1), [
+        "native_source", "native/fuse.c", "target", "linux"
+    ]);
     const nativeLink = new RegExp(packageGrammar.repository.nativeLink.patterns[0].match)
         .exec("native_link m target linux");
     assert.deepEqual(nativeLink?.slice(1), ["native_link", "m", "target", "linux"]);

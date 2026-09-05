@@ -657,9 +657,11 @@ task drain(
 ) void {
     if cancel {
         cancellation.Cancel()
-        supervisor.Cancel()
+        const stopping = supervisor.CancelTask()
+        discard $stopping.wait()
     } else {
-        supervisor.Shutdown()
+        const stopping = supervisor.ShutdownTask()
+        discard $stopping.wait()
     }
     discard cancellation
     discard completed.send()

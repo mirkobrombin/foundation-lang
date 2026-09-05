@@ -878,7 +878,8 @@ task serveHooks<T>(
     discard removeHooks
     discard registryEndpoint
     discard nextOrder
-    supervisor.Shutdown()
+    const stopping = supervisor.ShutdownTask()
+    discard $stopping.wait()
 }
 
 fn addRegister<T>(
@@ -973,7 +974,8 @@ task serveRegisterHook<T>(
             }
         }
     }
-    supervisor.Shutdown()
+    const stopping = supervisor.ShutdownTask()
+    discard $stopping.wait()
 }
 
 fn startRegisterCallback<T>(
@@ -1006,7 +1008,8 @@ task serveRemoveHook(
             }
         }
     }
-    supervisor.Shutdown()
+    const stopping = supervisor.ShutdownTask()
+    discard $stopping.wait()
 }
 
 fn startRemoveCallback(

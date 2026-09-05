@@ -203,6 +203,7 @@ if(FOUNDATION_BUILD_OPENSSL_PROVIDER)
     find_package(OpenSSL 3.5.6 EXACT REQUIRED COMPONENTS SSL Crypto)
     add_library(foundation_openssl_provider STATIC
         providers/openssl/foundation_openssl.c
+        providers/openssl/foundation_openssl_quic.c
     )
     target_include_directories(foundation_openssl_provider
         PUBLIC providers/openssl
@@ -2352,6 +2353,12 @@ if(BUILD_TESTING)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/temporary-field-cleanup.fn
                 --backend ${backend}
         )
+        add_test(
+            NAME compiler.test.match-exit-cleanup.${backend}
+            COMMAND $<TARGET_FILE:foundationc> test
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/match-exit-cleanup.fn
+                --backend ${backend}
+        )
     endforeach()
     add_test(
         NAME compiler.check.accept
@@ -2422,6 +2429,15 @@ if(BUILD_TESTING)
             -DNM=${CMAKE_NM}
             -DREADELF=${CMAKE_READELF}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-library-artifacts.cmake
+    )
+    add_test(
+        NAME compiler.run.native-package-consumer
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DCONSUMER=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/native-consumer
+            -DDEPENDENCY=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/native-interface
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/native-package-consumer-test
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-native-package-consumer.cmake
     )
     find_program(FOUNDATION_ZIG_EXECUTABLE NAMES zig
                  HINTS "$ENV{HOME}/.local/zig-0.16.0")
@@ -3430,15 +3446,18 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/resiliency-policies.out
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
     )
-    add_test(
-        NAME compiler.run.raw-pointers
-        COMMAND ${CMAKE_COMMAND}
-            -DCOMPILER=$<TARGET_FILE:foundationc>
-            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/raw-pointers.fn
-            -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/raw_pointers.c
-            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/raw-pointers.out
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
-    )
+    foreach(raw_pointer_backend IN ITEMS llvm c)
+        add_test(
+            NAME compiler.run.raw-pointers.${raw_pointer_backend}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/raw-pointers.fn
+                -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/raw_pointers.c
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/raw-pointers.out
+                -DBACKEND=${raw_pointer_backend}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+        )
+    endforeach()
     foreach(native_systems_backend IN ITEMS llvm c)
         add_test(
             NAME compiler.run.native-systems-${native_systems_backend}
@@ -5014,6 +5033,7 @@ if(BUILD_TESTING)
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.out
             -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
             -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+            -DRUNTIME_FS_HOST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/fs_host.c
             -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
             -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
             -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c
@@ -8492,6 +8512,7 @@ if(BUILD_TESTING)
                 -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/network-tcp.out
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
                 -DRUNTIME_CRYPTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/crypto.c
+                -DRUNTIME_FS_HOST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/fs_host.c
                 -DRUNTIME_TASK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/task.c
                 -DRUNTIME_CANCELLATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/cancellation.c
                 -DRUNTIME_BLOCKING_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/blocking.c

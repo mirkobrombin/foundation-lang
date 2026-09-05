@@ -42,6 +42,11 @@ extern c fn createRootDirectoryNative(
     handle u64,
     path String
 ) i32 as foundation_runtime_fs_root_create_directory
+extern c fn createRootDirectoryEntryNative(
+    handle u64,
+    path String,
+    permissions u32
+) i32 as foundation_runtime_fs_root_create_directory_entry
 extern c fn writeRootFileNative(
     handle u64,
     path String,
@@ -62,6 +67,11 @@ extern c fn removeRootEmptyDirectoryNative(
     handle u64,
     path String
 ) i32 as foundation_runtime_fs_root_remove_empty_directory
+extern c fn renameRootEntryNative(
+    handle u64,
+    source String,
+    destination String
+) i32 as foundation_runtime_fs_root_rename
 extern c fn setRootPermissionsNative(
     handle u64,
     path String,
@@ -215,6 +225,22 @@ struct RootWriter {
         .Err(treeErrorFor(status))
     }
 
+    // Creates exactly one relative directory and fails when it exists.
+    fn CreateDirectoryEntry(
+        &self,
+        path String,
+        permissions u32
+    ) Result<void, HostError> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = createRootDirectoryEntryNative(
+            self.handle,
+            path,
+            permissions
+        )
+        if status == 0 return .Ok
+        .Err(hostErrorFor(status))
+    }
+
     // Atomically writes one file with portable permission bits.
     fn WriteFile(
         self,
@@ -265,6 +291,41 @@ struct RootWriter {
         const status = removeRootEmptyDirectoryNative(self.handle, path)
         if status == 0 return .Ok
         .Err(treeErrorFor(status))
+    }
+
+    // Removes one file and preserves the native error category.
+    fn RemoveFileDetailed(&self, path String) Result<void, HostError> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = removeRootFileNative(self.handle, path)
+        if status == 0 return .Ok
+        .Err(hostErrorFor(status))
+    }
+
+    // Removes one empty directory and preserves the native error category.
+    fn RemoveEmptyDirectoryDetailed(
+        &self,
+        path String
+    ) Result<void, HostError> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = removeRootEmptyDirectoryNative(self.handle, path)
+        if status == 0 return .Ok
+        .Err(hostErrorFor(status))
+    }
+
+    // Moves one entry between two relative paths without following parents.
+    fn Rename(
+        &self,
+        source String,
+        destination String
+    ) Result<void, HostError> {
+        if self.handle == 0 return .Err(.Closed)
+        const status = renameRootEntryNative(
+            self.handle,
+            source,
+            destination
+        )
+        if status == 0 return .Ok
+        .Err(hostErrorFor(status))
     }
 
     // Applies lower-nine permission bits without following symbolic links.

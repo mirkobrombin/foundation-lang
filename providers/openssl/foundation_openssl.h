@@ -20,6 +20,8 @@ enum foundation_openssl_status {
     FOUNDATION_OPENSSL_LIMIT_EXCEEDED = 10,
     FOUNDATION_OPENSSL_TIMEOUT = 11,
     FOUNDATION_OPENSSL_CANCELLED = 12,
+    FOUNDATION_OPENSSL_CLOSED = 13,
+    FOUNDATION_OPENSSL_RESET = 14,
 };
 
 enum foundation_openssl_algorithm {
@@ -151,5 +153,40 @@ int32_t foundation_openssl_secure_read_exact_bytes(uint64_t stream,
                                                    uint64_t *value);
 int32_t foundation_openssl_secure_write_bytes(uint64_t stream,
                                               uint64_t value);
+
+int32_t foundation_openssl_quic_listener_open(
+    const fdn_string *address, uint64_t port, uint64_t certificate,
+    uint64_t private_key, const fdn_string *protocol, uint64_t *listener,
+    uint64_t *bound_port);
+void foundation_openssl_quic_listener_close(uint64_t *listener);
+int32_t foundation_openssl_quic_listener_accept(uint64_t listener,
+                                                uint64_t *connection);
+int32_t foundation_openssl_quic_connect_pinned(
+    const fdn_string *server_name, uint64_t port, uint64_t raw_public_key,
+    const fdn_string *protocol, uint64_t *connection);
+uint64_t foundation_openssl_quic_connection_retain(uint64_t connection);
+void foundation_openssl_quic_connection_release(uint64_t *connection);
+void foundation_openssl_quic_connection_close(uint64_t *connection);
+int32_t foundation_openssl_quic_connection_peer(uint64_t connection,
+                                                fdn_string *address);
+int32_t foundation_openssl_quic_connection_open_stream(uint64_t connection,
+                                                       uint64_t *stream);
+int32_t foundation_openssl_quic_connection_accept_stream(uint64_t connection,
+                                                         uint64_t *stream);
+void foundation_openssl_quic_stream_close(uint64_t *stream);
+void foundation_openssl_quic_stream_abort(uint64_t *stream);
+int32_t foundation_openssl_quic_stream_finish(uint64_t *stream);
+int32_t foundation_openssl_quic_stream_split_controlled(
+    uint64_t *stream, uint64_t *reader, uint64_t *writer,
+    uint64_t *controller);
+uint64_t foundation_openssl_quic_stream_id(uint64_t stream);
+uint64_t foundation_openssl_quic_stream_control(uint64_t stream);
+int32_t foundation_openssl_quic_stream_read(uint64_t stream, uint64_t limit,
+                                            uint64_t *value);
+int32_t foundation_openssl_quic_stream_read_exact(uint64_t stream,
+                                                  uint64_t length,
+                                                  uint64_t *value);
+int32_t foundation_openssl_quic_stream_write(uint64_t stream,
+                                             uint64_t value);
 
 #endif

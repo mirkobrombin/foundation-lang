@@ -91,6 +91,13 @@ struct PackageManifest {
 
         bool operator==(const NativeLink &) const = default;
     };
+    struct NativeSource {
+        std::filesystem::path path;
+        std::optional<TargetPlatform> target;
+
+        bool operator==(const NativeSource &) const = default;
+    };
+    std::vector<NativeSource> nativeSources;
     std::vector<NativeLink> nativeLinks;
     struct Foreign {
         std::string ecosystem;

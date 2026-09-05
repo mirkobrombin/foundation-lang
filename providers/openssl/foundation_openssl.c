@@ -549,13 +549,26 @@ cleanup:
     return status;
 }
 
+static int foundation_openssl_add_certificate_extension(X509 *certificate, X509 *issuer,
+                                                        int identifier, const char *value) {
+    X509V3_CTX context;
+    X509_EXTENSION *extension;
+    int result;
+
+    X509V3_set_ctx(&context, issuer, certificate, NULL, NULL, 0);
+    extension = X509V3_EXT_conf_nid(NULL, &context, identifier, value);
+    if (extension == NULL) return 0;
+    result = X509_add_ext(certificate, extension, -1);
+    X509_EXTENSION_free(extension);
+    return result;
+}
+
 int32_t foundation_openssl_ed25519_self_signed(uint64_t private_key,
                                                 uint64_t *certificate) {
     foundation_openssl_bytes private_bytes = {0};
     EVP_PKEY *key = NULL;
     X509 *x509 = NULL;
     X509_NAME *name;
-    X509_EXTENSION *extension = NULL;
     BIO *certificate_bio = NULL;
     BUF_MEM *certificate_data = NULL;
     uint64_t serial = 0;
@@ -581,14 +594,21 @@ int32_t foundation_openssl_ed25519_self_signed(uint64_t private_key,
     name = X509_get_subject_name(x509);
     if (name == NULL ||
         X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                                   (const unsigned char *)"remolo-host", -1, -1, 0) != 1 ||
+                                   (const unsigned char *)"Foundation Local Identity", -1, -1,
+                                   0) != 1 ||
+        X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC,
+                                   (const unsigned char *)"Foundation", -1, -1, 0) != 1 ||
         X509_set_issuer_name(x509, name) != 1) goto cleanup;
-    extension = X509V3_EXT_conf_nid(NULL, NULL, NID_key_usage, "digitalSignature");
-    if (extension == NULL || X509_add_ext(x509, extension, -1) != 1) goto cleanup;
-    X509_EXTENSION_free(extension);
-    extension = X509V3_EXT_conf_nid(NULL, NULL, NID_ext_key_usage,
-                                    "serverAuth,clientAuth");
-    if (extension == NULL || X509_add_ext(x509, extension, -1) != 1 ||
+    if (!foundation_openssl_add_certificate_extension(x509, x509, NID_basic_constraints,
+                                                      "critical,CA:FALSE") ||
+        !foundation_openssl_add_certificate_extension(x509, x509, NID_key_usage,
+                                                      "critical,digitalSignature") ||
+        !foundation_openssl_add_certificate_extension(x509, x509, NID_ext_key_usage,
+                                                      "serverAuth,clientAuth") ||
+        !foundation_openssl_add_certificate_extension(x509, x509, NID_subject_key_identifier,
+                                                      "hash") ||
+        !foundation_openssl_add_certificate_extension(x509, x509, NID_authority_key_identifier,
+                                                      "keyid:always") ||
         X509_sign(x509, key, NULL) <= 0) goto cleanup;
     certificate_bio = BIO_new(BIO_s_mem());
     if (certificate_bio == NULL || PEM_write_bio_X509(certificate_bio, x509) != 1) goto cleanup;
@@ -599,7 +619,6 @@ int32_t foundation_openssl_ed25519_self_signed(uint64_t private_key,
                                         certificate) != FOUNDATION_OPENSSL_OK) goto cleanup;
     status = FOUNDATION_OPENSSL_OK;
 cleanup:
-    X509_EXTENSION_free(extension);
     BIO_free(certificate_bio);
     X509_free(x509);
     EVP_PKEY_free(key);

@@ -17,6 +17,7 @@
 #endif
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int32_t foundation_openssl_test_response_frame(const char *response, uint64_t response_length,
@@ -237,6 +238,160 @@ static int test_http_response_framing(void) {
 }
 
 #ifndef _WIN32
+typedef struct quic_exchange {
+    uint64_t listener;
+    uint64_t connection;
+    int passed;
+} quic_exchange;
+
+static uint64_t test_quic_payload(size_t length) {
+    char *data = malloc(length);
+    fdn_string text;
+    uint64_t result;
+    if (data == NULL) return 0;
+    memset(data, 'q', length);
+    text = fdn_string_static(data, length);
+    result = foundation_runtime_bytes_from_text(&text);
+    free(data);
+    return result;
+}
+
+static int test_quic_payload_matches(uint64_t value, size_t length) {
+    uint64_t actual_length = 0;
+    size_t index;
+    if (foundation_runtime_bytes_length(value, &actual_length) != 0 ||
+        actual_length != length) return 0;
+    for (index = 0; index < length; ++index) {
+        uint64_t byte = 0;
+        if (foundation_runtime_bytes_at(value, index, &byte) != 0 || byte != 'q') return 0;
+    }
+    return 1;
+}
+
+static int test_quic_server_stream(uint64_t connection, size_t response_length) {
+    uint64_t stream = 0;
+    uint64_t reader = 0;
+    uint64_t writer = 0;
+    uint64_t controller = 0;
+    uint64_t request = 0;
+    uint64_t response = 0;
+    int result = 0;
+    if (foundation_openssl_quic_connection_accept_stream(connection, &stream) !=
+            FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_quic_stream_split_controlled(&stream, &reader, &writer,
+                                                         &controller) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_quic_stream_read_exact(reader, 1, &request) != FOUNDATION_OPENSSL_OK) {
+        goto cleanup;
+    }
+    response = test_quic_payload(response_length);
+    if (response == 0 ||
+        foundation_openssl_quic_stream_write(writer, response) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_quic_stream_finish(&writer) != FOUNDATION_OPENSSL_OK) goto cleanup;
+    result = 1;
+cleanup:
+    foundation_runtime_bytes_close(&response);
+    foundation_runtime_bytes_close(&request);
+    foundation_openssl_quic_stream_close(&controller);
+    foundation_openssl_quic_stream_close(&writer);
+    foundation_openssl_quic_stream_close(&reader);
+    foundation_openssl_quic_stream_close(&stream);
+    return result;
+}
+
+static void *test_quic_server(void *argument) {
+    quic_exchange *exchange = argument;
+    uint64_t connection = 0;
+    size_t index;
+    if (foundation_openssl_quic_listener_accept(exchange->listener, &connection) !=
+        FOUNDATION_OPENSSL_OK) return NULL;
+    for (index = 0; index < 3; ++index) {
+        const size_t response_length = index == 2 ? 70000 : 2;
+        if (!test_quic_server_stream(connection, response_length)) {
+            foundation_openssl_quic_connection_close(&connection);
+            return NULL;
+        }
+    }
+    exchange->connection = connection;
+    exchange->passed = 1;
+    return NULL;
+}
+
+static int test_quic_client_stream(uint64_t connection, size_t response_length) {
+    uint64_t stream = 0;
+    uint64_t reader = 0;
+    uint64_t writer = 0;
+    uint64_t controller = 0;
+    uint64_t request = test_bytes("q");
+    uint64_t response = 0;
+    int result = 0;
+    if (request == 0 ||
+        foundation_openssl_quic_connection_open_stream(connection, &stream) !=
+            FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_quic_stream_split_controlled(&stream, &reader, &writer,
+                                                         &controller) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_quic_stream_write(writer, request) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_quic_stream_finish(&writer) != FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_quic_stream_read_exact(reader, response_length, &response) !=
+            FOUNDATION_OPENSSL_OK ||
+        !test_quic_payload_matches(response, response_length)) goto cleanup;
+    result = 1;
+cleanup:
+    foundation_runtime_bytes_close(&response);
+    foundation_runtime_bytes_close(&request);
+    foundation_openssl_quic_stream_close(&controller);
+    foundation_openssl_quic_stream_close(&writer);
+    foundation_openssl_quic_stream_close(&reader);
+    foundation_openssl_quic_stream_close(&stream);
+    return result;
+}
+
+static int test_quic_large_response(void) {
+    fdn_string address = fdn_string_static("127.0.0.1", 9);
+    fdn_string protocol = fdn_string_static("foundation-test/1", 17);
+    uint64_t private_key = 0;
+    uint64_t public_key = 0;
+    uint64_t raw_public_key = 0;
+    uint64_t certificate = 0;
+    uint64_t listener = 0;
+    uint64_t port = 0;
+    uint64_t client = 0;
+    quic_exchange exchange;
+    pthread_t thread;
+    int thread_started = 0;
+    int result = 0;
+    size_t index;
+    memset(&exchange, 0, sizeof(exchange));
+    if (foundation_openssl_ed25519_generate(&private_key, &public_key, &raw_public_key) !=
+            FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_ed25519_self_signed(private_key, &certificate) !=
+            FOUNDATION_OPENSSL_OK ||
+        foundation_openssl_quic_listener_open(&address, 0, certificate, private_key, &protocol,
+                                               &listener, &port) != FOUNDATION_OPENSSL_OK) {
+        goto cleanup;
+    }
+    exchange.listener = listener;
+    if (pthread_create(&thread, NULL, test_quic_server, &exchange) != 0) goto cleanup;
+    thread_started = 1;
+    if (foundation_openssl_quic_connect_pinned(&address, port, raw_public_key, &protocol,
+                                               &client) != FOUNDATION_OPENSSL_OK) goto cleanup;
+    for (index = 0; index < 3; ++index) {
+        if (!test_quic_client_stream(client, index == 2 ? 70000 : 2)) goto cleanup;
+    }
+    pthread_join(thread, NULL);
+    thread_started = 0;
+    result = exchange.passed;
+cleanup:
+    foundation_openssl_quic_connection_close(&client);
+    foundation_openssl_quic_listener_close(&listener);
+    if (thread_started) pthread_join(thread, NULL);
+    foundation_openssl_quic_connection_close(&exchange.connection);
+    foundation_runtime_bytes_close(&certificate);
+    foundation_runtime_bytes_close(&raw_public_key);
+    foundation_runtime_bytes_close(&public_key);
+    foundation_runtime_bytes_close(&private_key);
+    return result;
+}
+
 typedef struct tls_fixture {
     EVP_PKEY *ca_key;
     X509 *ca;
@@ -626,7 +781,7 @@ int main(void) {
         return 1;
     }
 #ifndef _WIN32
-    if (!test_tls_server() || !test_tls_server_close_races() ||
+    if (!test_quic_large_response() || !test_tls_server() || !test_tls_server_close_races() ||
         !test_pinned_tls_rejects_wrong_alpn()) return 1;
 #endif
     puts("openssl asymmetric provider: ok");

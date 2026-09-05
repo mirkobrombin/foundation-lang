@@ -1,0 +1,6 @@
+format foundation.package/v1
+name sample.native.consumer
+version 1.0.0
+language 1
+source src
+dependency sample.native 1.0.0 path ../native-interface

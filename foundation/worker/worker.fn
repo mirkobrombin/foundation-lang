@@ -4,6 +4,8 @@ extern c fn openNative() u64 as foundation_runtime_supervisor_open
 extern c fn adoptNative(handle u64, $pending Task<void>) void as foundation_runtime_supervisor_adopt
 extern c fn waitNative(handle u64) void as foundation_runtime_supervisor_wait
 extern c fn cancelNative(handle u64) void as foundation_runtime_supervisor_cancel
+extern c fn waitTaskNative(handle u64) Task < void > as foundation_runtime_supervisor_wait_task
+extern c fn cancelTaskNative(handle u64) Task < void > as foundation_runtime_supervisor_cancel_task
 extern c fn releaseNative(handle u64) void as foundation_runtime_supervisor_release
 extern c fn openPoolNative(workers u64) u64 as foundation_runtime_pool_open
 extern c fn submitPoolNative(handle u64, $pending Task<void>) void as foundation_runtime_pool_submit
@@ -56,6 +58,22 @@ struct Supervisor {
     // Requests cancellation and then waits for every supervised task to finish.
     fn Cancel($self) void {
         cancelNative(self.handle)
+    }
+
+    // Stops accepting work and returns a task that joins every supervised task.
+    fn ShutdownTask($self) Task<void> {
+        var active = self
+        const handle = replace active.handle with 0
+        discard active
+        waitTaskNative(handle)
+    }
+
+    // Requests cancellation and returns a task that joins every supervised task.
+    fn CancelTask($self) Task<void> {
+        var active = self
+        const handle = replace active.handle with 0
+        discard active
+        cancelTaskNative(handle)
     }
 
     fn drop(&self) void {
@@ -127,6 +145,26 @@ struct Group<T> {
         discard capacity
         discard pending
         supervisor.Cancel()
+    }
+
+    // Releases the group through a task-native join.
+    fn ShutdownTask($self) Task<void> {
+        const Group { supervisor sender receiver capacity pending } = self
+        discard sender
+        discard receiver
+        discard capacity
+        discard pending
+        supervisor.ShutdownTask()
+    }
+
+    // Cancels the group through a task-native join.
+    fn CancelTask($self) Task<void> {
+        const Group { supervisor sender receiver capacity pending } = self
+        discard sender
+        discard receiver
+        discard capacity
+        discard pending
+        supervisor.CancelTask()
     }
 }
 

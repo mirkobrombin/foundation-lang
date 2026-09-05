@@ -1,0 +1,50 @@
+enum OwnedChoice {
+    Empty
+    Value(value String)
+}
+
+fn rejectsValue($choice OwnedChoice) bool {
+    match choice {
+        Empty: false
+        _: { return true }
+    }
+}
+
+fn breaksFromMatch() bool {
+    while true {
+        const choice = OwnedChoice.Value(value = "owned")
+        match choice {
+            Empty: {}
+            _: { break }
+        }
+    }
+    true
+}
+
+fn continuesFromMatch() bool {
+    var round = 0
+    while round < 2 {
+        round = round + 1
+        const choice = OwnedChoice.Value(value = "owned")
+        match choice {
+            Empty: {}
+            _: {
+                if round == 1 continue
+            }
+        }
+        return round == 2
+    }
+    false
+}
+
+test "match return drops its inspected value" {
+    expect(rejectsValue(OwnedChoice.Value(value = "owned")))
+}
+
+test "match break drops its inspected value" {
+    expect(breaksFromMatch())
+}
+
+test "match continue drops its inspected value" {
+    expect(continuesFromMatch())
+}

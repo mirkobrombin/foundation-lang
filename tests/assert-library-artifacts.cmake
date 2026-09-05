@@ -13,14 +13,13 @@ if(NOT resolve_result EQUAL 0)
     message(FATAL_ERROR "cannot resolve native library fixture:\n${resolve_output}${resolve_error}")
 endif()
 
-set(native "${project}/native/libfuse/increment.c")
 set(shared_dist "${WORK}/shared")
 set(static_dist "${WORK}/static")
 set(pic_static_llvm_dist "${WORK}/static-pic-llvm")
 set(pic_static_c_dist "${WORK}/static-pic-c")
 execute_process(
     COMMAND "${COMPILER}" build-library "${project}" -o "${shared_dist}"
-            --kind shared --backend llvm --native "${native}"
+            --kind shared --backend llvm
     RESULT_VARIABLE shared_result
     OUTPUT_VARIABLE shared_output
     ERROR_VARIABLE shared_error
@@ -30,7 +29,7 @@ if(NOT shared_result EQUAL 0)
 endif()
 execute_process(
     COMMAND "${COMPILER}" build-library "${project}" -o "${static_dist}"
-            --kind static --backend c --native "${native}"
+            --kind static --backend c
     RESULT_VARIABLE static_result
     OUTPUT_VARIABLE static_output
     ERROR_VARIABLE static_error
@@ -40,7 +39,7 @@ if(NOT static_result EQUAL 0)
 endif()
 execute_process(
     COMMAND "${COMPILER}" build-library "${project}" -o "${pic_static_llvm_dist}"
-            --kind static --pic --backend llvm --native "${native}"
+            --kind static --pic --backend llvm
     RESULT_VARIABLE pic_static_llvm_result
     OUTPUT_VARIABLE pic_static_llvm_output
     ERROR_VARIABLE pic_static_llvm_error
@@ -51,7 +50,7 @@ if(NOT pic_static_llvm_result EQUAL 0)
 endif()
 execute_process(
     COMMAND "${COMPILER}" build-library "${project}" -o "${pic_static_c_dist}"
-            --kind static --pic --backend c --native "${native}"
+            --kind static --pic --backend c
     RESULT_VARIABLE pic_static_c_result
     OUTPUT_VARIABLE pic_static_c_output
     ERROR_VARIABLE pic_static_c_error

@@ -412,6 +412,14 @@ own test tree and test dependencies never enter the consuming graph. The lock re
 edges with `scope test`; runtime is the implicit default. Package digests cover both declared source
 trees, so changing a test source invalidates immutable cached content.
 
+`native_source path/to/provider.c [target <platform>]` declares a C source file compiled with the
+package and every application that consumes it. The path must belong to a `foreign c ... path`
+tree, which keeps the source and its headers inside the verified package snapshot. `native_link`
+requirements follow the same target selection and pass through every consuming package. The
+compiler combines these declarations across the locked runtime graph. Repeatable `--native` and
+`--native-link` arguments remain available for providers selected by the application rather than
+the package.
+
 For single-file compatibility, a directly compiled single file may omit its package declaration.
 Directory projects never receive that exception.
 
@@ -1575,8 +1583,8 @@ The bundle contains `include/<native_name>.h`,
 equivalent and exports only the checked C boundary plus the allocation and panic functions in the
 small public ABI support header. Library compilation does not synthesize an executable entry point.
 The manifest directive `native_link <library> [target <platform>]` declares transitive native
-libraries without accepting raw linker flags. Shared builds apply entries active for the selected
-target. Static consumers must apply the same requirements from the emitted PII.
+libraries without accepting raw linker flags. Executables and shared builds apply entries active
+for the selected target. Static consumers must apply the same requirements from the emitted PII.
 
 `foundation/library.h` publishes Foundation library ABI 1. A stable toolchain keeps that ABI
 available so a compatible precompiled library can link with future toolchains on the same platform

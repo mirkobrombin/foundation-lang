@@ -667,6 +667,37 @@ int32_t foundation_runtime_bytes_copy(uint64_t handle, uint64_t *result) {
     return 0;
 }
 
+int32_t foundation_runtime_bytes_copy_from_raw(const uint8_t *source,
+                                               uint64_t length,
+                                               uint64_t *result) {
+    if (result == NULL) {
+        return 1;
+    }
+    *result = 0;
+    if (length > SIZE_MAX || (source == NULL && length != 0)) {
+        return 2;
+    }
+    *result = fdn_bytes_create(source, (size_t)length);
+    return 0;
+}
+
+int32_t foundation_runtime_bytes_copy_to_raw(uint64_t handle,
+                                             uint8_t *destination,
+                                             uint64_t capacity) {
+    const fdn_bytes *value = fdn_bytes_value(handle);
+    if (value == NULL) {
+        return 1;
+    }
+    if (capacity > SIZE_MAX || value->length > (size_t)capacity ||
+        (destination == NULL && value->length != 0)) {
+        return 2;
+    }
+    if (value->length != 0) {
+        (void)memcpy(destination, value->data, value->length);
+    }
+    return 0;
+}
+
 int32_t foundation_runtime_bytes_length(uint64_t handle, uint64_t *result) {
     const fdn_bytes *value = fdn_bytes_value(handle);
     if (result == NULL || value == NULL) {

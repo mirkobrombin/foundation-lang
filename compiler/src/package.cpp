@@ -725,6 +725,31 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                 manifest.nativeSOVersion = static_cast<std::uint32_t>(*parsed);
             }
             nativeSOVersionSeen = true;
+        } else if (directive == "native_source") {
+            const auto sourceTarget = tokens.size() == 4 && tokens[2] == "target"
+                                          ? target(tokens[3])
+                                          : std::optional<TargetPlatform>{};
+            const auto sourcePath = tokens.size() >= 2
+                                        ? std::filesystem::path(tokens[1]).lexically_normal()
+                                        : std::filesystem::path{};
+            const auto valid = (tokens.size() == 2 || tokens.size() == 4) &&
+                               relativeSource(tokens[1]) && sourcePath.extension() == ".c" &&
+                               (tokens.size() == 2 || sourceTarget.has_value());
+            const auto duplicate = valid &&
+                                   std::find_if(manifest.nativeSources.begin(),
+                                                manifest.nativeSources.end(),
+                                                [&](const auto &entry) {
+                                                    return entry.path == sourcePath &&
+                                                           (!entry.target.has_value() ||
+                                                            !sourceTarget.has_value() ||
+                                                            entry.target == sourceTarget);
+                                                }) != manifest.nativeSources.end();
+            if (!valid || duplicate) {
+                addError(result.errors, path, line, 1, "FDN4015",
+                         "native_source requires one unique relative C file and optional target");
+            } else {
+                manifest.nativeSources.push_back({sourcePath, sourceTarget});
+            }
         } else if (directive == "native_link") {
             const auto linkTarget = tokens.size() == 4 && tokens[2] == "target"
                                         ? target(tokens[3])
@@ -859,17 +884,41 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
         addError(result.errors, path, 1, 1, "FDN4013",
                  "test dependencies require a test_source directory");
     }
-    if ((manifest.nativeName.has_value() || manifest.nativeSOVersion.has_value() ||
-         !manifest.nativeLinks.empty() || !manifest.foreign.empty()) &&
+    if ((manifest.nativeName.has_value() || manifest.nativeSOVersion.has_value()) &&
         !manifest.nativeLibrary) {
         addError(result.errors, path, 1, 1, "FDN4015",
-                 "native directives require native_library c");
+                 "native library metadata requires native_library c");
     }
     if (manifest.nativeLibrary && !manifest.nativeName.has_value()) {
         addError(result.errors, path, 1, 1, "FDN4015",
                  "native_library c requires native_name");
     }
+    if ((!manifest.nativeLinks.empty() || !manifest.foreign.empty()) &&
+        !manifest.nativeLibrary && manifest.nativeSources.empty()) {
+        addError(result.errors, path, 1, 1, "FDN4015",
+                 "native links and foreign provenance require native_library c or native_source");
+    }
+    for (const auto &source : manifest.nativeSources) {
+        const auto owned = std::any_of(
+            manifest.foreign.begin(), manifest.foreign.end(), [&](const auto &foreign) {
+                if (foreign.ecosystem != "c" || foreign.kind != "path") {
+                    return false;
+                }
+                const auto root = std::filesystem::path(foreign.resolver).lexically_normal();
+                const auto relative = source.path.lexically_relative(root);
+                return !relative.empty() && !relative.is_absolute() && *relative.begin() != "..";
+            });
+        if (!owned) {
+            addError(result.errors, path, 1, 1, "FDN4015",
+                     "native_source must belong to a foreign c path source");
+        }
+    }
     if (result.errors.empty()) {
+        std::sort(manifest.nativeSources.begin(), manifest.nativeSources.end(),
+                  [](const auto &left, const auto &right) {
+                      return std::tie(left.path, left.target) <
+                             std::tie(right.path, right.target);
+                  });
         std::sort(manifest.nativeLinks.begin(), manifest.nativeLinks.end(),
                   [](const auto &left, const auto &right) {
                       return std::tie(left.library, left.target) <
@@ -927,6 +976,19 @@ std::string renderPackageManifest(const PackageManifest &manifest) {
     }
     if (manifest.nativeSOVersion.has_value()) {
         output << "native_soversion " << *manifest.nativeSOVersion << '\n';
+    }
+    auto nativeSources = manifest.nativeSources;
+    std::sort(nativeSources.begin(), nativeSources.end(),
+              [](const auto &left, const auto &right) {
+                  return std::tie(left.path, left.target) <
+                         std::tie(right.path, right.target);
+              });
+    for (const auto &source : nativeSources) {
+        output << "native_source " << quote(source.path.generic_string());
+        if (source.target.has_value()) {
+            output << " target " << targetPlatformName(*source.target);
+        }
+        output << '\n';
     }
     auto nativeLinks = manifest.nativeLinks;
     std::sort(nativeLinks.begin(), nativeLinks.end(), [](const auto &left, const auto &right) {
@@ -1094,10 +1156,6 @@ parsePackageLock(const std::filesystem::path &path, std::string_view source) {
     }
     if (!targetSeen) {
         addError(result.errors, path, 1, 1, "FDN4022", "missing lock target");
-    }
-    if (!lock.foreign.empty() && !lock.nativeLibrary.has_value()) {
-        addError(result.errors, path, 1, 1, "FDN4029",
-                 "foreign provenance requires a native library lock entry");
     }
     if (result.errors.empty() && validateLockGraph(path, lock, result.errors)) {
         std::sort(lock.packages.begin(), lock.packages.end(), [](const auto &left,

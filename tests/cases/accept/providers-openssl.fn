@@ -240,6 +240,188 @@ fn controlledTLSWorks() bool {
     result
 }
 
+fn controlledListenerStopsAccept() bool {
+    const host = auth.GenerateOpenSSLEd25519() else { return false }
+    const certificate = auth.OpenSSLEd25519Certificate(host.PrivateKeyPEM) else {
+        return false
+    }
+    const listener = secureTLS.OpenSSLListen(
+        $"127.0.0.1",
+        0,
+        $"foundation-test",
+        certificate,
+        host.PrivateKeyPEM,
+        $"foundation-test/1"
+    ) else { return false }
+    const openedController = listener.Control() else { return false }
+    var controller = openedController
+    const accepting = spawn secureTLS.OpenSSLAccept($listener)
+    if !controller.Close() return false
+    discard controller
+    const accepted = $accepting.wait()
+    const secureTLS.OpenSSLAcceptOutcome { Listener Value } = accepted
+    discard Listener
+    match Value {
+        Ok(connection): {
+            discard connection
+            false
+        }
+        Err(error): {
+            discard error
+            true
+        }
+    }
+}
+
+fn controlledQUICWorks() bool {
+    const host = auth.GenerateOpenSSLEd25519() else { return false }
+    const certificate = auth.OpenSSLEd25519Certificate(host.PrivateKeyPEM) else {
+        return false
+    }
+    const listener = secureTLS.OpenSSLQUICListen(
+        $"127.0.0.1",
+        0,
+        certificate,
+        host.PrivateKeyPEM,
+        $"foundation-quic/1"
+    ) else { return false }
+    const port = listener.Port
+    const pin = host.RawPublicKey.Copy() else { return false }
+    const accepting = spawn secureTLS.OpenSSLQUICAccept($listener)
+    const dialing = spawn secureTLS.OpenSSLQUICDialPinned(
+        $"127.0.0.1",
+        port,
+        $pin,
+        $"foundation-quic/1"
+    )
+    const connected = $dialing.wait() else { return false }
+    var clientConnection = connected
+    const accepted = $accepting.wait()
+    const secureTLS.OpenSSLQUICAcceptOutcome {
+        Listener
+        Value
+    } = accepted
+    const serverConnection = Value else { return false }
+    const clientReference = clientConnection.Reference()
+    const serverReference = serverConnection.Reference()
+    const opening = spawn secureTLS.OpenSSLQUICOpenStream($clientReference)
+    const clientStream = $opening.wait() else { return false }
+    const clientID = clientStream.ID()
+    const client = clientStream.SplitControlled() else { return false }
+    const secureTLS.OpenSSLQUICControlledStream {
+        Reader as clientReader
+        Writer as clientWriter
+        Controller as clientController
+    } = client
+    const receiving = spawn secureTLS.OpenSSLQUICAcceptStream($serverReference)
+    const writing = spawn secureTLS.OpenSSLQUICWriteAll(
+        $clientWriter,
+        $bytes.FromText("final-frame")
+    )
+    const secureTLS.OpenSSLQUICWriteOutcome {
+        Writer
+        Value as writeValue
+    } = $writing.wait()
+    if !validTLSWrite($writeValue) return false
+    const finishing = spawn secureTLS.OpenSSLQUICFinish($Writer)
+    $finishing.wait() else { return false }
+    const serverStream = $receiving.wait() else { return false }
+    const serverID = serverStream.ID()
+    const server = serverStream.SplitControlled() else { return false }
+    const secureTLS.OpenSSLQUICControlledStream {
+        Reader as serverReader
+        Writer as serverWriter
+        Controller as serverController
+    } = server
+    const reading = spawn secureTLS.OpenSSLQUICReadExact($serverReader, 11)
+    const secureTLS.OpenSSLQUICReadOutcome {
+        Reader
+        Value as readValue
+    } = $reading.wait()
+    const received = tlsBytes($readValue)
+    const matches = match received {
+        Some(value): {
+            const textValue = value.Text() else { return false }
+            textValue == "final-frame"
+        }
+        None: false
+    }
+    const success = clientID == serverID && matches
+    discard Reader
+    discard serverWriter
+    discard clientController
+    discard serverController
+    const cancelledAccept = spawn secureTLS.OpenSSLQUICAcceptStream(
+        $serverConnection.Reference()
+    )
+    discard cancelledAccept
+    const cancellationAccepting = spawn secureTLS.OpenSSLQUICAcceptStream(
+        $serverConnection.Reference()
+    )
+    const cancellationOpening = spawn secureTLS.OpenSSLQUICOpenStream(
+        $clientConnection.Reference()
+    )
+    const cancellationClientStream = $cancellationOpening.wait() else {
+        return false
+    }
+    const cancellationClient = cancellationClientStream.SplitControlled() else {
+        return false
+    }
+    const secureTLS.OpenSSLQUICControlledStream {
+        Reader as cancellationClientReader
+        Writer as cancellationClientWriter
+        Controller as cancellationClientController
+    } = cancellationClient
+    const cancellationWriting = spawn secureTLS.OpenSSLQUICWriteAll(
+        $cancellationClientWriter,
+        $bytes.FromText("x")
+    )
+    const secureTLS.OpenSSLQUICWriteOutcome {
+        Writer as restoredCancellationClientWriter
+        Value as cancellationWriteValue
+    } = $cancellationWriting.wait()
+    if !validTLSWrite($cancellationWriteValue) return false
+    const cancellationServerStream = $cancellationAccepting.wait() else {
+        return false
+    }
+    const cancellationServer = cancellationServerStream.SplitControlled() else {
+        return false
+    }
+    const secureTLS.OpenSSLQUICControlledStream {
+        Reader as cancellationReader
+        Writer as cancellationWriter
+        Controller as cancellationController
+    } = cancellationServer
+    const cancelledRead = spawn secureTLS.OpenSSLQUICReadExact(
+        $cancellationReader,
+        2
+    )
+    discard cancelledRead
+    discard cancellationClientReader
+    discard restoredCancellationClientWriter
+    discard cancellationClientController
+    discard cancellationWriter
+    discard cancellationController
+    const waitingForClose = spawn secureTLS.OpenSSLQUICAcceptStream(
+        $serverConnection.Reference()
+    )
+    if !clientConnection.Close() return false
+    const closed = $waitingForClose.wait()
+    discard clientReader
+    const closeObserved = match closed {
+        Ok(stream): {
+            discard stream
+            false
+        }
+        Err(error): match error {
+            Closed: true
+            _: false
+        }
+    }
+    discard Listener
+    success && closeObserved
+}
+
 fn connectedTLSWorks() bool {
     const host = auth.GenerateOpenSSLEd25519() else { return false }
     const auth.OpenSSLEd25519KeyPair {
@@ -366,6 +548,8 @@ fn main() i32 {
     if !generatedEd25519Works() return 4
     if !controlledTLSWorks() return 5
     if !connectedTLSWorks() return 6
+    if !controlledListenerStopsAccept() return 7
+    if !controlledQUICWorks() return 8
 
     print("OpenSSL providers ok")
     0

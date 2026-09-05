@@ -1,7 +1,9 @@
 package test.network_tcp
 
 import std.bytes
+import std.fs
 import std.net
+import std.path
 import std.time
 
 extern c fn startServer(&port u64) u64 as foundation_test_net_server_start
@@ -546,6 +548,83 @@ fn controlledListenerClose() bool {
     closed && stopped
 }
 
+@target(linux)
+fn localRoundTrip() bool {
+    localRoundTripSupported()
+}
+
+@target(macos)
+fn localRoundTrip() bool {
+    localRoundTripSupported()
+}
+
+@target(windows)
+fn localRoundTrip() bool {
+    true
+}
+
+fn localRoundTripSupported() bool {
+    const directory = fs.CreateTempDirectory("/tmp", "fdn-net-") else error {
+        discard error
+        return false
+    }
+    const socketPath = path.Join(directory, "local.sock")
+    const listener = net.ListenLocal($path.Join(directory, "local.sock")) else error {
+        discard error
+        discard fs.RemoveTree(directory, 2, 2)
+        return false
+    }
+    const controllerValue = listener.Control() else error {
+        discard error
+        discard listener
+        discard fs.RemoveTree(directory, 2, 2)
+        return false
+    }
+    var controller = controllerValue
+    const accepting = spawn net.AcceptLocal($listener)
+    const client = net.DialLocal(socketPath) else error {
+        discard error
+        discard controller.Close()
+        discard controller
+        discard accepting
+        discard fs.RemoveTree(directory, 2, 2)
+        return false
+    }
+    const net.LocalAcceptOutcome { Listener Value } = $accepting.wait()
+    const server = connectionOr($Value)
+    const clientPair = pairOr(client.Split())
+    const serverPair = pairOr(server.Split())
+    const net.StreamPair {
+        Reader as clientReader
+        Writer as clientWriter
+    } = clientPair
+    const net.StreamPair {
+        Reader as serverReader
+        Writer as serverWriter
+    } = serverPair
+    const writing = spawn net.WriteAll($clientWriter, "local\n")
+    const reading = spawn net.ReadLine($serverReader)
+    const net.WriteOutcome { Writer Value as writeValue } = $writing.wait()
+    const net.ReadLineOutcome { Reader Value as readValue } = $reading.wait()
+    const received = lineOr($readValue)
+    const wrote = writeSucceeded($writeValue)
+    discard Writer
+    discard Reader
+    discard clientReader
+    discard serverWriter
+    discard controller.Close()
+    discard controller
+    discard Listener
+    const removed = fs.RemoveEmptyDirectory(directory)
+    match removed {
+        Ok: wrote && received == "local"
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
 fn deadlineRoundTrip() bool {
     const listener = listenerOr(net.Listen("127.0.0.1", 0))
     const port = listener.Port
@@ -611,6 +690,9 @@ fn main() i32 {
     }
     if !controlledListenerClose() {
         return 13
+    }
+    if !localRoundTrip() {
+        return 14
     }
     var port u64 = 0
     const server = startServer(&port)

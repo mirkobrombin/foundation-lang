@@ -1,0 +1,5 @@
+package example.native
+
+fn Answer() i32 {
+    42
+}

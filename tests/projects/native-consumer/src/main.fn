@@ -1,0 +1,9 @@
+package sample.native.consumer
+
+import sample.native
+import std.format
+
+fn main() i32 {
+    print(format.I32(native.FoundationIncrement(41)))
+    0
+}

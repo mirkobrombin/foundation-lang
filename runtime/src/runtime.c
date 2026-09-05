@@ -1,3 +1,6 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -48,7 +51,9 @@ static SRWLOCK fdn_uuid_lock = SRWLOCK_INIT;
 #include <stdatomic.h>
 #include <unistd.h>
 #if defined(__linux__)
+#include <linux/fs.h>
 #include <sys/random.h>
+#include <sys/syscall.h>
 #endif
 static atomic_flag fdn_uuid_lock = ATOMIC_FLAG_INIT;
 #endif
@@ -1838,6 +1843,31 @@ static int32_t fdn_fs_status(int error) {
     if (error == EINVAL || error == ENAMETOOLONG) {
         return 3;
     }
+    if (error == EEXIST) {
+        return 7;
+    }
+    if (error == ENOTDIR) {
+        return 8;
+    }
+    if (error == EISDIR) {
+        return 9;
+    }
+#if defined(ENOTSUP)
+    if (error == ENOTSUP) {
+        return 10;
+    }
+#endif
+#if defined(EOPNOTSUPP) && (!defined(ENOTSUP) || EOPNOTSUPP != ENOTSUP)
+    if (error == EOPNOTSUPP) {
+        return 10;
+    }
+#endif
+    if (error == ENOTEMPTY) {
+        return 11;
+    }
+    if (error == EXDEV) {
+        return 12;
+    }
     return 4;
 }
 
@@ -2089,6 +2119,21 @@ static int32_t fdn_windows_fs_status(DWORD error) {
     }
     if (error == ERROR_INVALID_NAME || error == ERROR_BAD_PATHNAME) {
         return 3;
+    }
+    if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) {
+        return 7;
+    }
+    if (error == ERROR_DIRECTORY) {
+        return 8;
+    }
+    if (error == ERROR_NOT_SUPPORTED || error == ERROR_CALL_NOT_IMPLEMENTED) {
+        return 10;
+    }
+    if (error == ERROR_DIR_NOT_EMPTY) {
+        return 11;
+    }
+    if (error == ERROR_NOT_SAME_DEVICE) {
+        return 12;
     }
     return 4;
 }
@@ -2945,6 +2990,32 @@ static int32_t fdn_windows_create_root_directory(fdn_fs_root *root,
     return 0;
 }
 
+static int32_t fdn_windows_create_root_directory_entry(
+    fdn_fs_root *root, const fdn_string *relative_path,
+    uint32_t permissions) {
+    wchar_t *path = fdn_windows_join_relative(root->path, relative_path);
+    HANDLE guards[129];
+    size_t guard_count = 0;
+    int32_t status;
+    if (path == NULL || permissions > 511) {
+        fdn_dealloc(path);
+        return 3;
+    }
+    status = fdn_windows_lock_relative_directories(
+        root->path, relative_path, 0, guards, &guard_count);
+    if (status == 0 && CreateDirectoryW(path, NULL) == 0) {
+        status = fdn_windows_fs_status(GetLastError());
+    }
+    if (status == 0 && (permissions & 0222U) == 0 &&
+        SetFileAttributesW(path, FILE_ATTRIBUTE_READONLY) == 0) {
+        status = fdn_windows_fs_status(GetLastError());
+        (void)RemoveDirectoryW(path);
+    }
+    fdn_windows_close_directory_guards(guards, guard_count);
+    fdn_dealloc(path);
+    return status;
+}
+
 static int32_t fdn_windows_write_root_file(fdn_fs_root *root,
                                            const fdn_string *relative_path,
                                            uint64_t bytes_handle,
@@ -3179,6 +3250,53 @@ static int32_t fdn_windows_remove_root_empty_directory(
     }
     fdn_windows_close_directory_guards(guards, guard_count);
     fdn_dealloc(path);
+    return status;
+}
+
+static int32_t fdn_windows_rename_root_entry(
+    fdn_fs_root *root, const fdn_string *source,
+    const fdn_string *destination) {
+    wchar_t *source_path = fdn_windows_join_relative(root->path, source);
+    wchar_t *destination_path = fdn_windows_join_relative(root->path, destination);
+    HANDLE source_guards[129];
+    HANDLE destination_guards[129];
+    size_t source_guard_count = 0;
+    size_t destination_guard_count = 0;
+    DWORD attributes;
+    int32_t status;
+    if (source_path == NULL || destination_path == NULL) {
+        fdn_dealloc(source_path);
+        fdn_dealloc(destination_path);
+        return 3;
+    }
+    status = fdn_windows_lock_relative_directories(
+        root->path, source, 0, source_guards, &source_guard_count);
+    if (status == 0) {
+        status = fdn_windows_lock_relative_directories(
+            root->path, destination, 0, destination_guards,
+            &destination_guard_count);
+    }
+    if (status != 0) {
+        goto cleanup;
+    }
+    attributes = GetFileAttributesW(source_path);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        status = fdn_windows_fs_status(GetLastError());
+    } else if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        status = 3;
+    } else if (MoveFileExW(source_path, destination_path,
+                           MOVEFILE_WRITE_THROUGH) == 0) {
+        status = fdn_windows_fs_status(GetLastError());
+    } else {
+        status = 0;
+    }
+
+cleanup:
+    fdn_windows_close_directory_guards(destination_guards,
+                                       destination_guard_count);
+    fdn_windows_close_directory_guards(source_guards, source_guard_count);
+    fdn_dealloc(destination_path);
+    fdn_dealloc(source_path);
     return status;
 }
 
@@ -3855,6 +3973,45 @@ static int32_t fdn_posix_create_root_symbolic_link(
     return status;
 }
 
+static int32_t fdn_posix_create_root_directory_entry(
+    fdn_fs_root *root, const fdn_string *relative_path,
+    uint32_t permissions) {
+    int parent = -1;
+    int directory = -1;
+    char *copy = NULL;
+    char *name = NULL;
+    int32_t status;
+    if (permissions > 511) {
+        return 3;
+    }
+    status = fdn_posix_open_root_parent(
+        root->descriptor, relative_path, 0, &parent, &copy, &name);
+    if (status == 0) {
+        if (mkdirat(parent, name, (mode_t)permissions) != 0) {
+            status = fdn_fs_status(errno);
+        } else {
+            directory = openat(parent, name,
+                               O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            if (directory < 0 || fchmod(directory, (mode_t)permissions) != 0) {
+                status = fdn_fs_status(errno);
+                if (directory >= 0) {
+                    (void)close(directory);
+                    directory = -1;
+                }
+                (void)unlinkat(parent, name, AT_REMOVEDIR);
+            }
+        }
+    }
+    if (directory >= 0) {
+        (void)close(directory);
+    }
+    if (parent >= 0) {
+        (void)close(parent);
+    }
+    fdn_dealloc(copy);
+    return status;
+}
+
 static int32_t fdn_posix_remove_root_entry(
     fdn_fs_root *root, const fdn_string *relative_path, bool directory) {
     int parent = -1;
@@ -3876,6 +4033,70 @@ static int32_t fdn_posix_remove_root_entry(
     }
     (void)close(parent);
     fdn_dealloc(copy);
+    return status;
+}
+
+static int32_t fdn_posix_rename_root_entry(
+    fdn_fs_root *root, const fdn_string *source,
+    const fdn_string *destination) {
+    int source_parent = -1;
+    int destination_parent = -1;
+    char *source_copy = NULL;
+    char *destination_copy = NULL;
+    char *source_name = NULL;
+    char *destination_name = NULL;
+    struct stat info;
+    int32_t status = fdn_posix_open_root_parent(
+        root->descriptor, source, 0, &source_parent, &source_copy,
+        &source_name);
+    if (status != 0) {
+        return status;
+    }
+    status = fdn_posix_open_root_parent(
+        root->descriptor, destination, 0, &destination_parent,
+        &destination_copy, &destination_name);
+    if (status != 0) {
+        goto cleanup;
+    }
+    if (fstatat(source_parent, source_name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        status = fdn_fs_status(errno);
+    } else if (S_ISLNK(info.st_mode)) {
+        status = 3;
+    } else {
+#if defined(__linux__) && defined(SYS_renameat2)
+        if (syscall(SYS_renameat2, source_parent, source_name,
+                    destination_parent, destination_name,
+                    RENAME_NOREPLACE) == 0) {
+            status = 0;
+        } else if (errno == ENOSYS || errno == EINVAL ||
+                   errno == EOPNOTSUPP) {
+            status = 10;
+        } else {
+            status = fdn_fs_status(errno);
+        }
+#elif defined(__APPLE__)
+        if (renameatx_np(source_parent, source_name, destination_parent,
+                         destination_name, RENAME_EXCL) == 0) {
+            status = 0;
+        } else if (errno == ENOTSUP || errno == EOPNOTSUPP) {
+            status = 10;
+        } else {
+            status = fdn_fs_status(errno);
+        }
+#else
+        status = 10;
+#endif
+    }
+
+cleanup:
+    if (destination_parent >= 0) {
+        (void)close(destination_parent);
+    }
+    if (source_parent >= 0) {
+        (void)close(source_parent);
+    }
+    fdn_dealloc(destination_copy);
+    fdn_dealloc(source_copy);
     return status;
 }
 
@@ -4242,6 +4463,22 @@ int32_t foundation_runtime_fs_root_create_directory(
 #endif
 }
 
+int32_t foundation_runtime_fs_root_create_directory_entry(
+    uint64_t handle, const fdn_string *relative_path,
+    uint32_t permissions) {
+    fdn_fs_root *root = (fdn_fs_root *)(uintptr_t)handle;
+    if (root == NULL || !fdn_fs_relative_path_valid(relative_path)) {
+        return 3;
+    }
+#if defined(_WIN32)
+    return fdn_windows_create_root_directory_entry(
+        root, relative_path, permissions);
+#else
+    return fdn_posix_create_root_directory_entry(
+        root, relative_path, permissions);
+#endif
+}
+
 int32_t foundation_runtime_fs_root_write_file(
     uint64_t handle, const fdn_string *relative_path, uint64_t bytes_handle,
     uint32_t permissions) {
@@ -4297,6 +4534,21 @@ int32_t foundation_runtime_fs_root_remove_empty_directory(
     return fdn_windows_remove_root_empty_directory(root, relative_path);
 #else
     return fdn_posix_remove_root_entry(root, relative_path, true);
+#endif
+}
+
+int32_t foundation_runtime_fs_root_rename(
+    uint64_t handle, const fdn_string *source,
+    const fdn_string *destination) {
+    fdn_fs_root *root = (fdn_fs_root *)(uintptr_t)handle;
+    if (root == NULL || !fdn_fs_relative_path_valid(source) ||
+        !fdn_fs_relative_path_valid(destination)) {
+        return 3;
+    }
+#if defined(_WIN32)
+    return fdn_windows_rename_root_entry(root, source, destination);
+#else
+    return fdn_posix_rename_root_entry(root, source, destination);
 #endif
 }
 
@@ -4378,7 +4630,7 @@ static int32_t fdn_windows_file_adopt(HANDLE handle, uint32_t mode,
     file = fdn_alloc(sizeof(*file));
     file->handle = handle;
     file->readable = mode == 1;
-    file->writable = mode == 2 || mode == 3;
+    file->writable = mode == 2 || mode == 3 || mode == 4;
     *result = (uint64_t)(uintptr_t)file;
     return 0;
 }
@@ -4387,9 +4639,10 @@ static int32_t fdn_windows_file_open_path(const wchar_t *path, uint32_t mode,
                                           uint64_t *result) {
     const DWORD access = mode == 1 ? GENERIC_READ : GENERIC_WRITE;
     const DWORD creation = mode == 1 ? OPEN_EXISTING
-                                     : mode == 2 ? OPEN_ALWAYS : CREATE_ALWAYS;
+                                     : mode == 2 ? OPEN_ALWAYS
+                                     : mode == 3 ? CREATE_ALWAYS : CREATE_NEW;
     HANDLE handle;
-    if (mode < 1 || mode > 3) {
+    if (mode < 1 || mode > 4) {
         return 3;
     }
     handle = CreateFileW(path, access,
@@ -4428,7 +4681,7 @@ static int32_t fdn_posix_file_adopt(int descriptor, uint32_t mode,
     file = fdn_alloc(sizeof(*file));
     file->descriptor = descriptor;
     file->readable = mode == 1;
-    file->writable = mode == 2 || mode == 3;
+    file->writable = mode == 2 || mode == 3 || mode == 4;
     *result = (uint64_t)(uintptr_t)file;
     return 0;
 }
@@ -4441,6 +4694,8 @@ static int fdn_posix_file_flags(uint32_t mode) {
         flags = O_WRONLY | O_CREAT;
     } else if (mode == 3) {
         flags = O_WRONLY | O_CREAT | O_TRUNC;
+    } else if (mode == 4) {
+        flags = O_WRONLY | O_CREAT | O_EXCL;
     } else {
         return -1;
     }
@@ -4718,6 +4973,52 @@ int32_t foundation_runtime_fs_file_seek(uint64_t handle, uint64_t offset) {
             return 5;
         }
         if (lseek(file->descriptor, position, SEEK_SET) < 0) {
+            return fdn_fs_status(errno);
+        }
+    }
+#endif
+    return 0;
+}
+
+int32_t foundation_runtime_fs_file_resize(uint64_t handle, uint64_t size) {
+    fdn_fs_file *file = (fdn_fs_file *)(uintptr_t)handle;
+    if (file == NULL) {
+        return 4;
+    }
+    if (!file->writable) {
+        return 2;
+    }
+#if defined(_WIN32)
+    {
+        LARGE_INTEGER current;
+        LARGE_INTEGER position;
+        LARGE_INTEGER zero;
+        DWORD error;
+        if (size > INT64_MAX) {
+            return 5;
+        }
+        zero.QuadPart = 0;
+        if (SetFilePointerEx(file->handle, zero, &current, FILE_CURRENT) == 0) {
+            return fdn_windows_fs_status(GetLastError());
+        }
+        position.QuadPart = (LONGLONG)size;
+        if (SetFilePointerEx(file->handle, position, NULL, FILE_BEGIN) == 0 ||
+            SetEndOfFile(file->handle) == 0) {
+            error = GetLastError();
+            (void)SetFilePointerEx(file->handle, current, NULL, FILE_BEGIN);
+            return fdn_windows_fs_status(error);
+        }
+        if (SetFilePointerEx(file->handle, current, NULL, FILE_BEGIN) == 0) {
+            return fdn_windows_fs_status(GetLastError());
+        }
+    }
+#else
+    {
+        const off_t length = (off_t)size;
+        if (length < 0 || (uint64_t)length != size) {
+            return 5;
+        }
+        if (ftruncate(file->descriptor, length) != 0) {
             return fdn_fs_status(errno);
         }
     }

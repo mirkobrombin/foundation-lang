@@ -17,6 +17,7 @@
         { "include": "#nativeLibrary" },
         { "include": "#nativeName" },
         { "include": "#nativeSOVersion" },
+        { "include": "#nativeSource" },
         { "include": "#nativeLink" },
         { "include": "#foreign" },
         { "include": "#strings" }
@@ -171,6 +172,19 @@
                     "captures": {
                         "1": { "name": "keyword.declaration.native-link.foundation.package" },
                         "2": { "name": "entity.name.library.native.foundation.package" },
+                        "3": { "name": "keyword.other.target.foundation.package" },
+                        "4": { "name": "constant.language.target.foundation.package" }
+                    }
+                }
+            ]
+        },
+        "nativeSource": {
+            "patterns": [
+                {
+                    "match": "^\\s*(native_source)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)(?:\\s+(target)\\s+(linux|macos|windows))?\\s*(?=#|$)",
+                    "captures": {
+                        "1": { "name": "keyword.declaration.native-source.foundation.package" },
+                        "2": { "name": "string.unquoted.path.foundation.package" },
                         "3": { "name": "keyword.other.target.foundation.package" },
                         "4": { "name": "constant.language.target.foundation.package" }
                     }

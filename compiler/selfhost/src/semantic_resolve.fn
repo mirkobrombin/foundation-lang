@@ -2315,6 +2315,20 @@ fn isSemanticCReturnType(&type semanticType) bool {
         ((type.kind.Matches("Raw") || type.kind.Matches("RawConst")) && type.arguments.len() == 1)
 }
 
+fn isSemanticRuntimeTaskReturn(
+    &type semanticType,
+    symbol String,
+    packageName String
+) bool {
+    if packageName != "foundation.worker" return false
+    if symbol != "foundation_runtime_supervisor_wait_task" &&
+        symbol != "foundation_runtime_supervisor_cancel_task" {
+        return false
+    }
+    if !type.kind.Matches("Task") || type.arguments.len() != 1 return false
+    semanticTypeArgument(&type, 0).kind.Matches("Void")
+}
+
 fn isSemanticCParameterType(
     &type semanticType,
     symbol String,
@@ -2864,7 +2878,12 @@ fn declareSemanticFunctions(
                     function.span
                 )
             }
-            if !isSemanticCReturnType(&semantic.returnType) {
+            if !isSemanticCReturnType(&semantic.returnType) &&
+                !isSemanticRuntimeTaskReturn(
+                    &semantic.returnType,
+                    cSymbol,
+                    function.packageName
+                ) {
                 analyzer.diagnostics.reportError(
                     "FDN2113",
                     "return type is not C ABI safe",

@@ -12,6 +12,7 @@
 #include <windows.h>
 #else
 #include <pthread.h>
+#include <stdatomic.h>
 #endif
 
 #if defined(_MSC_VER)
@@ -23,7 +24,8 @@
 enum {
     FDN_BLOCKING_WAIT = 4,
     FDN_BLOCKING_READY = 1,
-    FDN_BLOCKING_WORKER_COUNT = 4,
+    FDN_BLOCKING_INITIAL_WORKERS = 4,
+    FDN_BLOCKING_WORKER_LIMIT = 256,
 };
 
 typedef struct fdn_blocking_executor fdn_blocking_executor;
@@ -34,6 +36,11 @@ struct fdn_blocking_job {
     fdn_task *task;
     void *context;
     fdn_blocking_work_fn work;
+#if defined(_WIN32)
+    volatile LONG cancellation_requested;
+#else
+    atomic_bool cancellation_requested;
+#endif
 };
 
 struct fdn_blocking_executor {
@@ -46,11 +53,11 @@ struct fdn_blocking_executor {
 #if defined(_WIN32)
     CRITICAL_SECTION lock;
     CONDITION_VARIABLE work_ready;
-    HANDLE workers[FDN_BLOCKING_WORKER_COUNT];
+    HANDLE workers[FDN_BLOCKING_WORKER_LIMIT];
 #else
     pthread_mutex_t lock;
     pthread_cond_t work_ready;
-    pthread_t workers[FDN_BLOCKING_WORKER_COUNT];
+    pthread_t workers[FDN_BLOCKING_WORKER_LIMIT];
 #endif
     fdn_task_external_source *source;
     size_t worker_count;
@@ -123,6 +130,25 @@ static void fdn_blocking_push(fdn_blocking_job **head, fdn_blocking_job **tail,
     *tail = job;
 }
 
+static void fdn_blocking_request_cancellation(fdn_blocking_job *job) {
+#if defined(_WIN32)
+    (void)InterlockedExchange(&job->cancellation_requested, 1);
+#else
+    atomic_store_explicit(&job->cancellation_requested, true,
+                          memory_order_release);
+#endif
+}
+
+static bool fdn_blocking_cancellation_requested(void *context) {
+    fdn_blocking_job *job = context;
+#if defined(_WIN32)
+    return InterlockedCompareExchange(&job->cancellation_requested, 0, 0) != 0;
+#else
+    return atomic_load_explicit(&job->cancellation_requested,
+                                memory_order_acquire);
+#endif
+}
+
 #if defined(_WIN32)
 static DWORD WINAPI fdn_blocking_worker(void *context)
 #else
@@ -154,7 +180,9 @@ static void *fdn_blocking_worker(void *context)
         if (job == NULL) {
             fdn_panic_cstr("blocking executor lost pending work");
         }
+        fdn_task_cancellation_bind(fdn_blocking_cancellation_requested, job);
         job->work(job->context);
+        fdn_task_cancellation_unbind(fdn_blocking_cancellation_requested, job);
         fdn_blocking_lock(executor);
         fdn_blocking_push(&executor->complete_head, &executor->complete_tail, job);
         fdn_blocking_unlock(executor);
@@ -165,6 +193,26 @@ static void *fdn_blocking_worker(void *context)
 #else
     return NULL;
 #endif
+}
+
+static void fdn_blocking_start_worker(fdn_blocking_executor *executor) {
+    const size_t index = executor->worker_count;
+    if (index >= FDN_BLOCKING_WORKER_LIMIT) {
+        return;
+    }
+#if defined(_WIN32)
+    executor->workers[index] =
+        CreateThread(NULL, 0, fdn_blocking_worker, executor, 0, NULL);
+    if (executor->workers[index] == NULL) {
+        fdn_panic_cstr("blocking executor worker creation failed");
+    }
+#else
+    if (pthread_create(&executor->workers[index], NULL, fdn_blocking_worker,
+                       executor) != 0) {
+        fdn_panic_cstr("blocking executor worker creation failed");
+    }
+#endif
+    ++executor->worker_count;
 }
 
 static void fdn_blocking_destroy(fdn_blocking_executor *executor) {
@@ -238,20 +286,8 @@ static fdn_blocking_executor *fdn_blocking_open(void) {
 #endif
     executor->source =
         fdn_task_external_source_open(fdn_blocking_wake_completed, executor);
-    for (size_t index = 0; index < FDN_BLOCKING_WORKER_COUNT; ++index) {
-#if defined(_WIN32)
-        executor->workers[index] =
-            CreateThread(NULL, 0, fdn_blocking_worker, executor, 0, NULL);
-        if (executor->workers[index] == NULL) {
-            fdn_panic_cstr("blocking executor worker creation failed");
-        }
-#else
-        if (pthread_create(&executor->workers[index], NULL, fdn_blocking_worker,
-                           executor) != 0) {
-            fdn_panic_cstr("blocking executor worker creation failed");
-        }
-#endif
-        ++executor->worker_count;
+    for (size_t index = 0; index < FDN_BLOCKING_INITIAL_WORKERS; ++index) {
+        fdn_blocking_start_worker(executor);
     }
     fdn_blocking_current = executor;
     return executor;
@@ -262,6 +298,7 @@ static void fdn_blocking_cancel_wait(fdn_task *task, void *context) {
     if (job == NULL || job->task != task) {
         fdn_panic_cstr("blocking executor cancellation has no job");
     }
+    fdn_blocking_request_cancellation(job);
 }
 
 bool fdn_blocking_poll(fdn_blocking_job **slot, void *context,
@@ -308,12 +345,22 @@ bool fdn_blocking_poll(fdn_blocking_job **slot, void *context,
     job->task = current;
     job->context = context;
     job->work = work;
+#if defined(_WIN32)
+    job->cancellation_requested =
+        fdn_task_cancellation_requested(current) ? 1 : 0;
+#else
+    atomic_init(&job->cancellation_requested,
+                fdn_task_cancellation_requested(current));
+#endif
     *slot = job;
     fdn_task_park_current(job, NULL, FDN_BLOCKING_WAIT,
                           fdn_blocking_cancel_wait);
     fdn_blocking_lock(executor);
     if (executor->jobs == SIZE_MAX) {
         fdn_panic_cstr("blocking executor job count overflow");
+    }
+    if (executor->jobs >= executor->worker_count) {
+        fdn_blocking_start_worker(executor);
     }
     ++executor->jobs;
     fdn_blocking_push(&executor->pending_head, &executor->pending_tail, job);

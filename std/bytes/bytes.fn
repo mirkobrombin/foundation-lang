@@ -53,6 +53,16 @@ extern c fn copyNative(
     handle u64,
     &result u64
 ) i32 as foundation_runtime_bytes_copy
+extern c fn copyFromRawNative(
+    source *const u8,
+    length u64,
+    &result u64
+) i32 as foundation_runtime_bytes_copy_from_raw
+extern c fn copyToRawNative(
+    handle u64,
+    destination *u8,
+    capacity u64
+) i32 as foundation_runtime_bytes_copy_to_raw
 extern c fn lengthNative(
     handle u64,
     &result u64
@@ -189,6 +199,18 @@ struct Bytes {
             return .Err(.Closed)
         }
         .Ok(own Bytes { handle = result })
+    }
+
+    // SAFETY: destination must be writable for capacity bytes during the call.
+    fn CopyToRaw(self, destination *u8, capacity u64) Result<void, Error> {
+        var status i32 = 0
+        // SAFETY: destination follows the public pointer contract above.
+        unsafe {
+            status = copyToRawNative(self.handle, destination, capacity)
+        }
+        if status == 0 return .Ok
+        if status == 1 return .Err(.Closed)
+        .Err(.OutOfBounds)
     }
 
     // Returns the number of bytes in this value.
@@ -429,6 +451,18 @@ struct SecretMemory {
 // Copies UTF-8 text into an owned byte sequence.
 fn FromText(value String) own Bytes {
     own Bytes { handle = fromTextNative(value) }
+}
+
+// SAFETY: source must be readable for length bytes during the call.
+fn CopyFromRaw(source *const u8, length u64) Result<own Bytes, Error> {
+    var result u64 = 0
+    var status i32 = 0
+    // SAFETY: source follows the public pointer contract above.
+    unsafe {
+        status = copyFromRawNative(source, length, &result)
+    }
+    if status == 0 return .Ok(own Bytes { handle = result })
+    .Err(.OutOfBounds)
 }
 
 // Returns bytes filled by the operating system cryptographic random source.

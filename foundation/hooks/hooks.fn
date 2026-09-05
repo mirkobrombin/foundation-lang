@@ -431,7 +431,8 @@ task runParallel<E>(
         }
         remaining = remaining - 1
     }
-    supervisor.Shutdown()
+    const stopping = supervisor.ShutdownTask()
+    discard $stopping.wait()
     discard receiver
     discard source
     active.running = false

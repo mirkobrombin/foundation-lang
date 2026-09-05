@@ -188,6 +188,15 @@ bool isCReturnType(const Type &type) {
             type.arguments.size() == 1);
 }
 
+bool isRuntimeTaskReturn(const Type &type, std::string_view symbol,
+                         std::string_view packageName) {
+    return packageName == "foundation.worker" &&
+           (symbol == "foundation_runtime_supervisor_wait_task" ||
+            symbol == "foundation_runtime_supervisor_cancel_task") &&
+           type.kind == TypeKind::Task && type.arguments.size() == 1 &&
+           type.arguments.front() == voidType;
+}
+
 bool containsRawPointer(const Type &type) {
     if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
         return true;
@@ -1808,7 +1817,9 @@ class Analyzer {
                     diagnostics_.error("FDN2112", "C ABI function cannot be generic",
                                        function.span);
                 }
-                if (!isCReturnType(semantic.returnType)) {
+                if (!isCReturnType(semantic.returnType) &&
+                    !isRuntimeTaskReturn(semantic.returnType, *function.cSymbol,
+                                         function.packageName)) {
                     diagnostics_.error("FDN2113", "return type is not C ABI safe",
                                        function.returnType.span);
                 }

@@ -11,6 +11,8 @@ task observe($cancel concurrent.Cancellation) void {
     }
 }
 
+task settle() void {}
+
 fn main() i32 {
     const supervisor = worker.NewSupervisor()
     supervisor.Start(spawn finish("first"))
@@ -21,5 +23,15 @@ fn main() i32 {
     const cancelled = worker.NewSupervisor()
     cancelled.Start(spawn observe(source.Token()))
     cancelled.Cancel()
+
+    const joining = worker.NewSupervisor()
+    joining.Start(spawn settle())
+    const waiting = joining.ShutdownTask()
+    discard $waiting.wait()
+
+    const stopping = worker.NewSupervisor()
+    stopping.Start(spawn settle())
+    const cancellation = stopping.CancelTask()
+    discard $cancellation.wait()
     0
 }

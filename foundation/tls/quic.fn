@@ -1,0 +1,468 @@
+package foundation.tls
+
+import std.bytes
+import std.concurrent
+
+extern c fn openQUICListenerNative(
+    address String,
+    port u64,
+    certificate u64,
+    privateKey u64,
+    protocol String,
+    &listener u64,
+    &boundPort u64
+) i32 as foundation_openssl_quic_listener_open
+
+extern c fn closeQUICListenerNative(
+    &listener u64
+) void as foundation_openssl_quic_listener_close
+
+@blocking
+extern c fn acceptQUICNative(
+    listener u64,
+    &connection u64
+) i32 as foundation_openssl_quic_listener_accept
+
+@blocking
+extern c fn connectQUICPinnedNative(
+    serverName String,
+    port u64,
+    rawPublicKey u64,
+    protocol String,
+    &connection u64
+) i32 as foundation_openssl_quic_connect_pinned
+
+extern c fn retainQUICConnectionNative(
+    connection u64
+) u64 as foundation_openssl_quic_connection_retain
+
+extern c fn releaseQUICConnectionNative(
+    &connection u64
+) void as foundation_openssl_quic_connection_release
+
+extern c fn closeQUICConnectionNative(
+    &connection u64
+) void as foundation_openssl_quic_connection_close
+
+extern c fn peerQUICNative(
+    connection u64,
+    &address String
+) i32 as foundation_openssl_quic_connection_peer
+
+@blocking
+extern c fn openQUICStreamNative(
+    connection u64,
+    &stream u64
+) i32 as foundation_openssl_quic_connection_open_stream
+
+@blocking
+extern c fn acceptQUICStreamNative(
+    connection u64,
+    &stream u64
+) i32 as foundation_openssl_quic_connection_accept_stream
+
+extern c fn closeQUICStreamNative(
+    &stream u64
+) void as foundation_openssl_quic_stream_close
+
+extern c fn abortQUICStreamNative(
+    &stream u64
+) void as foundation_openssl_quic_stream_abort
+
+@blocking
+extern c fn finishQUICStreamNative(
+    &stream u64
+) i32 as foundation_openssl_quic_stream_finish
+
+extern c fn splitQUICStreamNative(
+    &stream u64,
+    &reader u64,
+    &writer u64,
+    &controller u64
+) i32 as foundation_openssl_quic_stream_split_controlled
+
+extern c fn idQUICStreamNative(
+    stream u64
+) u64 as foundation_openssl_quic_stream_id
+
+extern c fn controlQUICStreamNative(
+    stream u64
+) u64 as foundation_openssl_quic_stream_control
+
+@blocking
+extern c fn readQUICNative(
+    reader u64,
+    limit u64,
+    &value u64
+) i32 as foundation_openssl_quic_stream_read
+
+@blocking
+extern c fn readExactQUICNative(
+    reader u64,
+    length u64,
+    &value u64
+) i32 as foundation_openssl_quic_stream_read_exact
+
+@blocking
+extern c fn writeQUICNative(
+    writer u64,
+    value u64
+) i32 as foundation_openssl_quic_stream_write
+
+struct OpenSSLQUICListener {
+    handle u64
+    Port u64
+
+    fn Control(self) Result<own OpenSSLQUICListenerController, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        .Ok(own OpenSSLQUICListenerController { handle = self.handle })
+    }
+
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeQUICListenerNative(&self.handle)
+        true
+    }
+
+    fn Take(&self) u64 {
+        const handle = self.handle
+        self.handle = 0
+        handle
+    }
+
+    fn drop(&self) void {
+        closeQUICListenerNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
+struct OpenSSLQUICListenerController {
+    handle u64
+
+    fn Clone(self) own OpenSSLQUICListenerController {
+        own OpenSSLQUICListenerController { handle = self.handle }
+    }
+
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeQUICListenerNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        self.handle = 0
+    }
+}
+
+struct OpenSSLQUICConnection {
+    handle u64
+
+    fn Reference(self) own OpenSSLQUICConnectionRef {
+        const retained = retainQUICConnectionNative(self.handle)
+        own OpenSSLQUICConnectionRef { handle = retained }
+    }
+
+    fn PeerAddress(self) Result<String, Error> {
+        var address = ""
+        const status = peerQUICNative(self.handle, &address)
+        if status != 0 return .Err(errorFor(status))
+        .Ok(address)
+    }
+
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeQUICConnectionNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        closeQUICConnectionNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
+struct OpenSSLQUICConnectionRef {
+    handle u64
+
+    fn Clone(self) own OpenSSLQUICConnectionRef {
+        const retained = retainQUICConnectionNative(self.handle)
+        own OpenSSLQUICConnectionRef { handle = retained }
+    }
+
+    fn Active(self) bool {
+        self.handle != 0
+    }
+
+    fn drop(&self) void {
+        releaseQUICConnectionNative(&self.handle)
+    }
+}
+
+struct OpenSSLQUICStream {
+    handle u64
+
+    fn ID(self) u64 {
+        idQUICStreamNative(self.handle)
+    }
+
+    fn SplitControlled($self) Result<OpenSSLQUICControlledStream, Error> {
+        var active = self
+        var reader u64 = 0
+        var writer u64 = 0
+        var controller u64 = 0
+        const status = splitQUICStreamNative(
+            &active.handle,
+            &reader,
+            &writer,
+            &controller
+        )
+        if status != 0 return .Err(errorFor(status))
+        .Ok(OpenSSLQUICControlledStream {
+            Reader = own OpenSSLQUICReader { handle = reader }
+            Writer = own OpenSSLQUICWriter { handle = writer }
+            Controller = own OpenSSLQUICController { handle = controller }
+        })
+    }
+
+    fn drop(&self) void {
+        closeQUICStreamNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
+struct OpenSSLQUICReader {
+    handle u64
+
+    fn Take(&self) u64 {
+        const handle = self.handle
+        self.handle = 0
+        handle
+    }
+
+    fn drop(&self) void {
+        closeQUICStreamNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
+struct OpenSSLQUICWriter {
+    handle u64
+
+    fn Take(&self) u64 {
+        const handle = self.handle
+        self.handle = 0
+        handle
+    }
+
+    fn Control(self) Result<own OpenSSLQUICController, Error> {
+        const handle = controlQUICStreamNative(self.handle)
+        if handle == 0 return .Err(.Closed)
+        .Ok(own OpenSSLQUICController { handle = handle })
+    }
+
+    fn drop(&self) void {
+        closeQUICStreamNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
+struct OpenSSLQUICController {
+    handle u64
+
+    fn Abort(&self) bool {
+        if self.handle == 0 return false
+        abortQUICStreamNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        closeQUICStreamNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
+struct OpenSSLQUICControlledStream {
+    Reader own OpenSSLQUICReader
+    Writer own OpenSSLQUICWriter
+    Controller own OpenSSLQUICController
+}
+
+struct OpenSSLQUICAcceptOutcome {
+    Listener own OpenSSLQUICListener
+    Value Result<own OpenSSLQUICConnection, Error>
+}
+
+struct OpenSSLQUICReadOutcome {
+    Reader own OpenSSLQUICReader
+    Value Result<own bytes.Bytes, Error>
+}
+
+struct OpenSSLQUICWriteOutcome {
+    Writer own OpenSSLQUICWriter
+    Value Result<void, Error>
+}
+
+fn OpenSSLQUICListen(
+    $address String,
+    port u64,
+    certificatePEM bytes.Bytes,
+    privateKeyPEM bytes.Bytes,
+    $protocol String
+) Result<own OpenSSLQUICListener, Error> {
+    if port > 65535 return .Err(.InvalidAddress)
+    var listener u64 = 0
+    var boundPort u64 = 0
+    const status = openQUICListenerNative(
+        address,
+        port,
+        bytes.RuntimeHandle(certificatePEM),
+        bytes.RuntimeHandle(privateKeyPEM),
+        protocol,
+        &listener,
+        &boundPort
+    )
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own OpenSSLQUICListener { handle = listener Port = boundPort })
+}
+
+task OpenSSLQUICAccept(
+    $listener own OpenSSLQUICListener
+) OpenSSLQUICAcceptOutcome {
+    var active = listener
+    const handle = active.Take()
+    var connection u64 = 0
+    const status = acceptQUICNative(handle, &connection)
+    const restored = own OpenSSLQUICListener {
+        handle = handle
+        Port = active.Port
+    }
+    if status != 0 {
+        return OpenSSLQUICAcceptOutcome {
+            Listener = restored
+            Value = .Err(errorFor(status))
+        }
+    }
+    OpenSSLQUICAcceptOutcome {
+        Listener = restored
+        Value = .Ok(own OpenSSLQUICConnection { handle = connection })
+    }
+}
+
+task OpenSSLQUICDialPinned(
+    $serverName String,
+    port u64,
+    $rawPublicKey own bytes.Bytes,
+    $protocol String
+) Result<own OpenSSLQUICConnection, Error> {
+    if port == 0 || port > 65535 return .Err(.InvalidAddress)
+    var connection u64 = 0
+    const status = connectQUICPinnedNative(
+        serverName,
+        port,
+        bytes.RuntimeHandle(rawPublicKey),
+        protocol,
+        &connection
+    )
+    discard rawPublicKey
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own OpenSSLQUICConnection { handle = connection })
+}
+
+task OpenSSLQUICOpenStream(
+    $connection own OpenSSLQUICConnectionRef
+) Result<own OpenSSLQUICStream, Error> {
+    var stream u64 = 0
+    const status = openQUICStreamNative(connection.handle, &stream)
+    discard connection
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own OpenSSLQUICStream { handle = stream })
+}
+
+task OpenSSLQUICAcceptStream(
+    $connection own OpenSSLQUICConnectionRef
+) Result<own OpenSSLQUICStream, Error> {
+    var stream u64 = 0
+    const status = acceptQUICStreamNative(connection.handle, &stream)
+    discard connection
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own OpenSSLQUICStream { handle = stream })
+}
+
+task OpenSSLQUICRead(
+    $reader own OpenSSLQUICReader,
+    limit u64
+) OpenSSLQUICReadOutcome {
+    var active = reader
+    const handle = active.Take()
+    var value u64 = 0
+    const status = readQUICNative(handle, limit, &value)
+    const restored = own OpenSSLQUICReader { handle = handle }
+    if status != 0 {
+        return OpenSSLQUICReadOutcome {
+            Reader = restored
+            Value = .Err(errorFor(status))
+        }
+    }
+    const claimed = bytes.ClaimRuntimeHandle(value) else error {
+        discard error
+        return OpenSSLQUICReadOutcome {
+            Reader = restored
+            Value = .Err(.Io)
+        }
+    }
+    OpenSSLQUICReadOutcome { Reader = restored Value = .Ok(claimed) }
+}
+
+task OpenSSLQUICReadExact(
+    $reader own OpenSSLQUICReader,
+    length u64
+) OpenSSLQUICReadOutcome {
+    var active = reader
+    const handle = active.Take()
+    var value u64 = 0
+    const status = readExactQUICNative(handle, length, &value)
+    const restored = own OpenSSLQUICReader { handle = handle }
+    if status != 0 {
+        return OpenSSLQUICReadOutcome {
+            Reader = restored
+            Value = .Err(errorFor(status))
+        }
+    }
+    const claimed = bytes.ClaimRuntimeHandle(value) else error {
+        discard error
+        return OpenSSLQUICReadOutcome {
+            Reader = restored
+            Value = .Err(.Io)
+        }
+    }
+    OpenSSLQUICReadOutcome { Reader = restored Value = .Ok(claimed) }
+}
+
+task OpenSSLQUICWriteAll(
+    $writer own OpenSSLQUICWriter,
+    $value own bytes.Bytes
+) OpenSSLQUICWriteOutcome {
+    var active = writer
+    const handle = active.Take()
+    const status = writeQUICNative(handle, bytes.RuntimeHandle(value))
+    discard value
+    const restored = own OpenSSLQUICWriter { handle = handle }
+    if status != 0 {
+        return OpenSSLQUICWriteOutcome {
+            Writer = restored
+            Value = .Err(errorFor(status))
+        }
+    }
+    OpenSSLQUICWriteOutcome { Writer = restored Value = .Ok }
+}
+
+task OpenSSLQUICFinish(
+    $writer own OpenSSLQUICWriter
+) Result<void, Error> {
+    var active = writer
+    var handle = active.Take()
+    const status = finishQUICStreamNative(&handle)
+    discard active
+    if status != 0 return .Err(errorFor(status))
+    .Ok
+}

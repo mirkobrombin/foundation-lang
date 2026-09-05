@@ -1,3 +1,5 @@
+import std.bytes
+
 extern c fn mutableValues() *i32 as foundation_raw_mutable_values
 
 extern c fn constantValue() *const i32 as foundation_raw_constant_value
@@ -16,6 +18,20 @@ fn copy(&destination [u8], source [u8]) void {
     // SAFETY: both slice pointers are live for length elements during this call.
     unsafe {
         nativeCopy(destination.pointer, source.pointer, len(source))
+    }
+}
+
+fn ownedBytes(source [u8]) Result<own bytes.Bytes, bytes.Error> {
+    // SAFETY: the slice pointer remains readable for its declared length.
+    unsafe {
+        return bytes.CopyFromRaw(source.pointer, u64.From(len(source)))
+    }
+}
+
+fn copyOwnedBytes(value bytes.Bytes, &destination [u8]) Result<void, bytes.Error> {
+    // SAFETY: the edit slice remains writable for its declared length.
+    unsafe {
+        return value.CopyToRaw(destination.pointer, u64.From(len(destination)))
     }
 }
 
@@ -44,6 +60,16 @@ fn main() i32 {
     const source [2]u8 = [4, 2]
     copy(&destination, source)
     if destination[0] != 4 || destination[1] != 2 return 7
+    const owned = ownedBytes(source) else error {
+        discard error
+        return 8
+    }
+    var roundTrip [2]u8 = [0, 0]
+    copyOwnedBytes(owned, &roundTrip) else error {
+        discard error
+        return 9
+    }
+    if roundTrip[0] != 4 || roundTrip[1] != 2 return 10
 
     print("raw pointer boundary")
     0

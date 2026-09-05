@@ -816,12 +816,88 @@ bool linkSharedLibrary(const std::filesystem::path &output,
     return runProcess(arguments, ProcessOutput::StdoutToStderrOnFailure) == 0;
 }
 
+struct NativeBuildInputs {
+    std::vector<std::filesystem::path> sources;
+    std::vector<std::string> links;
+};
+
+void appendNativeSource(std::vector<std::filesystem::path> &sources,
+                        const std::filesystem::path &source) {
+    const auto identity = sourceIdentity(source);
+    const auto duplicate = std::any_of(sources.begin(), sources.end(), [&](const auto &entry) {
+        return sourceIdentity(entry) == identity;
+    });
+    if (!duplicate) {
+        sources.push_back(source);
+    }
+}
+
+void appendNativeLink(std::vector<std::string> &links, const std::string &link) {
+    if (std::find(links.begin(), links.end(), link) == links.end()) {
+        links.push_back(link);
+    }
+}
+
+std::optional<NativeBuildInputs>
+nativeBuildInputs(const std::filesystem::path &source, ProjectMode mode,
+                  const std::vector<std::filesystem::path> &explicitSources,
+                  const std::vector<std::string> &explicitLinks) {
+    NativeBuildInputs result;
+    const auto manifestPath = discoverPackageManifest(source);
+    if (manifestPath.has_value()) {
+        const auto sdk = *parsePackageVersion("0.1.0");
+        const auto target = hostTargetPlatform();
+        const auto project = loadLockedPackageProject(
+            *manifestPath, sdk, target, defaultPackageCachePath(), mode == ProjectMode::Test);
+        if (!project.value.has_value()) {
+            for (const auto &error : project.errors) {
+                std::cerr << renderPackageError(error);
+            }
+            return std::nullopt;
+        }
+        for (const auto &package : project.value->sources) {
+            for (const auto &native : package.manifest.nativeSources) {
+                if (native.target.has_value() && *native.target != target) {
+                    continue;
+                }
+                const auto path = package.packageRoot / native.path;
+                std::error_code error;
+                const auto status = std::filesystem::symlink_status(path, error);
+                if (error || !std::filesystem::is_regular_file(status) ||
+                    std::filesystem::is_symlink(status)) {
+                    std::cerr << "foundationc: native source is not a regular file: "
+                              << path.string() << '\n';
+                    return std::nullopt;
+                }
+                appendNativeSource(result.sources, path);
+            }
+            for (const auto &link : package.manifest.nativeLinks) {
+                if (!link.target.has_value() || *link.target == target) {
+                    appendNativeLink(result.links, link.library);
+                }
+            }
+        }
+    }
+    for (const auto &native : explicitSources) {
+        appendNativeSource(result.sources, native);
+    }
+    for (const auto &link : explicitLinks) {
+        appendNativeLink(result.links, link);
+    }
+    return result;
+}
+
 int buildCompilation(const std::filesystem::path &source, const std::filesystem::path &output,
                      const std::filesystem::path &temporarySource,
                      const std::filesystem::path &temporaryHeader,
                      const std::vector<std::filesystem::path> &nativeInputs,
                      const std::vector<std::string> &nativeLinks,
                      BackendKind backend) {
+    const auto native = nativeBuildInputs(source, ProjectMode::Production,
+                                          nativeInputs, nativeLinks);
+    if (!native.has_value()) {
+        return 1;
+    }
     auto compilation = compile(source);
     if (const auto status = report(source, compilation); status != 0) {
         return status;
@@ -849,7 +925,7 @@ int buildCompilation(const std::filesystem::path &source, const std::filesystem:
         return 1;
     }
     return runProcess(compilerArguments(temporarySource, output, temporaryHeader.parent_path(),
-                                        nativeInputs, nativeLinks),
+                                        native->sources, native->links),
                       ProcessOutput::StdoutToStderrOnFailure);
 }
 
@@ -1543,6 +1619,11 @@ int buildLibrary(const std::filesystem::path &source,
         std::cerr << "foundationc: build-library requires a lock for the host target\n";
         return 2;
     }
+    const auto native = nativeBuildInputs(source, ProjectMode::Production,
+                                          nativeInputs, {});
+    if (!native.has_value()) {
+        return 1;
+    }
 
     auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false},
                                    ProjectMode::Production, lock.value->target);
@@ -1567,7 +1648,7 @@ int buildLibrary(const std::filesystem::path &source,
     if (!fir.has_value() || !packageInterface.has_value()) {
         return 1;
     }
-    for (const auto &input : nativeInputs) {
+    for (const auto &input : native->sources) {
         const auto extension = input.extension();
         if (extension != ".c" && extension != ".o" && extension != ".obj") {
             std::cerr << "foundationc: native library inputs must be C sources or objects\n";
@@ -1634,8 +1715,8 @@ int buildLibrary(const std::filesystem::path &source,
         }
         objects.push_back(object);
     }
-    for (std::size_t index = 0; index < nativeInputs.size(); ++index) {
-        const auto &input = nativeInputs[index];
+    for (std::size_t index = 0; index < native->sources.size(); ++index) {
+        const auto &input = native->sources[index];
         if (input.extension() == ".c") {
             const auto object = temporary->path() /
                                 ("native-" + std::to_string(index) +
@@ -1905,6 +1986,11 @@ int runTests(const std::filesystem::path &source,
              const std::vector<std::filesystem::path> &nativeInputs,
              const std::vector<std::string> &nativeLinks,
              BackendKind backend) {
+    const auto native = nativeBuildInputs(source, ProjectMode::Test,
+                                          nativeInputs, nativeLinks);
+    if (!native.has_value()) {
+        return 1;
+    }
     auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false},
                                    ProjectMode::Test);
     if (analysis.diagnostics.hasErrors()) {
@@ -1966,8 +2052,8 @@ int runTests(const std::filesystem::path &source,
             return 1;
         }
         const auto compiled = runProcess(
-            compilerArguments(generated, executable, temporary->path(), nativeInputs,
-                              nativeLinks, true),
+            compilerArguments(generated, executable, temporary->path(), native->sources,
+                              native->links, true),
             ProcessOutput::StdoutToStderrOnFailure);
         if (compiled != 0) {
             return compiled;

@@ -13,9 +13,11 @@ fn OpenTree(path String, maxEntries u64, maxPathLength u64) Result<own TreeReade
 fn OpenRoot(path String) Result<own RootWriter, Error>
 task OpenFile($path String, mode FileMode) Result<own File, HostError>
 task OpenRootFile($root own RootWriter, $path String, mode FileMode) RootFileOpenOutcome
+task CreateRootFile($root own RootWriter, $path String) RootFileOpenOutcome
 task ReadFileChunk($file own File, limit u64) FileReadOutcome
 task WriteFileChunk($file own File, $value own bytes.Bytes) FileOutcome
 task SeekFile($file own File, offset u64) FileOutcome
+task ResizeFile($file own File, size u64) FileOutcome
 task SizeFile($file own File) FileSizeOutcome
 task SyncFile($file own File) FileOutcome
 fn LineReader.NextLimited(&self, limit u64) Result<Option<String>, Error>
@@ -23,10 +25,14 @@ fn TreeReader.Next(&self) Result<Option<TreeEntry>, Error>
 fn TreeReader.ReadFile(self, path String, limit u64) Result<own bytes.Bytes, Error>
 fn TreeReader.ReadSymbolicLink(self, path String, limit u64) Result<SymbolicLinkInfo, Error>
 fn RootWriter.CreateDirectory(&self, path String) Result<void, Error>
+fn RootWriter.CreateDirectoryEntry(&self, path String, permissions u32) Result<void, HostError>
 fn RootWriter.WriteFile(self, path String, value bytes.Bytes, permissions u32) Result<void, Error>
 fn RootWriter.CreateSymbolicLink(&self, path String, target String, directory bool) Result<void, Error>
 fn RootWriter.RemoveFile(&self, path String) Result<void, Error>
 fn RootWriter.RemoveEmptyDirectory(&self, path String) Result<void, Error>
+fn RootWriter.RemoveFileDetailed(&self, path String) Result<void, HostError>
+fn RootWriter.RemoveEmptyDirectoryDetailed(&self, path String) Result<void, HostError>
+fn RootWriter.Rename(&self, source String, destination String) Result<void, HostError>
 fn RootWriter.SetPermissions(&self, path String, permissions u32) Result<void, Error>
 fn RootWriter.SetModified(&self, path String, modified u64) Result<void, Error>
 task ReadText($path String) Result<String, Error>
@@ -74,20 +80,27 @@ link kind; POSIX filesystems do not store that distinction and report `false`.
 
 `RootWriter` confines every operation beneath one held destination root. Relative paths reject
 empty components, `.`, `..`, backslashes, absolute roots, and embedded zero bytes. Directory
-creation refuses symbolic links and reparse points. File writes use an exclusive temporary file,
-flush its contents, and replace the destination atomically. POSIX applies the requested lower nine
-permission bits; Windows keeps the destination ACL because POSIX modes do not exist there.
-Symbolic-link creation requires an existing safe parent. Removal distinguishes files and links from
-empty directories and never follows a link. Metadata changes reject links. POSIX applies all lower
-nine permission bits; Windows maps absence of write bits to the read-only attribute. Both platforms
-store modification time in whole Unix seconds.
+creation refuses symbolic links and reparse points. `CreateDirectory` creates missing descendants;
+`CreateDirectoryEntry` creates one directory and returns `AlreadyExists` when its path is occupied.
+File writes use an exclusive temporary file, flush its contents, and replace the destination
+atomically. `Rename` moves one entry between relative paths under the same root and fails when the
+destination exists. POSIX applies the requested lower nine permission bits; Windows keeps the
+destination ACL because POSIX modes do not exist there. Symbolic-link creation requires an existing
+safe parent. Removal distinguishes files and links from empty directories and never follows a link.
+The `Detailed` removal variants retain native error categories while the original methods preserve
+the Language 1 API. Metadata changes reject links. POSIX applies all lower nine permission bits;
+Windows maps absence of write bits to the read-only attribute. Both platforms store modification
+time in whole Unix seconds.
 
 `File` streams regular binary files through the bounded blocking executor. `ReadFileChunk`
 returns at most the requested positive byte count and distinguishes clean EOF with `None`.
 `WriteFileChunk` writes the complete supplied value. `SeekFile` uses an absolute byte offset,
-`SizeFile` reads the current file length, and `SyncFile` flushes written data before an explicit
-close. `Write` mode creates a missing file and preserves existing contents; `Truncate` creates or
-empties it. Reads and writes reject symbolic final components and non-regular files.
+`ResizeFile` changes the file length without changing the current offset, `SizeFile` reads the
+current length, and `SyncFile` flushes written data before an explicit close. `Write` mode creates a
+missing file and preserves existing
+contents; `Truncate` creates or empties it. `CreateRootFile` creates a new file beneath a held root
+and fails with `AlreadyExists` when the path is occupied. Reads and writes reject symbolic final
+components and non-regular files.
 
 `OpenRootFile` applies the same streaming operations to a relative path beneath a held
 `RootWriter`. It validates every relative component and holds parent directories against

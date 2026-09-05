@@ -291,15 +291,6 @@ fn parsePackageLock(
         addPackageError(&result.errors, filePath, 1, 1, "FDN4022",
             "missing lock target")
     }
-    if lock.foreign.len() > 0 {
-        match copyLockedNativeOption(lock.nativeLibrary) {
-            None: addPackageError(&result.errors, filePath, 1, 1, "FDN4029",
-                "foreign provenance requires a native library lock entry")
-            Some(value): {
-                discard value
-            }
-        }
-    }
     if result.errors.len() == 0 && validatePackageLockGraph(filePath, &lock, &result.errors) {
         sortArena<lockedPackage>(&lock.packages, compareLockedPackage)
         sortArena<packageEdge>(&lock.edges, comparePackageEdge)

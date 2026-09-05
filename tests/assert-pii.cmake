@@ -94,6 +94,7 @@ endif()
 
 set(reserved_manifest "${second_project}/foundation.package")
 file(READ "${reserved_manifest}" reserved_source)
+string(REPLACE "native_source native/libfuse/increment.c\n" "" reserved_source "${reserved_source}")
 string(REPLACE "path native/libfuse" "registry default" reserved_source "${reserved_source}")
 file(WRITE "${reserved_manifest}" "${reserved_source}")
 execute_process(

@@ -134,6 +134,19 @@ fn copyPackageManifest(&manifest packageManifest) own packageManifest {
         index += 1
     }
     index = 0
+    while index < manifest.nativeSources.len() {
+        const value = match manifest.nativeSources.take(index) {
+            None: panic("native source slot is empty")
+            Some(value): value
+        }
+        discard result.nativeSources.add(packageNativeSource {
+            path = text.Copy(value.path)
+            target = copyTargetOption(value.target)
+        })
+        manifest.nativeSources.restore(index, $value)
+        index += 1
+    }
+    index = 0
     while index < manifest.nativeLinks.len() {
         const value = match manifest.nativeLinks.take(index) {
             None: panic("native link slot is empty")
@@ -304,6 +317,41 @@ fn manifestHasNativeLink(
     false
 }
 
+fn manifestHasNativeSource(
+    &manifest packageManifest,
+    source String,
+    target Option<targetPlatform>
+) bool {
+    var index u64 = 0
+    while index < manifest.nativeSources.len() {
+        const value = match manifest.nativeSources.take(index) {
+            None: panic("native source slot is empty")
+            Some(value): value
+        }
+        var overlaps = false
+        match value.target {
+            None: {
+                overlaps = true
+            }
+            Some(existing): {
+                match target {
+                    None: {
+                        overlaps = true
+                    }
+                    Some(candidate): {
+                        overlaps = sameTarget(existing, candidate)
+                    }
+                }
+            }
+        }
+        const found = value.path == source && overlaps
+        manifest.nativeSources.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}
+
 fn manifestHasForeign(
     &manifest packageManifest,
     ecosystem String,
@@ -323,12 +371,33 @@ fn manifestHasForeign(
     false
 }
 
+fn nativeSourceHasForeignOwner(
+    &manifest packageManifest,
+    source String
+) bool {
+    const normalized = path.Normalize(source)
+    var index u64 = 0
+    while index < manifest.foreign.len() {
+        const value = match manifest.foreign.take(index) {
+            None: panic("foreign package slot is empty")
+            Some(value): value
+        }
+        const resolver = path.Normalize(value.resolver)
+        const found = value.ecosystem == "c" && value.kind == "path" &&
+            packageSourceContains(resolver, normalized)
+        manifest.foreign.restore(index, $value)
+        if found return true
+        index += 1
+    }
+    false
+}
+
 fn knownPackageManifestDirective(value String) bool {
     value == "format" || value == "name" || value == "version" || value == "language" ||
         value == "sdk" || value == "fcs" || value == "fcs_rule" || value == "source" ||
         value == "test_source" || value == "native_library" || value == "native_name" ||
-        value == "native_soversion" || value == "native_link" || value == "foreign" ||
-        value == "dependency"
+        value == "native_soversion" || value == "native_source" ||
+        value == "native_link" || value == "foreign" || value == "dependency"
 }
 
 fn parsePackageManifest(
@@ -603,6 +672,37 @@ fn parsePackageManifest(
                             })
                         }
                     }
+                    if directive == "native_source" {
+                        var valid = tokens.values.len() == 2 || tokens.values.len() == 4
+                        const sourcePath = if tokens.values.len() >= 2 {
+                            path.Normalize(packageToken(&tokens.values, 1))
+                        } else { "" }
+                        var sourceTarget Option<targetPlatform> = .None
+                        if tokens.values.len() == 4 {
+                            valid = valid && packageToken(&tokens.values, 2) == "target"
+                            sourceTarget = parseTargetPlatformText(packageToken(&tokens.values, 3))
+                            match sourceTarget {
+                                None: {
+                                    valid = false
+                                }
+                                Some(value): {
+                                    discard value
+                                }
+                            }
+                        }
+                        valid = valid && relativePackageSource(sourcePath) &&
+                            path.Extension(sourcePath) == ".c" &&
+                            !manifestHasNativeSource(&manifest, sourcePath, sourceTarget)
+                        if !valid {
+                            addPackageError(&result.errors, filePath, lineNumber, 1,
+                                "FDN4015", "native_source requires one unique relative C file and optional target")
+                        } else {
+                            discard manifest.nativeSources.add(packageNativeSource {
+                                path = sourcePath
+                                target = sourceTarget
+                            })
+                        }
+                    }
                     if directive == "foreign" {
                         var valid = tokens.values.len() == 8
                         var ecosystem = ""
@@ -716,10 +816,9 @@ fn parsePackageManifest(
             }
         }
     }
-    if (!manifest.nativeLibrary && (manifest.nativeLinks.len() > 0 ||
-            manifest.foreign.len() > 0 || manifestHasNativeMetadata(&manifest))) {
+    if !manifest.nativeLibrary && manifestHasNativeMetadata(&manifest) {
         addPackageError(&result.errors, filePath, 1, 1, "FDN4015",
-            "native directives require native_library c")
+            "native library metadata requires native_library c")
     }
     if manifest.nativeLibrary {
         match copyPackageStringOption(manifest.nativeName) {
@@ -730,8 +829,28 @@ fn parsePackageManifest(
             }
         }
     }
+    if !manifest.nativeLibrary && manifest.nativeSources.len() == 0 &&
+        (manifest.nativeLinks.len() > 0 || manifest.foreign.len() > 0) {
+        addPackageError(&result.errors, filePath, 1, 1, "FDN4015",
+            "native links and foreign provenance require native_library c or native_source")
+    }
+    var nativeSourceIndex u64 = 0
+    while nativeSourceIndex < manifest.nativeSources.len() {
+        const source = match manifest.nativeSources.take(nativeSourceIndex) {
+            None: panic("native source slot is empty")
+            Some(value): value
+        }
+        const owned = nativeSourceHasForeignOwner(&manifest, source.path)
+        manifest.nativeSources.restore(nativeSourceIndex, $source)
+        if !owned {
+            addPackageError(&result.errors, filePath, 1, 1, "FDN4015",
+                "native_source must belong to a foreign c path source")
+        }
+        nativeSourceIndex += 1
+    }
     if result.errors.len() == 0 {
         sortArena<codeStandardRuleSetting>(&manifest.codeStandardRules, compareCodeStandardRule)
+        sortArena<packageNativeSource>(&manifest.nativeSources, comparePackageNativeSource)
         sortArena<packageNativeLink>(&manifest.nativeLinks, comparePackageNativeLink)
         sortArena<packageForeign>(&manifest.foreign, comparePackageForeign)
         sortArena<packageDependency>(&manifest.dependencies, comparePackageDependency)
@@ -900,6 +1019,12 @@ fn comparePackageNativeLink(left packageNativeLink, right packageNativeLink) i32
     compareTargetOption(left.target, right.target)
 }
 
+fn comparePackageNativeSource(left packageNativeSource, right packageNativeSource) i32 {
+    const source = text.Compare(left.path, right.path)
+    if source != 0 return source
+    compareTargetOption(left.target, right.target)
+}
+
 fn comparePackageForeign(left packageForeign, right packageForeign) i32 {
     var compared = text.Compare(left.ecosystem, right.ecosystem)
     if compared != 0 return compared
@@ -942,6 +1067,7 @@ fn readPackageManifest(filePath String) own packageParseResult<own packageManife
 fn renderPackageManifest(&source packageManifest) String {
     var manifest = copyPackageManifest(&source)
     sortArena<codeStandardRuleSetting>(&manifest.codeStandardRules, compareCodeStandardRule)
+    sortArena<packageNativeSource>(&manifest.nativeSources, comparePackageNativeSource)
     sortArena<packageNativeLink>(&manifest.nativeLinks, comparePackageNativeLink)
     sortArena<packageForeign>(&manifest.foreign, comparePackageForeign)
     sortArena<packageDependency>(&manifest.dependencies, comparePackageDependency)
@@ -998,6 +1124,23 @@ fn renderPackageManifest(&source packageManifest) String {
             discard packageBuilderWrite(&builder,
                 "native_soversion " + packageU32(value) + "\n")
         }
+    }
+    index = 0
+    while index < manifest.nativeSources.len() {
+        const value = match manifest.nativeSources.take(index) {
+            None: panic("native source slot is empty")
+            Some(value): value
+        }
+        var line = "native_source " + quotePackageText(value.path)
+        match value.target {
+            None: {}
+            Some(target): {
+                line = line + " target " + targetPlatformName(target)
+            }
+        }
+        discard packageBuilderWrite(&builder, line + "\n")
+        manifest.nativeSources.restore(index, $value)
+        index += 1
     }
     index = 0
     while index < manifest.nativeLinks.len() {

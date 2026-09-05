@@ -14,6 +14,7 @@ enum Error {
     Cancelled
     Unavailable
     Closed
+    Reset
     Io
 }
 
@@ -103,6 +104,11 @@ struct OpenSSLListener {
     handle u64
     Port u64
 
+    fn Control(self) Result<own OpenSSLListenerController, Error> {
+        if self.handle == 0 return .Err(.Closed)
+        .Ok(own OpenSSLListenerController { handle = self.handle })
+    }
+
     fn Close(&self) bool {
         if self.handle == 0 return false
         closeListenerNative(&self.handle)
@@ -117,6 +123,25 @@ struct OpenSSLListener {
 
     fn drop(&self) void {
         closeListenerNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
+struct OpenSSLListenerController {
+    handle u64
+
+    fn Clone(self) own OpenSSLListenerController {
+        own OpenSSLListenerController { handle = self.handle }
+    }
+
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeListenerNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        self.handle = 0
     }
 }
 
@@ -421,5 +446,7 @@ fn errorFor(status i32) Error {
     if status == 9 return .InvalidProtocol
     if status == 11 return .Timeout
     if status == 12 return .Cancelled
+    if status == 13 return .Closed
+    if status == 14 return .Reset
     .Io
 }

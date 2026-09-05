@@ -219,6 +219,7 @@ source src
 native_library c
 native_name sample_native
 native_soversion 2
+native_source native/libfuse/increment.c
 native_link dl target linux
 native_link dl target macos
 native_link fuse
@@ -249,6 +250,32 @@ foreign c system-lib 1.0.0 system local abi c/v1
 )";
     expect(foundation::parsePackageManifest("foundation.package", reserved).value.has_value(),
            "reserved registry and system provenance remains parseable");
+
+    constexpr std::string_view hybrid = R"(format foundation.package/v1
+name sample.hybrid
+version 1.0.0
+language 1
+source src
+native_source native/provider.c target linux
+native_link fuse target linux
+foreign c provider 1.0.0 path native abi c/v1
+)";
+    expect(foundation::parsePackageManifest("foundation.package", hybrid).value.has_value(),
+           "native source packages do not require a C ABI export library");
+
+    const auto duplicateSource = std::string(hybrid) +
+                                 "native_source native/provider.c target linux\n";
+    const auto orphanSource = std::string(hybrid) +
+                              "native_source elsewhere/provider.c\n";
+    const auto invalidSource = std::string(hybrid) +
+                               "native_source native/provider.o\n";
+    expect(hasCode(foundation::parsePackageManifest("foundation.package", duplicateSource).errors,
+                   "FDN4015") &&
+               hasCode(foundation::parsePackageManifest("foundation.package", orphanSource).errors,
+                       "FDN4015") &&
+               hasCode(foundation::parsePackageManifest("foundation.package", invalidSource).errors,
+                       "FDN4015"),
+           "native sources must be unique C files inside declared foreign provenance");
 
     constexpr std::string_view duplicateLink = R"(format foundation.package/v1
 name sample.native

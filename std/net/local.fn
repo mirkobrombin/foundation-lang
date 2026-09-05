@@ -1,0 +1,59 @@
+package std.net
+
+extern c fn listenLocalNative(
+    path String,
+    backlog u64,
+    &listener u64
+) i32 as foundation_runtime_net_local_listen
+
+extern c fn dialLocalNative(
+    path String,
+    &connection u64
+) i32 as foundation_runtime_net_local_dial
+
+struct LocalListener {
+    inner own TcpListener
+    Path String
+
+    fn Control(self) Result<own TcpListenerController, Error> {
+        self.inner.Control()
+    }
+
+    fn Close(&self) bool {
+        self.inner.Close()
+    }
+}
+
+struct LocalAcceptOutcome {
+    Listener own LocalListener
+    Value Result<own TcpConnection, Error>
+}
+
+fn ListenLocal($path String) Result<own LocalListener, Error> {
+    const defaultBacklog u64 = 128
+    var listener u64 = 0
+    const status = listenLocalNative(path, defaultBacklog, &listener)
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own LocalListener {
+        inner = own TcpListener { handle = listener Port = 0 }
+        Path = path
+    })
+}
+
+fn DialLocal(path String) Result<own TcpConnection, Error> {
+    var connection u64 = 0
+    const status = dialLocalNative(path, &connection)
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own TcpConnection { handle = connection })
+}
+
+task AcceptLocal($listener own LocalListener) LocalAcceptOutcome {
+    const LocalListener { inner Path } = listener
+    const accepting = spawn Accept($inner)
+    const accepted = $accepting.wait()
+    const AcceptOutcome { Listener Value } = accepted
+    LocalAcceptOutcome {
+        Listener = own LocalListener { inner = Listener Path = Path }
+        Value = Value
+    }
+}

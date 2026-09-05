@@ -253,6 +253,36 @@ if(repeated_snapshot_result EQUAL 0 OR NOT repeated_snapshot_error MATCHES "FDN4
     message(FATAL_ERROR "package snapshot replaced an existing output")
 endif()
 
+set(NATIVE_PROJECT "${WORK}/fixture/native")
+set(NATIVE_SNAPSHOT "${WORK}/native-snapshot")
+execute_process(
+    COMMAND "${PROGRAM}" package snapshot "${NATIVE_PROJECT}" -o "${NATIVE_SNAPSHOT}"
+    RESULT_VARIABLE native_snapshot_result
+    OUTPUT_VARIABLE native_snapshot_output
+    ERROR_VARIABLE native_snapshot_error
+)
+if(NOT native_snapshot_result EQUAL 0 OR
+   NOT native_snapshot_output MATCHES "name example.native" OR
+   NOT native_snapshot_output MATCHES "files 3")
+    message(FATAL_ERROR
+        "native package snapshot failed: ${native_snapshot_error}${native_snapshot_output}")
+endif()
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E compare_files
+            "${NATIVE_PROJECT}/foreign/native.c" "${NATIVE_SNAPSHOT}/foreign/native.c"
+    RESULT_VARIABLE native_foreign_result
+)
+execute_process(
+    COMMAND "${PROGRAM}" package resolve "${NATIVE_SNAPSHOT}" --target linux
+    RESULT_VARIABLE native_resolve_result
+    OUTPUT_VARIABLE native_resolve_output
+    ERROR_VARIABLE native_resolve_error
+)
+if(NOT native_foreign_result EQUAL 0 OR NOT native_resolve_result EQUAL 0)
+    message(FATAL_ERROR
+        "native snapshot omitted its foreign source: ${native_resolve_error}${native_resolve_output}")
+endif()
+
 execute_process(
     COMMAND "${PROGRAM}" package init "${WORK}/initialized" example.initialized
     RESULT_VARIABLE init_result

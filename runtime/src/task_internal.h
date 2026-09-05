@@ -53,5 +53,9 @@ void fdn_task_external_source_close(fdn_task_external_source *source);
 void fdn_task_transfer_out(fdn_task *task);
 void fdn_task_run_transferred(fdn_task *task, fdn_task_cancel_check_fn cancel,
                               void *context);
+void fdn_task_cancellation_bind(fdn_task_cancel_check_fn cancel,
+                                void *context);
+void fdn_task_cancellation_unbind(fdn_task_cancel_check_fn cancel,
+                                  void *context);
 
 #endif

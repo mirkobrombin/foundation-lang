@@ -1,5 +1,6 @@
 #include "foundation/package.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -122,17 +123,44 @@ void foreignSnapshotsPinContentAndRejectUnsafeTrees() {
     Fixture fixture;
     const auto foreign = fixture.root / "foreign";
     std::filesystem::create_directories(foreign / "nested");
+    fixture.write("foreign/native.c", "int sample_native(void) { return 1; }\n");
     fixture.write("foreign/nested/api.h", "int sample(void);\n");
     const auto first = foundation::inspectForeignSource(foreign);
     const auto repeated = foundation::inspectForeignSource(foreign);
+    auto hybrid = manifest();
+    hybrid.foreign.push_back({"c", "sample", "1.0.0", "path", "foreign"});
+    hybrid.nativeSources.push_back({"foreign/native.c", std::nullopt});
+    const auto firstPackage = foundation::inspectPackageSource(fixture.root, hybrid);
     expect(first.value.has_value() && repeated.value.has_value() &&
                first.value->digest == repeated.value->digest,
            "foreign path digest is deterministic");
     fixture.write("foreign/nested/api.h", "int changed(void);\n");
     const auto changed = foundation::inspectForeignSource(foreign);
+    const auto changedPackage = foundation::inspectPackageSource(fixture.root, hybrid);
     expect(first.value.has_value() && changed.value.has_value() &&
                first.value->digest != changed.value->digest,
            "foreign path digest pins file content");
+    expect(firstPackage.value.has_value() && changedPackage.value.has_value() &&
+               firstPackage.value->files.size() == 2 &&
+               std::any_of(firstPackage.value->files.begin(),
+                           firstPackage.value->files.end(), [](const auto &file) {
+                               return file.path == "foreign/nested/api.h";
+                           }) &&
+               firstPackage.value->digest != changedPackage.value->digest,
+           "package snapshots include and pin foreign source content");
+
+    auto provenanceOnly = manifest();
+    provenanceOnly.foreign.push_back({"c", "sample", "1.0.0", "path", "foreign"});
+    const auto provenanceSnapshot =
+        foundation::inspectPackageSource(fixture.root, provenanceOnly);
+    fixture.write("foreign/nested/api.h", "int changed_again(void);\n");
+    const auto changedProvenanceSnapshot =
+        foundation::inspectPackageSource(fixture.root, provenanceOnly);
+    expect(provenanceSnapshot.value.has_value() &&
+               changedProvenanceSnapshot.value.has_value() &&
+               provenanceSnapshot.value->files.empty() &&
+               provenanceSnapshot.value->digest == changedProvenanceSnapshot.value->digest,
+           "foreign provenance without native sources preserves package identity");
 
     std::filesystem::create_directories(fixture.root / "empty");
     expect(hasCode(foundation::inspectForeignSource(fixture.root / "empty").errors,

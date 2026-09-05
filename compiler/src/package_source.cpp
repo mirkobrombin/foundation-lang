@@ -180,6 +180,69 @@ inspectPackageSource(const std::filesystem::path &packageDirectory,
         return left.path.generic_string() < right.path.generic_string();
     });
 
+    for (const auto &foreign : manifest.foreign) {
+        if (foreign.kind != "path") {
+            continue;
+        }
+        const auto resolver = std::filesystem::path(foreign.resolver).lexically_normal();
+        const auto ownsNativeSource = std::any_of(
+            manifest.nativeSources.begin(), manifest.nativeSources.end(),
+            [&](const auto &source) {
+                const auto relative = source.path.lexically_relative(resolver);
+                return !relative.empty() && !relative.is_absolute() &&
+                       *relative.begin() != "..";
+            });
+        if (!ownsNativeSource) {
+            continue;
+        }
+        auto current = packageDirectory;
+        for (const auto &part : resolver) {
+            current /= part;
+            error.clear();
+            const auto status = std::filesystem::symlink_status(current, error);
+            if (error || std::filesystem::is_symlink(status)) {
+                addError(result.errors, current, "FDN4057",
+                         "foreign path source cannot use symlinked path components");
+                return result;
+            }
+        }
+        const auto foreignSnapshot = inspectForeignSource(packageDirectory / resolver);
+        if (!foreignSnapshot.value.has_value()) {
+            result.errors.insert(result.errors.end(), foreignSnapshot.errors.begin(),
+                                 foreignSnapshot.errors.end());
+            return result;
+        }
+        for (const auto &file : foreignSnapshot.value->files) {
+            const auto relative = (resolver / file.path).lexically_normal();
+            if (!portablePath(relative)) {
+                addError(result.errors, packageDirectory / relative, "FDN4035",
+                         "package source path is not portable");
+                return result;
+            }
+            if (!foldedPaths.insert(folded(relative.generic_string())).second) {
+                addError(result.errors, packageDirectory / relative, "FDN4036",
+                         "package source paths collide without case sensitivity");
+                return result;
+            }
+            if (snapshot.totalBytes > maxSourceBytes - file.size) {
+                addError(result.errors, packageDirectory / relative, "FDN4037",
+                         "package source exceeds size limit");
+                return result;
+            }
+            if (snapshot.files.size() == maxSourceFiles) {
+                addError(result.errors, packageDirectory / relative, "FDN4038",
+                         "package source exceeds file limit");
+                return result;
+            }
+            snapshot.files.push_back({relative, file.size});
+            snapshot.totalBytes += file.size;
+        }
+    }
+    std::sort(snapshot.files.begin(), snapshot.files.end(), [](const auto &left,
+                                                               const auto &right) {
+        return left.path.generic_string() < right.path.generic_string();
+    });
+
     Sha256 hash;
     hash.update("foundation.package.digest/v1");
     const auto canonicalManifest = renderPackageManifest(manifest);

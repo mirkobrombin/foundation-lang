@@ -20,6 +20,7 @@ typedef struct blocking_frame {
     uint32_t delay_milliseconds;
     int *polls;
     bool *cancellation_seen;
+    bool wait_for_cancellation;
 } blocking_frame;
 
 typedef struct ready_frame {
@@ -47,7 +48,14 @@ static void sleep_milliseconds(uint32_t milliseconds) {
 static void run_blocking(void *context) {
     blocking_frame *frame = context;
     void *allocation = fdn_alloc(1);
-    sleep_milliseconds(frame->delay_milliseconds);
+    if (frame->wait_for_cancellation) {
+        while (!fdn_task_cancellation_current()) {
+            sleep_milliseconds(1);
+        }
+        *frame->cancellation_seen = true;
+    } else {
+        sleep_milliseconds(frame->delay_milliseconds);
+    }
     frame->result = frame->input * 2;
     fdn_dealloc(allocation);
 }
@@ -76,7 +84,8 @@ static void drop_blocking_frame(void *context) {
 }
 
 static fdn_task *spawn_blocking(int32_t input, uint32_t delay_milliseconds,
-                                int *polls, bool *cancellation_seen) {
+                                int *polls, bool *cancellation_seen,
+                                bool wait_for_cancellation) {
     blocking_frame *frame = fdn_alloc(sizeof(*frame));
     frame->job = NULL;
     frame->input = input;
@@ -84,6 +93,7 @@ static fdn_task *spawn_blocking(int32_t input, uint32_t delay_milliseconds,
     frame->delay_milliseconds = delay_milliseconds;
     frame->polls = polls;
     frame->cancellation_seen = cancellation_seen;
+    frame->wait_for_cancellation = wait_for_cancellation;
     return fdn_task_spawn(frame, poll_blocking, move_blocking_result,
                           drop_blocking_frame);
 }
@@ -147,7 +157,7 @@ int main(void) {
     int blocking_polls = 0;
     int ready_polls = 0;
     int32_t result = 0;
-    fdn_task *blocking = spawn_blocking(21, 20, &blocking_polls, NULL);
+    fdn_task *blocking = spawn_blocking(21, 20, &blocking_polls, NULL, false);
     fdn_task *ready = spawn_ready(&ready_polls);
 
     fdn_task_wait(&blocking, &result);
@@ -157,8 +167,39 @@ int main(void) {
     fdn_task_wait(&ready, NULL);
     assert(fdn_blocking_live_jobs() == 0);
 
+    fdn_task *saturated[4];
+    int saturated_polls[4] = {0};
+    for (size_t index = 0; index < 4; ++index) {
+        saturated[index] = spawn_blocking(1, 1000,
+                                          &saturated_polls[index], NULL,
+                                          false);
+    }
+    int fast_polls = 0;
+    fdn_task *fast = spawn_blocking(3, 0, &fast_polls, NULL, false);
+    const uint64_t fast_started = fdn_monotonic_nanoseconds();
+    fdn_task_wait(&fast, &result);
+    const uint64_t fast_elapsed =
+        fdn_monotonic_nanoseconds() - fast_started;
+    assert(result == 6);
+    assert(fast_elapsed < UINT64_C(500000000));
+    (void)fast_elapsed;
+    for (size_t index = 0; index < 4; ++index) {
+        fdn_task_wait(&saturated[index], &result);
+        assert(result == 2);
+    }
+    assert(fdn_blocking_live_jobs() == 0);
+
     bool cancellation_seen = false;
-    blocking = spawn_blocking(5, 20, &blocking_polls, &cancellation_seen);
+    blocking = spawn_blocking(5, 20, &blocking_polls, &cancellation_seen,
+                              false);
+    ready = spawn_ready(&ready_polls);
+    fdn_task_wait(&ready, NULL);
+    fdn_task_drop(&blocking);
+    assert(cancellation_seen);
+    assert(fdn_blocking_live_jobs() == 0);
+
+    cancellation_seen = false;
+    blocking = spawn_blocking(5, 0, &blocking_polls, &cancellation_seen, true);
     ready = spawn_ready(&ready_polls);
     fdn_task_wait(&ready, NULL);
     fdn_task_drop(&blocking);
@@ -168,7 +209,7 @@ int main(void) {
     fdn_channel *sender;
     fdn_channel *receiver;
     fdn_channel_open(sizeof(int32_t), 0, NULL, &sender, &receiver);
-    blocking = spawn_blocking(9, 50, &blocking_polls, NULL);
+    blocking = spawn_blocking(9, 50, &blocking_polls, NULL, false);
     fdn_task *timeout = spawn_timeout(receiver, UINT64_C(5000000));
     fdn_channel_status timeout_status = FDN_CHANNEL_PENDING;
     fdn_task_wait(&timeout, &timeout_status);

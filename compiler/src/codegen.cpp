@@ -1932,6 +1932,12 @@ class FunctionEmitter {
         std::string value;
     };
 
+    struct MatchCleanup {
+        std::optional<FirLocalId> local;
+        Type type;
+        std::string value;
+    };
+
     struct EmittedExpression {
         std::string value;
         bool diverges{};
@@ -3184,6 +3190,10 @@ class FunctionEmitter {
                 out_ << indentation(armDepth) << "(void)" << localValue(local)
                      << ";\n";
             }
+            const auto cleanupDepth = matchCleanups_.size();
+            matchCleanups_.push_back(
+                {taskPoll_ ? match.valueStorage : std::nullopt,
+                 function_.expressions[match.value].type, value.value});
             auto armExits = false;
             for (const auto statement : function_.blocks[arm.block].statements) {
                 if (taskPoll_ && emitSuspendingStatement(function_.statements[statement],
@@ -3219,6 +3229,7 @@ class FunctionEmitter {
                 out_ << indentation(armDepth) << "goto " << done << ";\n";
                 needsDoneLabel = true;
             }
+            matchCleanups_.resize(cleanupDepth);
             if (guard.has_value()) {
                 --armDepth;
                 out_ << indentation(armDepth) << "}\n";
@@ -3888,13 +3899,14 @@ class FunctionEmitter {
                     return true;
                 }
                 auto result = value.value;
-                if (!returned->drops.empty()) {
+                if (!returned->drops.empty() || !matchCleanups_.empty()) {
                     result = nextTemporary();
                     out_ << indentation(depth)
                          << cType(function_.expressions[*returned->value].type) << ' ' << result
                          << " = " << value.value << ";\n";
                 }
                 emitDrops(returned->drops, depth);
+                emitMatchDrops(0, depth);
                 if (taskPoll_) {
                     emitMoveAssignment(out_, program_, function_.returnType,
                                        "fdn_frame->fdn_result", result, depth);
@@ -3909,6 +3921,7 @@ class FunctionEmitter {
                 out_ << indentation(depth) << "return " << result << ";\n";
             } else {
                 emitDrops(returned->drops, depth);
+                emitMatchDrops(0, depth);
                 if (taskPoll_) {
                     out_ << indentation(depth)
                          << "fdn_task_cancellation_leave(fdn_previous_cancellation);\n";
@@ -3923,11 +3936,13 @@ class FunctionEmitter {
         }
         if (const auto *jump = std::get_if<FirBreakStatement>(&statement.value)) {
             emitDrops(jump->drops, depth);
+            emitMatchDrops(loopCleanupDepths_.back(), depth);
             out_ << indentation(depth) << "break;\n";
             return true;
         }
         if (const auto *jump = std::get_if<FirContinueStatement>(&statement.value)) {
             emitDrops(jump->drops, depth);
+            emitMatchDrops(loopCleanupDepths_.back(), depth);
             out_ << indentation(depth) << "continue;\n";
             return true;
         }
@@ -4010,7 +4025,9 @@ class FunctionEmitter {
                 emitDropValue(out_, program_, optionType, next.value, depth + 1);
                 out_ << indentation(depth + 1) << "(void)" << localValue(loop->value)
                      << ";\n";
+                loopCleanupDepths_.push_back(matchCleanups_.size());
                 static_cast<void>(emitBlock(loop->body, depth + 1));
+                loopCleanupDepths_.pop_back();
                 out_ << indentation(depth) << "}\n";
                 if (loop->ownsSequence) {
                     emitLocalDrop(loop->sequenceStorage, depth);
@@ -4036,7 +4053,9 @@ class FunctionEmitter {
             out_ << localValue(loop->sequenceStorage) << ".fdn_data["
                  << localValue(loop->index) << "];\n";
             out_ << indentation(depth + 1) << "(void)" << localValue(loop->value) << ";\n";
+            loopCleanupDepths_.push_back(matchCleanups_.size());
             static_cast<void>(emitBlock(loop->body, depth + 1));
+            loopCleanupDepths_.pop_back();
             out_ << indentation(depth) << "}\n";
             emitCleanups(sequence, depth);
             return false;
@@ -4052,7 +4071,9 @@ class FunctionEmitter {
         out_ << indentation(depth + 1) << "if (!" << condition.value << ") {\n";
         out_ << indentation(depth + 2) << "break;\n";
         out_ << indentation(depth + 1) << "}\n";
+        loopCleanupDepths_.push_back(matchCleanups_.size());
         static_cast<void>(emitBlock(loop.body, depth + 1));
+        loopCleanupDepths_.pop_back();
         out_ << indentation(depth) << "}\n";
         return false;
     }
@@ -4065,6 +4086,17 @@ class FunctionEmitter {
     void emitDrops(const std::vector<FirLocalId> &drops, unsigned int depth) {
         for (const auto local : drops) {
             emitLocalDrop(local, depth);
+        }
+    }
+
+    void emitMatchDrops(std::size_t first, unsigned int depth) {
+        for (auto index = matchCleanups_.size(); index > first; --index) {
+            const auto &cleanup = matchCleanups_[index - 1];
+            if (cleanup.local.has_value()) {
+                emitLocalDrop(*cleanup.local, depth);
+            } else {
+                emitDropValue(out_, program_, cleanup.type, cleanup.value, depth);
+            }
         }
     }
 
@@ -4149,6 +4181,8 @@ class FunctionEmitter {
     FirFunctionId functionId_{};
     std::size_t temporary_{};
     std::size_t taskState_{};
+    std::vector<MatchCleanup> matchCleanups_;
+    std::vector<std::size_t> loopCleanupDepths_;
     bool taskPoll_{};
 };
 

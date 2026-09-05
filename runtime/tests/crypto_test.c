@@ -50,12 +50,15 @@ int main(void) {
     };
     static const uint8_t aes_zero_key[32] = {0};
     static const uint8_t aes_zero_plaintext[16] = {0};
+    static const uint8_t raw_source[4] = {0, 0xff, 0x46, 0x0a};
     const size_t initial_allocations = fdn_live_allocations();
     char long_hmac_key[131];
     uint64_t abc = bytes_from_data("abc", 3);
     uint64_t decoded = 0;
     uint64_t decoded_standard = 0;
     uint64_t copied = 0;
+    uint64_t raw_copied = 0;
+    uint64_t raw_empty = 0;
     uint64_t builder = 0;
     uint64_t built = 0;
     uint64_t sliced = 0;
@@ -85,6 +88,7 @@ int main(void) {
     uint64_t stored = 0;
     uint64_t length = 0;
     uint64_t byte = 0;
+    uint8_t raw_destination[4] = {0};
     fdn_string encoded = fdn_string_static("", 0);
     fdn_string encoded_standard = fdn_string_static("", 0);
     fdn_string text = fdn_string_static("", 0);
@@ -112,6 +116,21 @@ int main(void) {
     assert(foundation_runtime_bytes_at(abc, 3, &byte) == 2);
     assert(foundation_runtime_bytes_copy(abc, &copied) == 0);
     assert(foundation_runtime_bytes_constant_time_equal(abc, copied));
+    assert(foundation_runtime_bytes_copy_from_raw(
+               raw_source, sizeof(raw_source), &raw_copied) == 0);
+    assert(foundation_runtime_bytes_copy_to_raw(
+               raw_copied, raw_destination, sizeof(raw_destination)) == 0);
+    assert(memcmp(raw_source, raw_destination, sizeof(raw_source)) == 0);
+    assert(foundation_runtime_bytes_copy_to_raw(
+               raw_copied, raw_destination, sizeof(raw_destination) - 1) == 2);
+    assert(foundation_runtime_bytes_copy_to_raw(0, raw_destination,
+                                                sizeof(raw_destination)) == 1);
+    assert(foundation_runtime_bytes_copy_from_raw(NULL, 1, &stored) == 2);
+    assert(stored == 0);
+    assert(foundation_runtime_bytes_copy_from_raw(
+               raw_source, sizeof(raw_source), NULL) == 1);
+    assert(foundation_runtime_bytes_copy_from_raw(NULL, 0, &raw_empty) == 0);
+    assert(foundation_runtime_bytes_copy_to_raw(raw_empty, NULL, 0) == 0);
     assert(foundation_runtime_bytes_builder_open(4, &builder) == 0);
     assert(foundation_runtime_bytes_builder_length(builder, &length) == 0);
     assert(length == 0);
@@ -223,6 +242,8 @@ int main(void) {
     fdn_string_drop(&encoded);
     fdn_string_drop(&text);
     foundation_runtime_bytes_close(&copied);
+    foundation_runtime_bytes_close(&raw_copied);
+    foundation_runtime_bytes_close(&raw_empty);
     foundation_runtime_bytes_close(&built);
     foundation_runtime_bytes_close(&sliced);
     foundation_runtime_bytes_close(&decoded);

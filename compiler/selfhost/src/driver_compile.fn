@@ -274,11 +274,116 @@ fn runCompilerEmitLlvm(input String, outputPath String) i32 {
     )
 }
 
+fn reportCompilerPackageErrors(&errors arena<packageError>) void {
+    var index u64 = 0
+    while index < errors.len() {
+        const value = match errors.take(index) {
+            None: panic("package error slot is empty")
+            Some(value): value
+        }
+        discard io.WriteStderrText(renderPackageError(value))
+        errors.restore(index, $value)
+        index += 1
+    }
+}
+
+fn compilerNativeTargetActive(
+    selected Option<targetPlatform>,
+    target targetPlatform
+) bool {
+    match selected {
+        None: true
+        Some(value): sameTarget(value, target)
+    }
+}
+
+fn addCompilerPackageNativeOptions(
+    input String,
+    mode projectMode,
+    &options compilerNativeOptions
+) bool {
+    const manifestPath = match discoverPackageManifest(input) {
+        None: {
+            return true
+        }
+        Some(value): value
+    }
+    const sdk = match parsePackageVersion("0.1.0") {
+        None: panic("compiler SDK version invariant failed")
+        Some(value): value
+    }
+    const target = hostTargetPlatform()
+    var loaded = loadLockedPackageProject(
+        manifestPath,
+        sdk,
+        target,
+        defaultPackageCachePath(),
+        projectModeIsTest(mode)
+    )
+    var project = match replace loaded.value with .None {
+        None: {
+            reportCompilerPackageErrors(&loaded.errors)
+            return false
+        }
+        Some(value): value
+    }
+    var packageIndex u64 = 0
+    while packageIndex < project.sources.len() {
+        var sourcePackage = match project.sources.take(packageIndex) {
+            None: panic("locked package source slot is empty")
+            Some(value): value
+        }
+        var sourceIndex u64 = 0
+        while sourceIndex < sourcePackage.manifest.nativeSources.len() {
+            const source = match sourcePackage.manifest.nativeSources.take(sourceIndex) {
+                None: panic("native source slot is empty")
+                Some(value): value
+            }
+            if compilerNativeTargetActive(source.target, target) {
+                const sourcePath = path.Join(sourcePackage.packageRoot, source.path)
+                match fs.Kind(sourcePath) {
+                    Ok(File): {
+                        if !arenaContainsString(&options.inputs, sourcePath) {
+                            discard options.inputs.add(text.Copy(sourcePath))
+                        }
+                    }
+                    _: {
+                        compilerProcessFailure(
+                            "native source is not a regular file: " + sourcePath)
+                        sourcePackage.manifest.nativeSources.restore(sourceIndex, $source)
+                        project.sources.restore(packageIndex, $sourcePackage)
+                        return false
+                    }
+                }
+            }
+            sourcePackage.manifest.nativeSources.restore(sourceIndex, $source)
+            sourceIndex += 1
+        }
+        var linkIndex u64 = 0
+        while linkIndex < sourcePackage.manifest.nativeLinks.len() {
+            const link = match sourcePackage.manifest.nativeLinks.take(linkIndex) {
+                None: panic("native link slot is empty")
+                Some(value): value
+            }
+            if compilerNativeTargetActive(link.target, target) &&
+                !arenaContainsString(&options.links, link.library) {
+                discard options.links.add(text.Copy(link.library))
+            }
+            sourcePackage.manifest.nativeLinks.restore(linkIndex, $link)
+            linkIndex += 1
+        }
+        project.sources.restore(packageIndex, $sourcePackage)
+        packageIndex += 1
+    }
+    true
+}
+
 fn runCompilerBuild(
     input String,
     outputPath String,
     &options compilerNativeOptions
 ) i32 {
+    if !addCompilerPackageNativeOptions(input, .Production, &options) return 1
     const selected = loadLoweredProgram(
         input,
         true,
@@ -374,6 +479,7 @@ fn runCompilerTests(
     input String,
     &options compilerNativeOptions
 ) i32 {
+    if !addCompilerPackageNativeOptions(input, .Test, &options) return 1
     const selected = loadLoweredProgram(
         input,
         false,

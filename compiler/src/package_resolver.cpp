@@ -247,12 +247,11 @@ lockRootPackageMetadata(PackageLock &lock, const PackageManifest &manifest,
     std::vector<PackageError> errors;
     lock.nativeLibrary.reset();
     lock.foreign.clear();
-    if (!manifest.nativeLibrary) {
-        return errors;
+    if (manifest.nativeLibrary) {
+        lock.nativeLibrary = LockedNativeLibrary{
+            manifest.nativeName.value_or(manifest.name), manifest.nativeSOVersion,
+            nativeDigest(manifest, target)};
     }
-    lock.nativeLibrary = LockedNativeLibrary{
-        manifest.nativeName.value_or(manifest.name), manifest.nativeSOVersion,
-        nativeDigest(manifest, target)};
     for (const auto &foreign : manifest.foreign) {
         if (foreign.kind != "path") {
             errors.push_back({rootManifestPath, 1, 1, "FDN4057",

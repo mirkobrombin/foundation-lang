@@ -128,6 +128,8 @@ uint64_t foundation_runtime_supervisor_open(void);
 void foundation_runtime_supervisor_adopt(uint64_t handle, fdn_task *task);
 void foundation_runtime_supervisor_wait(uint64_t handle);
 void foundation_runtime_supervisor_cancel(uint64_t handle);
+fdn_task *foundation_runtime_supervisor_wait_task(uint64_t handle);
+fdn_task *foundation_runtime_supervisor_cancel_task(uint64_t handle);
 void foundation_runtime_supervisor_release(uint64_t handle);
 uint64_t foundation_runtime_supervisor_live_count(void);
 uint64_t foundation_runtime_pool_open(uint64_t workers);
@@ -258,6 +260,12 @@ int32_t foundation_runtime_parse_f64(const fdn_string *value, double *result);
 uint64_t foundation_runtime_bytes_from_text(const fdn_string *value);
 int32_t foundation_runtime_bytes_random(uint64_t length, uint64_t *result);
 int32_t foundation_runtime_bytes_copy(uint64_t handle, uint64_t *result);
+int32_t foundation_runtime_bytes_copy_from_raw(const uint8_t *source,
+                                               uint64_t length,
+                                               uint64_t *result);
+int32_t foundation_runtime_bytes_copy_to_raw(uint64_t handle,
+                                             uint8_t *destination,
+                                             uint64_t capacity);
 int32_t foundation_runtime_bytes_length(uint64_t handle, uint64_t *result);
 int32_t foundation_runtime_bytes_at(uint64_t handle, uint64_t index, uint64_t *result);
 int32_t foundation_runtime_bytes_to_text(uint64_t handle, fdn_string *result);
@@ -452,6 +460,9 @@ int32_t foundation_runtime_fs_root_open(const fdn_string *path,
                                         uint64_t *handle);
 int32_t foundation_runtime_fs_root_create_directory(
     uint64_t handle, const fdn_string *relative_path);
+int32_t foundation_runtime_fs_root_create_directory_entry(
+    uint64_t handle, const fdn_string *relative_path,
+    uint32_t permissions);
 int32_t foundation_runtime_fs_root_write_file(
     uint64_t handle, const fdn_string *relative_path, uint64_t bytes_handle,
     uint32_t permissions);
@@ -462,6 +473,9 @@ int32_t foundation_runtime_fs_root_remove_file(
     uint64_t handle, const fdn_string *relative_path);
 int32_t foundation_runtime_fs_root_remove_empty_directory(
     uint64_t handle, const fdn_string *relative_path);
+int32_t foundation_runtime_fs_root_rename(
+    uint64_t handle, const fdn_string *source,
+    const fdn_string *destination);
 int32_t foundation_runtime_fs_root_set_permissions(
     uint64_t handle, const fdn_string *relative_path, uint32_t permissions);
 int32_t foundation_runtime_fs_root_set_modified(
@@ -480,6 +494,7 @@ int32_t foundation_runtime_fs_file_read(uint64_t handle,
 int32_t foundation_runtime_fs_file_write(uint64_t handle,
                                          uint64_t bytes_handle);
 int32_t foundation_runtime_fs_file_seek(uint64_t handle, uint64_t offset);
+int32_t foundation_runtime_fs_file_resize(uint64_t handle, uint64_t size);
 int32_t foundation_runtime_fs_file_size(uint64_t handle, uint64_t *size);
 int32_t foundation_runtime_fs_file_sync(uint64_t handle);
 int32_t foundation_runtime_fs_file_close(uint64_t *handle);
@@ -559,6 +574,11 @@ void foundation_runtime_net_addresses_close(uint64_t addresses);
 int32_t foundation_runtime_net_listen(const fdn_string *address, uint64_t port,
                                       uint64_t backlog, uint64_t *listener,
                                       uint64_t *bound_port);
+int32_t foundation_runtime_net_local_listen(const fdn_string *path,
+                                            uint64_t backlog,
+                                            uint64_t *listener);
+int32_t foundation_runtime_net_local_dial(const fdn_string *path,
+                                          uint64_t *connection);
 int32_t foundation_runtime_net_listener_control(uint64_t listener, uint64_t* controller);
 void foundation_runtime_net_listener_close(uint64_t listener);
 void foundation_runtime_net_listener_controller_close(uint64_t controller);

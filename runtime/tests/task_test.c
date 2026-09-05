@@ -21,6 +21,12 @@ typedef struct parent_frame {
     bool *child_cancellation_seen;
 } parent_frame;
 
+typedef struct supervisor_task_frame {
+    uint64_t supervisor;
+    fdn_task *joining;
+    bool *cancellation_seen;
+} supervisor_task_frame;
+
 static fdn_task_poll poll_test(void *raw, bool cancellation_requested) {
     test_frame *frame = raw;
     ++*frame->polls;
@@ -123,6 +129,47 @@ static fdn_task *spawn_sync_parent(int *parent_polls, int *child_polls,
     return fdn_task_spawn(frame, poll_sync_parent, move_parent_result, drop_parent_frame);
 }
 
+static fdn_task_poll poll_supervisor_task(void *raw, bool cancellation_requested) {
+    supervisor_task_frame *frame = raw;
+    if (cancellation_requested) {
+        *frame->cancellation_seen = true;
+    }
+    if (frame->joining == NULL) {
+        frame->joining = foundation_runtime_supervisor_cancel_task(frame->supervisor);
+        frame->supervisor = 0;
+    }
+    if (!fdn_task_poll_wait(&frame->joining, NULL)) {
+        return FDN_TASK_PENDING;
+    }
+    return FDN_TASK_READY;
+}
+
+static void move_supervisor_task_result(void *raw, void *output) {
+    (void)raw;
+    (void)output;
+}
+
+static void drop_supervisor_task_frame(void *raw) {
+    supervisor_task_frame *frame = raw;
+    if (frame->supervisor != 0) {
+        foundation_runtime_supervisor_cancel(frame->supervisor);
+        foundation_runtime_supervisor_release(frame->supervisor);
+    }
+    fdn_task_drop(&frame->joining);
+    fdn_dealloc(frame);
+}
+
+static fdn_task *spawn_supervisor_task(uint64_t supervisor,
+                                       bool *cancellation_seen) {
+    supervisor_task_frame *frame = fdn_alloc(sizeof(*frame));
+    frame->supervisor = supervisor;
+    frame->joining = NULL;
+    frame->cancellation_seen = cancellation_seen;
+    return fdn_task_spawn(frame, poll_supervisor_task,
+                          move_supervisor_task_result,
+                          drop_supervisor_task_frame);
+}
+
 int main(void) {
     int polls = 0;
     int32_t result = 0;
@@ -201,6 +248,23 @@ int main(void) {
     foundation_runtime_supervisor_cancel(supervisor);
     foundation_runtime_supervisor_release(supervisor);
     assert(supervised_cancellation_seen);
+    assert(foundation_runtime_supervisor_live_count() == 0);
+    assert(fdn_task_live_count() == 0);
+
+    bool nested_cancellation_seen = false;
+    bool nested_child_cancellation_seen = false;
+    uint64_t nested = foundation_runtime_supervisor_open();
+    fdn_task *nested_child = spawn_test(6, &supervised_polls, true,
+                                        &nested_child_cancellation_seen);
+    foundation_runtime_supervisor_adopt(nested, nested_child);
+    supervisor = foundation_runtime_supervisor_open();
+    fdn_task *supervised_nested =
+        spawn_supervisor_task(nested, &nested_cancellation_seen);
+    foundation_runtime_supervisor_adopt(supervisor, supervised_nested);
+    foundation_runtime_supervisor_cancel(supervisor);
+    foundation_runtime_supervisor_release(supervisor);
+    assert(nested_cancellation_seen);
+    assert(nested_child_cancellation_seen);
     assert(foundation_runtime_supervisor_live_count() == 0);
     assert(fdn_task_live_count() == 0);
     assert(fdn_live_allocations() == 0);

@@ -345,6 +345,49 @@ fn inspectPackageSource(
             }
         }
     }
+    var foreignIndex u64 = 0
+    while foreignIndex < manifest.foreign.len() {
+        const foreign = match manifest.foreign.take(foreignIndex) {
+            None: panic("foreign package slot is empty")
+            Some(value): value
+        }
+        const resolver = path.Normalize(foreign.resolver)
+        var ownsNativeSource = false
+        var nativeSourceIndex u64 = 0
+        while nativeSourceIndex < manifest.nativeSources.len() {
+            const source = match manifest.nativeSources.take(nativeSourceIndex) {
+                None: panic("native source slot is empty")
+                Some(value): value
+            }
+            if packageSourceContains(resolver, path.Normalize(source.path)) {
+                ownsNativeSource = true
+            }
+            manifest.nativeSources.restore(nativeSourceIndex, $source)
+            nativeSourceIndex += 1
+        }
+        if foreign.kind == "path" && ownsNativeSource {
+            if !requireRealRelativeDirectory(packageDirectory, resolver, "FDN4057",
+                "foreign path source cannot use symlinked path components", &result.errors) {
+                manifest.foreign.restore(foreignIndex, $foreign)
+                return result
+            }
+            if !collectPackageDirectory(
+                packageDirectory,
+                path.Join(packageDirectory, resolver),
+                resolver,
+                0,
+                true,
+                &snapshot,
+                &folded,
+                &result.errors
+            ) {
+                manifest.foreign.restore(foreignIndex, $foreign)
+                return result
+            }
+        }
+        manifest.foreign.restore(foreignIndex, $foreign)
+        foreignIndex += 1
+    }
     const canonicalManifest = renderPackageManifest(&manifest)
     if !hashPackageSnapshot(
         packageDirectory,

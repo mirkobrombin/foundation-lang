@@ -127,3 +127,5 @@ be in the range 1 through 65535. Listen ports may also be zero. Allocation failu
 panic.
 
 TLS streams use the same controlled split model through `foundation.tls`.
+`OpenSSLListener.Control` provides an independently owned stop capability for TLS accept loops;
+closing it wakes a pending `OpenSSLAccept` before the server joins its tasks.
