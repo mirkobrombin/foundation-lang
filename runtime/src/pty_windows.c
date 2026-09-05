@@ -222,6 +222,10 @@ int32_t foundation_runtime_process_pty_start(uint64_t process_handle, uint16_t c
         status = FDN_PTY_IO;
         goto cleanup;
     }
+    (void)CloseHandle(input_read);
+    input_read = NULL;
+    (void)CloseHandle(output_write);
+    output_write = NULL;
     (void)InitializeProcThreadAttributeList(NULL, 1, 0, &attributes_size);
     if (attributes_size == 0) {
         status = FDN_PTY_RESOURCE_LIMIT;
@@ -251,10 +255,6 @@ int32_t foundation_runtime_process_pty_start(uint64_t process_handle, uint16_t c
         status = fdn_process_windows_status(GetLastError());
         goto cleanup;
     }
-    (void)CloseHandle(input_read);
-    input_read = NULL;
-    (void)CloseHandle(output_write);
-    output_write = NULL;
     (void)CloseHandle(information.hThread);
     information.hThread = NULL;
     pty = fdn_alloc(sizeof(*pty));
