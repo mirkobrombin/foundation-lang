@@ -362,12 +362,16 @@ uint64_t foundation_runtime_desktop_input_live_handles(void) {
 #elif defined(__APPLE__)
 
 #include <ApplicationServices/ApplicationServices.h>
+#include <dlfcn.h>
 #include <stdatomic.h>
+
+typedef CGImageRef (*fdn_cg_display_create_image_fn)(CGDirectDisplayID);
 
 typedef struct fdn_desktop_capture {
     CGDirectDisplayID display;
     size_t width;
     size_t height;
+    fdn_cg_display_create_image_fn create_image;
 } fdn_desktop_capture;
 
 typedef struct fdn_desktop_input {
@@ -381,6 +385,7 @@ int32_t foundation_runtime_desktop_capture_open(uint64_t* handle, uint64_t* widt
                                                 uint64_t* height) {
     fdn_desktop_capture* capture;
     CGDirectDisplayID display;
+    void* symbol;
     if (handle == NULL || width == NULL || height == NULL) {
         fdn_panic_cstr("desktop capture output is null");
     }
@@ -389,6 +394,12 @@ int32_t foundation_runtime_desktop_capture_open(uint64_t* handle, uint64_t* widt
     *height = 0;
     display = CGMainDisplayID();
     capture = fdn_alloc(sizeof(*capture));
+    symbol = dlsym(RTLD_DEFAULT, "CGDisplayCreateImage");
+    if (symbol == NULL || sizeof(capture->create_image) != sizeof(symbol)) {
+        fdn_dealloc(capture);
+        return FDN_DESKTOP_UNAVAILABLE;
+    }
+    memcpy(&capture->create_image, &symbol, sizeof(symbol));
     capture->display = display;
     capture->width = CGDisplayPixelsWide(display);
     capture->height = CGDisplayPixelsHigh(display);
@@ -423,7 +434,7 @@ int32_t foundation_runtime_desktop_capture_frame(uint64_t handle, uint64_t* byte
     if (!fdn_desktop_frame_size(capture->width, capture->height, &length)) {
         return FDN_DESKTOP_INVALID_ARGUMENT;
     }
-    image = CGDisplayCreateImage(capture->display);
+    image = capture->create_image(capture->display);
     if (image == NULL) {
         return FDN_DESKTOP_PERMISSION;
     }
