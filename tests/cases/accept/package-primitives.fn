@@ -20,9 +20,13 @@ fn binaryPayload() own bytes.Bytes {
         discard error
         panic("binary payload high byte failed")
     }
-    builder.WriteByte(70) else error {
+    builder.WriteByte(71) else error {
         discard error
         panic("binary payload text byte failed")
+    }
+    builder.SetByte(2, 70) else error {
+        discard error
+        panic("binary payload edit failed")
     }
     builder.WriteByte(10) else error {
         discard error

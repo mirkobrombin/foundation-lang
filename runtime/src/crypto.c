@@ -794,6 +794,22 @@ int32_t foundation_runtime_bytes_builder_append(uint64_t handle, uint64_t value_
     return 0;
 }
 
+int32_t foundation_runtime_bytes_builder_set_byte(uint64_t handle, uint64_t index,
+                                                  uint64_t value) {
+    fdn_bytes_builder *builder = fdn_bytes_builder_value(handle);
+    if (builder == NULL) {
+        return 1;
+    }
+    if (index >= builder->length) {
+        return 2;
+    }
+    if (value > UINT8_MAX) {
+        return 3;
+    }
+    builder->data[(size_t)index] = (uint8_t)value;
+    return 0;
+}
+
 int32_t foundation_runtime_bytes_builder_finish(uint64_t *handle, uint64_t *result) {
     fdn_bytes_builder *builder;
     fdn_bytes *value;

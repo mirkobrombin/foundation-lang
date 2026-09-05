@@ -117,12 +117,17 @@ int main(void) {
     assert(length == 0);
     assert(foundation_runtime_bytes_builder_append_byte(builder, '!') == 0);
     assert(foundation_runtime_bytes_builder_append(builder, abc) == 0);
+    assert(foundation_runtime_bytes_builder_set_byte(builder, 0, '?') == 0);
+    assert(foundation_runtime_bytes_builder_set_byte(builder, 4, '?') == 2);
+    assert(foundation_runtime_bytes_builder_set_byte(builder, 0, 256) == 3);
     assert(foundation_runtime_bytes_builder_append_byte(builder, 'x') == 2);
     assert(foundation_runtime_bytes_builder_append_byte(builder, 256) == 3);
     assert(foundation_runtime_bytes_builder_length(builder, &length) == 0);
     assert(length == 4);
     assert(foundation_runtime_bytes_builder_finish(&builder, &built) == 0);
     assert(builder == 0);
+    assert(foundation_runtime_bytes_at(built, 0, &byte) == 0);
+    assert(byte == '?');
     assert(foundation_runtime_bytes_slice(built, 1, 4, &sliced) == 0);
     assert(foundation_runtime_bytes_constant_time_equal(abc, sliced));
     assert(foundation_runtime_bytes_slice(built, 4, 3, &stored) == 2);

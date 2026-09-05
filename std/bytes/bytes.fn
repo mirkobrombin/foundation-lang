@@ -89,6 +89,11 @@ extern c fn appendNative(
     handle u64,
     value u64
 ) i32 as foundation_runtime_bytes_builder_append
+extern c fn setByteNative(
+    handle u64,
+    index u64,
+    value u64
+) i32 as foundation_runtime_bytes_builder_set_byte
 extern c fn finishBuilderNative(
     &handle u64,
     &result u64
@@ -286,6 +291,14 @@ struct Builder {
             return .Err(.Closed)
         }
         .Err(.TooLarge)
+    }
+
+    // Replaces one byte already written to this builder.
+    fn SetByte(&self, index u64, value u64) Result<void, Error> {
+        const status = setByteNative(self.handle, index, value)
+        if status == 0 return .Ok
+        if status == 1 return .Err(.Closed)
+        .Err(.OutOfBounds)
     }
 
     // Closes the builder and returns its complete owned byte sequence.

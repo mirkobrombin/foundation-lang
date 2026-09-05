@@ -24,8 +24,9 @@ const decoded = bytes.DecodeBase64URL(encoded) else error {
 ```
 
 `NewBuilder(limit)` creates a bounded binary builder. `WriteByte` accepts one value from 0 through
-255, `Write` copies another `Bytes` value, and `Finish` consumes the builder. Growth never exceeds
-the declared limit. Closing or dropping an unfinished builder clears its allocated capacity.
+255, `Write` copies another `Bytes` value, and `SetByte` replaces a byte already written without
+changing the length. `Finish` consumes the builder. Growth never exceeds the declared limit.
+Closing or dropping an unfinished builder clears its allocated capacity.
 
 Base64URL uses the canonical unpadded RFC 4648 alphabet. Decoding rejects padding, invalid
 characters, impossible lengths, and nonzero unused tail bits. `HmacSha256` returns an owned

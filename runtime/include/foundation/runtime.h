@@ -268,6 +268,8 @@ int32_t foundation_runtime_bytes_builder_open(uint64_t limit, uint64_t *result);
 int32_t foundation_runtime_bytes_builder_length(uint64_t handle, uint64_t *result);
 int32_t foundation_runtime_bytes_builder_append_byte(uint64_t handle, uint64_t value);
 int32_t foundation_runtime_bytes_builder_append(uint64_t handle, uint64_t value);
+int32_t foundation_runtime_bytes_builder_set_byte(uint64_t handle, uint64_t index,
+                                                  uint64_t value);
 int32_t foundation_runtime_bytes_builder_finish(uint64_t *handle, uint64_t *result);
 void foundation_runtime_bytes_builder_close(uint64_t *handle);
 int32_t foundation_runtime_base64url_encode(uint64_t handle, fdn_string *result);
