@@ -31,6 +31,7 @@ enum {
 
 typedef HRESULT(WINAPI *fdn_create_pseudo_console_fn)(COORD, HANDLE, HANDLE, DWORD,
                                                       HANDLE *);
+typedef HRESULT(WINAPI *fdn_release_pseudo_console_fn)(HANDLE);
 typedef HRESULT(WINAPI *fdn_resize_pseudo_console_fn)(HANDLE, COORD);
 typedef void(WINAPI *fdn_close_pseudo_console_fn)(HANDLE);
 
@@ -74,12 +75,12 @@ static void fdn_pty_abort_process(fdn_pty *pty) {
     if (!pty->waited) {
         (void)TerminateProcess(pty->process, 1);
     }
-    if (pty->console != NULL) {
-        pty->close_console(pty->console);
-        pty->console = NULL;
+    if (pty->input != NULL) {
+        (void)CancelIoEx(pty->input, NULL);
     }
-    (void)CancelIoEx(pty->input, NULL);
-    (void)CancelIoEx(pty->output, NULL);
+    if (pty->output != NULL) {
+        (void)CancelIoEx(pty->output, NULL);
+    }
     fdn_pty_leave(pty);
 }
 
@@ -100,10 +101,6 @@ static int32_t fdn_pty_wait_process(fdn_pty *pty, int32_t *exit_code) {
     fdn_pty_enter(pty);
     pty->waited = true;
     pty->exit_code = *exit_code;
-    if (pty->console != NULL) {
-        pty->close_console(pty->console);
-        pty->console = NULL;
-    }
     fdn_pty_leave(pty);
     return 0;
 }
@@ -112,8 +109,18 @@ static void fdn_pty_destroy(fdn_pty *pty) {
     int32_t ignored = 0;
     fdn_pty_abort_process(pty);
     (void)fdn_pty_wait_process(pty, &ignored);
-    (void)CloseHandle(pty->input);
-    (void)CloseHandle(pty->output);
+    if (pty->input != NULL) {
+        (void)CloseHandle(pty->input);
+        pty->input = NULL;
+    }
+    if (pty->output != NULL) {
+        (void)CloseHandle(pty->output);
+        pty->output = NULL;
+    }
+    if (pty->console != NULL) {
+        pty->close_console(pty->console);
+        pty->console = NULL;
+    }
     (void)CloseHandle(pty->process);
     DeleteCriticalSection(&pty->lock);
     fdn_dealloc(pty);
@@ -140,6 +147,7 @@ static void fdn_pty_release(uint64_t handle) {
 }
 
 static int32_t fdn_pty_functions(fdn_create_pseudo_console_fn *create,
+                                 fdn_release_pseudo_console_fn *release,
                                  fdn_resize_pseudo_console_fn *resize,
                                  fdn_close_pseudo_console_fn *close) {
     HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
@@ -148,6 +156,8 @@ static int32_t fdn_pty_functions(fdn_create_pseudo_console_fn *create,
     }
     *create = (fdn_create_pseudo_console_fn)(uintptr_t)GetProcAddress(
         kernel, "CreatePseudoConsole");
+    *release = (fdn_release_pseudo_console_fn)(uintptr_t)GetProcAddress(
+        kernel, "ReleasePseudoConsole");
     *resize = (fdn_resize_pseudo_console_fn)(uintptr_t)GetProcAddress(
         kernel, "ResizePseudoConsole");
     *close = (fdn_close_pseudo_console_fn)(uintptr_t)GetProcAddress(
@@ -162,6 +172,7 @@ int32_t foundation_runtime_process_pty_start(uint64_t process_handle, uint16_t c
                                              uint64_t *waiter) {
     const fdn_process *process = fdn_process_from_handle(process_handle);
     fdn_create_pseudo_console_fn create_console = NULL;
+    fdn_release_pseudo_console_fn release_console = NULL;
     fdn_resize_pseudo_console_fn resize_console = NULL;
     fdn_close_pseudo_console_fn close_console = NULL;
     HANDLE input_read = NULL;
@@ -195,7 +206,8 @@ int32_t foundation_runtime_process_pty_start(uint64_t process_handle, uint16_t c
     if (columns == 0 || rows == 0 || columns > INT16_MAX || rows > INT16_MAX) {
         return FDN_PTY_INVALID_ARGUMENT;
     }
-    status = fdn_pty_functions(&create_console, &resize_console, &close_console);
+    status = fdn_pty_functions(&create_console, &release_console, &resize_console,
+                               &close_console);
     if (status != 0) {
         return status;
     }
@@ -222,10 +234,6 @@ int32_t foundation_runtime_process_pty_start(uint64_t process_handle, uint16_t c
         status = FDN_PTY_IO;
         goto cleanup;
     }
-    (void)CloseHandle(input_read);
-    input_read = NULL;
-    (void)CloseHandle(output_write);
-    output_write = NULL;
     (void)InitializeProcThreadAttributeList(NULL, 1, 0, &attributes_size);
     if (attributes_size == 0) {
         status = FDN_PTY_RESOURCE_LIMIT;
@@ -245,6 +253,7 @@ int32_t foundation_runtime_process_pty_start(uint64_t process_handle, uint16_t c
     (void)memset(&startup, 0, sizeof(startup));
     (void)memset(&information, 0, sizeof(information));
     startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.lpAttributeList = attributes;
     created = CreateProcessW(
         program, command, NULL, NULL, FALSE,
@@ -253,6 +262,14 @@ int32_t foundation_runtime_process_pty_start(uint64_t process_handle, uint16_t c
         working_directory, &startup.StartupInfo, &information);
     if (!created) {
         status = fdn_process_windows_status(GetLastError());
+        goto cleanup;
+    }
+    (void)CloseHandle(input_read);
+    input_read = NULL;
+    (void)CloseHandle(output_write);
+    output_write = NULL;
+    if (release_console != NULL && FAILED(release_console(console))) {
+        status = FDN_PTY_IO;
         goto cleanup;
     }
     (void)CloseHandle(information.hThread);
