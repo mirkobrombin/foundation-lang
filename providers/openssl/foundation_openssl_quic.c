@@ -335,7 +335,12 @@ static foundation_quic_connection* foundation_quic_connection_new(SSL* ssl, SSL_
     atomic_init(&connection->references, 1);
     atomic_init(&connection->closing, 0);
     if (peer != NULL) {
-        strncpy(connection->peer, peer, sizeof(connection->peer) - 1);
+        size_t length = strlen(peer);
+        if (length >= sizeof(connection->peer)) {
+            length = sizeof(connection->peer) - 1;
+        }
+        memcpy(connection->peer, peer, length);
+        connection->peer[length] = '\0';
     }
     return connection;
 }
