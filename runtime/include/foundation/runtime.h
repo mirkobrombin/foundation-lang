@@ -524,6 +524,27 @@ void foundation_runtime_terminal_abort(uint64_t controller);
 void foundation_runtime_terminal_reader_close(uint64_t reader);
 void foundation_runtime_terminal_controller_close(uint64_t controller);
 uint64_t foundation_runtime_terminal_live_handles(void);
+int32_t foundation_runtime_desktop_capture_open(uint64_t *handle,
+                                                uint64_t *width,
+                                                uint64_t *height);
+int32_t foundation_runtime_desktop_capture_frame(uint64_t handle,
+                                                 uint64_t *bytes_handle);
+void foundation_runtime_desktop_capture_close(uint64_t *handle);
+uint64_t foundation_runtime_desktop_capture_live_handles(void);
+int32_t foundation_runtime_desktop_input_open(uint64_t *handle);
+int32_t foundation_runtime_desktop_input_move(uint64_t handle,
+                                              uint64_t x,
+                                              uint64_t y);
+int32_t foundation_runtime_desktop_input_button(uint64_t handle,
+                                                uint64_t button,
+                                                bool down);
+int32_t foundation_runtime_desktop_input_key(uint64_t handle,
+                                             uint64_t key,
+                                             bool down);
+int32_t foundation_runtime_desktop_input_scroll(uint64_t handle,
+                                                int64_t delta);
+void foundation_runtime_desktop_input_close(uint64_t *handle);
+uint64_t foundation_runtime_desktop_input_live_handles(void);
 int32_t foundation_runtime_net_resolve(const fdn_string *host, uint64_t port,
                                        uint64_t *addresses);
 void foundation_runtime_net_addresses_close(uint64_t addresses);

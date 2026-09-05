@@ -1,0 +1,179 @@
+package std.desktop
+
+import std.bytes
+import std.concurrent
+
+enum Error {
+    Unavailable
+    Permission
+    InvalidArgument
+    Io
+    Closed
+}
+
+struct Frame {
+    Width u64
+    Height u64
+    Pixels own bytes.Bytes
+}
+
+struct CaptureOutcome {
+    Capturer own Capturer
+    Value Result<Frame, Error>
+}
+
+@concurrent.Transferable()
+struct Capturer {
+    handle u64
+    Width u64
+    Height u64
+
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeCaptureNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        closeCaptureNative(&self.handle)
+    }
+}
+
+@concurrent.Transferable()
+struct Input {
+    handle u64
+
+    fn Move(&self, x u64, y u64) Result<void, Error> {
+        inputResult(inputMoveNative(self.handle, x, y))
+    }
+
+    fn Button(&self, button u64, down bool) Result<void, Error> {
+        inputResult(inputButtonNative(self.handle, button, down))
+    }
+
+    fn Key(&self, key u64, down bool) Result<void, Error> {
+        inputResult(inputKeyNative(self.handle, key, down))
+    }
+
+    fn Scroll(&self, delta i64) Result<void, Error> {
+        inputResult(inputScrollNative(self.handle, delta))
+    }
+
+    fn Close(&self) bool {
+        if self.handle == 0 return false
+        closeInputNative(&self.handle)
+        true
+    }
+
+    fn drop(&self) void {
+        closeInputNative(&self.handle)
+    }
+}
+
+extern c fn openCaptureNative(
+    &handle u64,
+    &width u64,
+    &height u64
+) i32 as foundation_runtime_desktop_capture_open
+
+@blocking
+extern c fn captureFrameNative(
+    handle u64,
+    &value u64
+) i32 as foundation_runtime_desktop_capture_frame
+
+extern c fn closeCaptureNative(
+    &handle u64
+) void as foundation_runtime_desktop_capture_close
+
+extern c fn openInputNative(
+    &handle u64
+) i32 as foundation_runtime_desktop_input_open
+
+extern c fn inputMoveNative(
+    handle u64,
+    x u64,
+    y u64
+) i32 as foundation_runtime_desktop_input_move
+
+extern c fn inputButtonNative(
+    handle u64,
+    button u64,
+    down bool
+) i32 as foundation_runtime_desktop_input_button
+
+extern c fn inputKeyNative(
+    handle u64,
+    key u64,
+    down bool
+) i32 as foundation_runtime_desktop_input_key
+
+extern c fn inputScrollNative(
+    handle u64,
+    delta i64
+) i32 as foundation_runtime_desktop_input_scroll
+
+extern c fn closeInputNative(
+    &handle u64
+) void as foundation_runtime_desktop_input_close
+
+fn OpenCapture() Result<own Capturer, Error> {
+    var handle u64 = 0
+    var width u64 = 0
+    var height u64 = 0
+    const status = openCaptureNative(&handle, &width, &height)
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own Capturer {
+        handle = handle
+        Width = width
+        Height = height
+    })
+}
+
+task Capture($capturer own Capturer) CaptureOutcome {
+    if capturer.handle == 0 {
+        return CaptureOutcome { Capturer = capturer Value = .Err(.Closed) }
+    }
+    var value u64 = 0
+    const status = captureFrameNative(capturer.handle, &value)
+    if status != 0 {
+        return CaptureOutcome {
+            Capturer = capturer
+            Value = .Err(errorFor(status))
+        }
+    }
+    const pixels = bytes.ClaimRuntimeHandle(value) else error {
+        discard error
+        return CaptureOutcome { Capturer = capturer Value = .Err(.Io) }
+    }
+    const width = capturer.Width
+    const height = capturer.Height
+    CaptureOutcome {
+        Capturer = capturer
+        Value = .Ok(Frame {
+            Width = width
+            Height = height
+            Pixels = pixels
+        })
+    }
+}
+
+fn OpenInput() Result<own Input, Error> {
+    var handle u64 = 0
+    const status = openInputNative(&handle)
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own Input { handle = handle })
+}
+
+fn inputResult(status i32) Result<void, Error> {
+    if status == 0 return .Ok
+    .Err(errorFor(status))
+}
+
+fn errorFor(status i32) Error {
+    if status == 1 return .Unavailable
+    if status == 2 return .Permission
+    if status == 3 return .InvalidArgument
+    if status == 5 return .Closed
+    .Io
+}

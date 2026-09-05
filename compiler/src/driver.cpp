@@ -502,6 +502,8 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
                  std::filesystem::path{FOUNDATION_RUNTIME_PTY_WINDOWS_SOURCE}),
         sdkAsset("runtime/src/terminal.c",
                  std::filesystem::path{FOUNDATION_RUNTIME_TERMINAL_SOURCE}),
+        sdkAsset("runtime/src/desktop.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_DESKTOP_SOURCE}),
         sdkAsset("runtime/src/crypto.c", std::filesystem::path{FOUNDATION_RUNTIME_CRYPTO_SOURCE}),
         sdkAsset("runtime/src/parse.c", std::filesystem::path{FOUNDATION_RUNTIME_PARSE_SOURCE}),
         sdkAsset("runtime/src/task.c", std::filesystem::path{FOUNDATION_RUNTIME_TASK_SOURCE}),
@@ -543,7 +545,9 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
             arguments.push_back(link + ".lib");
         }
         arguments.push_back("bcrypt.lib");
+        arguments.push_back("gdi32.lib");
         arguments.push_back("iphlpapi.lib");
+        arguments.push_back("user32.lib");
         arguments.push_back("ws2_32.lib");
         arguments.insert(arguments.end(), {"/link", "/Brepro", "/STACK:8388608"});
         return arguments;
@@ -570,6 +574,8 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
     arguments.push_back("-Wl,-no_uuid");
     arguments.push_back("-Wl,-no_adhoc_codesign");
     arguments.push_back("-Wl,-S");
+    arguments.push_back("-framework");
+    arguments.push_back("ApplicationServices");
 #else
     arguments.push_back("-ldl");
 #if defined(__linux__)
@@ -585,7 +591,9 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
     }
 #ifdef _WIN32
     arguments.push_back("-lbcrypt");
+    arguments.push_back("-lgdi32");
     arguments.push_back("-liphlpapi");
+    arguments.push_back("-luser32");
     arguments.push_back("-lws2_32");
 #endif
     arguments.insert(arguments.end(), {"-o", output.string()});
@@ -609,6 +617,8 @@ std::vector<std::filesystem::path> runtimeSourceFiles() {
                  std::filesystem::path{FOUNDATION_RUNTIME_PTY_WINDOWS_SOURCE}),
         sdkAsset("runtime/src/terminal.c",
                  std::filesystem::path{FOUNDATION_RUNTIME_TERMINAL_SOURCE}),
+        sdkAsset("runtime/src/desktop.c",
+                 std::filesystem::path{FOUNDATION_RUNTIME_DESKTOP_SOURCE}),
         sdkAsset("runtime/src/crypto.c", std::filesystem::path{FOUNDATION_RUNTIME_CRYPTO_SOURCE}),
         sdkAsset("runtime/src/parse.c", std::filesystem::path{FOUNDATION_RUNTIME_PARSE_SOURCE}),
         sdkAsset("runtime/src/task.c", std::filesystem::path{FOUNDATION_RUNTIME_TASK_SOURCE}),

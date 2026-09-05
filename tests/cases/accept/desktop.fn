@@ -1,0 +1,19 @@
+import std.desktop
+
+fn main() i32 {
+    const result = desktop.OpenCapture()
+    match result {
+        Ok(active): {
+            const pending = spawn desktop.Capture($active)
+            discard $pending.wait()
+        }
+        Err(error): { discard error }
+    }
+    const input = desktop.OpenInput()
+    match input {
+        Ok(active): { discard active }
+        Err(error): { discard error }
+    }
+    print("desktop")
+    0
+}
