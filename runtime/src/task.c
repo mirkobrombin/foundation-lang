@@ -968,7 +968,8 @@ static fdn_task *fdn_supervisor_join_task(uint64_t handle, bool cancel) {
     frame->supervisor = fdn_supervisor_from_handle(handle);
     frame->current = NULL;
     frame->cancel = cancel;
-    frame->started = false;
+    (void)fdn_supervisor_close(frame->supervisor, cancel);
+    frame->started = true;
     return fdn_task_spawn(frame, fdn_supervisor_join_poll,
                           fdn_supervisor_join_move_result,
                           fdn_supervisor_join_drop_frame);
