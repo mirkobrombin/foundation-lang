@@ -18,6 +18,18 @@ static int bytes_are(uint64_t handle, const uint8_t *expected,
            (length == 0 || memcmp(data, expected, length) == 0);
 }
 
+static FILE *redirect_stdin(const char *path) {
+#if defined(_MSC_VER)
+    FILE *stream = NULL;
+    if (freopen_s(&stream, path, "rb", stdin) != 0) {
+        return NULL;
+    }
+    return stream;
+#else
+    return freopen(path, "rb", stdin);
+#endif
+}
+
 static int child_main(void) {
     static const uint8_t stdout_bytes[] = {'o', 0, 0xff};
     static const uint8_t stderr_bytes[] = {'e', 0, 0xfe};
@@ -52,7 +64,7 @@ static int read_line_test(void) {
     const size_t written = fwrite(input, 1, sizeof(input) - 1, fixture);
     const int close_status = fclose(fixture);
     if (written != sizeof(input) - 1 || close_status != 0 ||
-        freopen(input_path, "rb", stdin) == NULL) {
+        redirect_stdin(input_path) == NULL) {
         (void)remove(input_path);
         return 1;
     }
@@ -74,11 +86,11 @@ static int read_line_test(void) {
     }
     fdn_string_drop(&line);
 #if defined(_WIN32)
-    if (freopen("NUL", "rb", stdin) == NULL) {
+    if (redirect_stdin("NUL") == NULL) {
         status = 1;
     }
 #else
-    if (freopen("/dev/null", "rb", stdin) == NULL) {
+    if (redirect_stdin("/dev/null") == NULL) {
         status = 1;
     }
 #endif
