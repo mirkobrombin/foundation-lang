@@ -39,6 +39,55 @@ static int child_main(void) {
     return status;
 }
 
+static int read_line_test(void) {
+    const char *input_path = "foundation-runtime-io-input.txt";
+    static const char input[] = "line\r\nlast";
+    FILE *fixture = fopen(input_path, "wb");
+    fdn_string line = fdn_string_static("", 0);
+    bool eof = false;
+    int status = 0;
+    if (fixture == NULL) {
+        return 1;
+    }
+    const size_t written = fwrite(input, 1, sizeof(input) - 1, fixture);
+    const int close_status = fclose(fixture);
+    if (written != sizeof(input) - 1 || close_status != 0 ||
+        freopen(input_path, "rb", stdin) == NULL) {
+        (void)remove(input_path);
+        return 1;
+    }
+    if (foundation_runtime_io_read_stdin_line(&line, &eof) != 0 || eof ||
+        line.length != 4 || memcmp(line.data, "line", 4) != 0) {
+        status = 1;
+    }
+    fdn_string_drop(&line);
+    if (status == 0 &&
+        (foundation_runtime_io_read_stdin_line(&line, &eof) != 0 || eof ||
+         line.length != 4 || memcmp(line.data, "last", 4) != 0)) {
+        status = 1;
+    }
+    fdn_string_drop(&line);
+    if (status == 0 &&
+        (foundation_runtime_io_read_stdin_line(&line, &eof) != 0 || !eof ||
+         line.length != 0)) {
+        status = 1;
+    }
+    fdn_string_drop(&line);
+#if defined(_WIN32)
+    if (freopen("NUL", "rb", stdin) == NULL) {
+        status = 1;
+    }
+#else
+    if (freopen("/dev/null", "rb", stdin) == NULL) {
+        status = 1;
+    }
+#endif
+    if (remove(input_path) != 0) {
+        status = 1;
+    }
+    return status;
+}
+
 int main(int argc, char **argv) {
     static const uint8_t expected_stdout[] = {'o', 0, 0xff, 'u', 't'};
     static const uint8_t expected_stderr[] = {'e', 0, 0xfe, 'r', 'r'};
@@ -56,7 +105,9 @@ int main(int argc, char **argv) {
         return 1;
     }
     program = text(argv[0]);
-    if (foundation_runtime_io_write_stdout_bytes(0) != 1 ||
+    if (read_line_test() != 0 ||
+        foundation_runtime_io_read_stdin_line(NULL, NULL) != 1 ||
+        foundation_runtime_io_write_stdout_bytes(0) != 1 ||
         foundation_runtime_io_write_stderr_bytes(0) != 1 ||
         foundation_runtime_io_write_stdout_text(NULL) != 1 ||
         foundation_runtime_io_write_stderr_text(NULL) != 1 ||

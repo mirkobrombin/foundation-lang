@@ -40,6 +40,7 @@ _Static_assert(sizeof(uintptr_t) <= sizeof(uint64_t), "runtime handles require a
 #endif
 static SRWLOCK fdn_stdout_lock = SRWLOCK_INIT;
 static SRWLOCK fdn_stderr_lock = SRWLOCK_INIT;
+static SRWLOCK fdn_stdin_lock = SRWLOCK_INIT;
 static SRWLOCK fdn_uuid_lock = SRWLOCK_INIT;
 #else
 #include <dirent.h>
@@ -447,6 +448,76 @@ int32_t foundation_runtime_io_write_stderr_bytes(uint64_t handle) {
         return 1;
     }
     return fdn_write_standard(1, data, length);
+}
+
+int32_t foundation_runtime_io_read_stdin_line(fdn_string *result, bool *eof) {
+    char *data = NULL;
+    size_t length = 0;
+    size_t capacity = 0;
+    int value;
+    if (result == NULL || eof == NULL) {
+        return 1;
+    }
+    fdn_string_drop(result);
+    *result = fdn_string_static("", 0);
+    *eof = false;
+#if defined(_WIN32)
+    AcquireSRWLockExclusive(&fdn_stdin_lock);
+#else
+    flockfile(stdin);
+#endif
+    while ((value = fgetc(stdin)) != EOF && value != '\n') {
+        if (length == 1048576) {
+            fdn_dealloc(data);
+#if defined(_WIN32)
+            ReleaseSRWLockExclusive(&fdn_stdin_lock);
+#else
+            funlockfile(stdin);
+#endif
+            return 4;
+        }
+        if (length == capacity) {
+            const size_t next_capacity = capacity == 0 ? 128 : capacity * 2;
+            char *grown = fdn_alloc(next_capacity);
+            if (length != 0) {
+                memcpy(grown, data, length);
+            }
+            fdn_dealloc(data);
+            data = grown;
+            capacity = next_capacity;
+        }
+        data[length++] = (char)value;
+    }
+    if (value == EOF && ferror(stdin) != 0) {
+        fdn_dealloc(data);
+#if defined(_WIN32)
+        ReleaseSRWLockExclusive(&fdn_stdin_lock);
+#else
+        funlockfile(stdin);
+#endif
+        return 2;
+    }
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&fdn_stdin_lock);
+#else
+    funlockfile(stdin);
+#endif
+    if (value == EOF && length == 0) {
+        fdn_dealloc(data);
+        *eof = true;
+        return 0;
+    }
+    if (length != 0 && data[length - 1] == '\r') {
+        length--;
+    }
+    if (!fdn_utf8_valid(data, length)) {
+        fdn_dealloc(data);
+        return 3;
+    }
+    result->data = data;
+    result->length = length;
+    result->owned = data != NULL ? 1 : 0;
+    return 0;
 }
 
 void fdn_abi_string_concat(fdn_string *result, const fdn_string *left,

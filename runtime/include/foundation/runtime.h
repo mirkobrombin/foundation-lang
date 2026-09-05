@@ -428,6 +428,7 @@ int32_t foundation_runtime_io_write_stdout_text(const fdn_string *value);
 int32_t foundation_runtime_io_write_stderr_text(const fdn_string *value);
 int32_t foundation_runtime_io_write_stdout_bytes(uint64_t handle);
 int32_t foundation_runtime_io_write_stderr_bytes(uint64_t handle);
+int32_t foundation_runtime_io_read_stdin_line(fdn_string *result, bool *eof);
 uint64_t foundation_runtime_fs_live_directories(void);
 int32_t foundation_runtime_fs_tree_open(const fdn_string *path,
                                         uint64_t max_entries,

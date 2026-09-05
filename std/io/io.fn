@@ -2,9 +2,19 @@ package std.io
 
 import std.bytes
 
+// Classifies standard stream failures.
 enum Error {
+    // A binary value has already released its storage.
     Closed
+
+    // The operating system rejected a stream operation.
     Io
+
+    // Standard input contained a line that was not valid UTF-8.
+    InvalidUTF8
+
+    // A standard input line exceeded 1 MiB.
+    TooLarge
 }
 
 extern c fn writeStdoutTextNative(
@@ -19,9 +29,16 @@ extern c fn writeStdoutBytesNative(
 extern c fn writeStderrBytesNative(
     handle u64
 ) i32 as foundation_runtime_io_write_stderr_bytes
+@blocking
+extern c fn readStdinLineNative(
+    &result String,
+    &eof bool
+) i32 as foundation_runtime_io_read_stdin_line
 
 fn errorFor(status i32) Error {
     if status == 1 return .Closed
+    if status == 3 return .InvalidUTF8
+    if status == 4 return .TooLarge
     .Io
 }
 
@@ -51,4 +68,14 @@ fn WriteStderrBytes(value bytes.Bytes) Result<void, Error> {
     const status = writeStderrBytesNative(bytes.RuntimeHandle(value))
     if status == 0 return .Ok
     .Err(errorFor(status))
+}
+
+// Reads one UTF-8 line without its line terminator, or None at end of input.
+task ReadStdinLine() Result<Option<String>, Error> {
+    var result = ""
+    var eof = false
+    const status = readStdinLineNative(&result, &eof)
+    if status != 0 return .Err(errorFor(status))
+    if eof return .Ok(.None)
+    .Ok(.Some(result))
 }
