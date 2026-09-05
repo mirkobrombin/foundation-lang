@@ -1,0 +1,34 @@
+package std.system
+
+enum Error {
+    Unavailable
+    InvalidUtf8
+}
+
+struct Info {
+    Hostname String
+    Architecture String
+    LogicalCPUs u64
+}
+
+extern c fn inspectNative(
+    &hostname String,
+    &architecture String,
+    &logicalCPUs u64
+) i32 as foundation_runtime_system_info
+
+fn Snapshot() Result<Info, Error> {
+    var hostname = ""
+    var architecture = ""
+    var logicalCPUs u64 = 0
+    const status = inspectNative(&hostname, &architecture, &logicalCPUs)
+    if status == 0 {
+        return .Ok(Info {
+            Hostname = hostname
+            Architecture = architecture
+            LogicalCPUs = logicalCPUs
+        })
+    }
+    if status == 2 return .Err(.InvalidUtf8)
+    .Err(.Unavailable)
+}

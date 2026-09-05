@@ -203,6 +203,9 @@ FDN_DECLARE_UNSIGNED_ARITHMETIC(size_t, usize);
 #undef FDN_DECLARE_SIGNED_ARITHMETIC
 #undef FDN_DECLARE_UNSIGNED_ARITHMETIC
 int32_t foundation_runtime_env_read(const fdn_string *name, fdn_string *value);
+int32_t foundation_runtime_system_info(fdn_string *hostname,
+                                       fdn_string *architecture,
+                                       uint64_t *logical_cpus);
 fdn_string foundation_runtime_string_copy(const fdn_string *value);
 uint64_t foundation_runtime_string_byte_length(const fdn_string *value);
 bool foundation_runtime_string_contains(const fdn_string *value, const fdn_string *part);

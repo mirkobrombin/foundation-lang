@@ -814,6 +814,93 @@ int32_t foundation_runtime_env_read(const fdn_string *name, fdn_string *value) {
 #endif
 }
 
+static const char *fdn_system_architecture(void) {
+#if defined(_M_X64) || defined(__x86_64__)
+    return "amd64";
+#elif defined(_M_ARM64) || defined(__aarch64__)
+    return "arm64";
+#elif defined(_M_IX86) || defined(__i386__)
+    return "386";
+#elif defined(_M_ARM) || defined(__arm__)
+    return "arm";
+#elif defined(__riscv) && __riscv_xlen == 64
+    return "riscv64";
+#else
+    return NULL;
+#endif
+}
+
+int32_t foundation_runtime_system_info(fdn_string *hostname,
+                                       fdn_string *architecture,
+                                       uint64_t *logical_cpus) {
+    const char *architecture_value;
+    uint64_t cpu_count;
+    if (hostname == NULL || architecture == NULL || logical_cpus == NULL) {
+        fdn_panic_cstr("system info output is null");
+    }
+    fdn_string_drop(hostname);
+    fdn_string_drop(architecture);
+    *hostname = fdn_string_static("", 0);
+    *architecture = fdn_string_static("", 0);
+    *logical_cpus = 0;
+    architecture_value = fdn_system_architecture();
+    if (architecture_value == NULL) {
+        return 1;
+    }
+#if defined(_WIN32)
+    {
+        wchar_t wide_hostname[MAX_COMPUTERNAME_LENGTH + 1];
+        DWORD wide_length = MAX_COMPUTERNAME_LENGTH + 1;
+        DWORD native_cpu_count = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+        int utf8_length;
+        char *utf8_hostname;
+        if (native_cpu_count == 0 ||
+            !GetComputerNameW(wide_hostname, &wide_length) ||
+            wide_length > (DWORD)INT_MAX) {
+            return 1;
+        }
+        cpu_count = (uint64_t)native_cpu_count;
+        utf8_length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                          wide_hostname, (int)wide_length,
+                                          NULL, 0, NULL, NULL);
+        if (utf8_length <= 0) {
+            return 2;
+        }
+        utf8_hostname = fdn_alloc((size_t)utf8_length);
+        if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_hostname,
+                                (int)wide_length, utf8_hostname, utf8_length,
+                                NULL, NULL) != utf8_length) {
+            fdn_dealloc(utf8_hostname);
+            return 2;
+        }
+        hostname->data = utf8_hostname;
+        hostname->length = (size_t)utf8_length;
+        hostname->owned = 1;
+    }
+#else
+    {
+        char native_hostname[256] = {0};
+        long native_cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+        size_t hostname_length;
+        if (native_cpu_count <= 0 ||
+            gethostname(native_hostname, sizeof(native_hostname) - 1) != 0) {
+            return 1;
+        }
+        cpu_count = (uint64_t)native_cpu_count;
+        hostname_length = strlen(native_hostname);
+        if (!fdn_utf8_valid(native_hostname, hostname_length)) {
+            return 2;
+        }
+        *hostname = foundation_runtime_string_copy(
+            &(fdn_string){native_hostname, hostname_length, 0});
+    }
+#endif
+    *architecture = foundation_runtime_string_copy(
+        &(fdn_string){architecture_value, strlen(architecture_value), 0});
+    *logical_cpus = cpu_count;
+    return 0;
+}
+
 fdn_string foundation_runtime_string_copy(const fdn_string *value) {
     fdn_string result;
     char *data;

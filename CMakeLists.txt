@@ -1279,6 +1279,8 @@ if(BUILD_TESTING)
     target_link_libraries(foundation_runtime_crypto_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_env_test runtime/tests/env_test.c)
     target_link_libraries(foundation_runtime_env_test PRIVATE foundation_runtime)
+    add_executable(foundation_runtime_system_test runtime/tests/system_test.c)
+    target_link_libraries(foundation_runtime_system_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_fs_test runtime/tests/fs_test.c)
     target_link_libraries(foundation_runtime_fs_test PRIVATE foundation_runtime)
     add_executable(foundation_runtime_fs_host_test runtime/tests/fs_host_test.c)
@@ -1544,6 +1546,7 @@ if(BUILD_TESTING)
                 foundation_runtime_parse_test
                 foundation_runtime_crypto_test
                 foundation_runtime_env_test
+                foundation_runtime_system_test
                 foundation_runtime_fs_test
                 foundation_runtime_time_test
                 foundation_runtime_uuid_test
@@ -1568,6 +1571,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_u64_test PRIVATE /W4)
         target_compile_options(foundation_runtime_parse_test PRIVATE /W4)
         target_compile_options(foundation_runtime_env_test PRIVATE /W4)
+        target_compile_options(foundation_runtime_system_test PRIVATE /W4)
         target_compile_options(foundation_runtime_fs_test PRIVATE /W4)
         target_compile_options(foundation_runtime_time_test PRIVATE /W4)
         target_compile_options(foundation_runtime_uuid_test PRIVATE /W4)
@@ -1588,6 +1592,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_u64_test PRIVATE /WX)
             target_compile_options(foundation_runtime_parse_test PRIVATE /WX)
             target_compile_options(foundation_runtime_env_test PRIVATE /WX)
+            target_compile_options(foundation_runtime_system_test PRIVATE /WX)
             target_compile_options(foundation_runtime_fs_test PRIVATE /WX)
             target_compile_options(foundation_runtime_time_test PRIVATE /WX)
             target_compile_options(foundation_runtime_uuid_test PRIVATE /WX)
@@ -1611,6 +1616,7 @@ if(BUILD_TESTING)
         target_compile_options(foundation_runtime_u64_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_parse_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_env_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(foundation_runtime_system_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_fs_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_time_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(foundation_runtime_uuid_test PRIVATE -Wall -Wextra -Wpedantic)
@@ -1632,6 +1638,7 @@ if(BUILD_TESTING)
             target_compile_options(foundation_runtime_u64_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_parse_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_env_test PRIVATE -Werror)
+            target_compile_options(foundation_runtime_system_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_fs_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_time_test PRIVATE -Werror)
             target_compile_options(foundation_runtime_uuid_test PRIVATE -Werror)
@@ -1816,6 +1823,7 @@ if(BUILD_TESTING)
     add_test(NAME runtime.parse COMMAND foundation_runtime_parse_test)
     add_test(NAME runtime.crypto COMMAND foundation_runtime_crypto_test)
     add_test(NAME runtime.env COMMAND foundation_runtime_env_test)
+    add_test(NAME runtime.system COMMAND foundation_runtime_system_test)
     add_test(NAME runtime.time COMMAND foundation_runtime_time_test)
     add_test(NAME runtime.uuid COMMAND foundation_runtime_uuid_test)
     add_test(NAME runtime.task COMMAND foundation_runtime_task_test)
@@ -4470,6 +4478,28 @@ if(BUILD_TESTING)
     )
     set_tests_properties(compiler.run.environment-allocations PROPERTIES
         ENVIRONMENT "FOUNDATION_ENV_TEST=foundation env value"
+    )
+    add_test(
+        NAME compiler.run.system-info
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/system-info.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/system-info.out
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME compiler.run.system-info-allocations
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DC_COMPILER_ID=${CMAKE_C_COMPILER_ID}
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/system-info.fn
+            -DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/system-info.c
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/system-info
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/system-info.out
+            -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c
+            -DRUNTIME_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-allocations.cmake
     )
     add_test(
         NAME compiler.run.text-path

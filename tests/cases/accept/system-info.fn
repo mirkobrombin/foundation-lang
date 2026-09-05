@@ -1,0 +1,15 @@
+package test.system
+
+import std.system
+
+fn main() i32 {
+    const info = system.Snapshot() else error {
+        discard error
+        return 1
+    }
+    if !info.Hostname return 2
+    if !info.Architecture return 3
+    if info.LogicalCPUs == 0 return 4
+    print("system info ok")
+    0
+}
