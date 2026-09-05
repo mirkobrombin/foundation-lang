@@ -423,10 +423,15 @@ static bool fdn_net_nonblocking(fdn_net_socket socket) {
     return ioctlsocket(socket, FIONBIO, &enabled) == 0;
 #else
     const int flags = fcntl(socket, F_GETFL, 0);
-    if (flags < 0 || fcntl(socket, F_SETFL, flags | O_NONBLOCK) != 0) {
+    return flags >= 0 && fcntl(socket, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
+}
+
+static bool fdn_net_socket_nonblocking(fdn_net_socket socket) {
+    if (!fdn_net_nonblocking(socket)) {
         return false;
     }
-#if defined(SO_NOSIGPIPE)
+#if !defined(_WIN32) && defined(SO_NOSIGPIPE)
     {
         const int enabled = 1;
         if (setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &enabled,
@@ -436,7 +441,6 @@ static bool fdn_net_nonblocking(fdn_net_socket socket) {
     }
 #endif
     return true;
-#endif
 }
 
 #if !defined(_WIN32)
@@ -779,7 +783,7 @@ int32_t foundation_runtime_net_listen(const fdn_string *address, uint64_t port,
                                              : FDN_NET_IO;
     }
     if (listen(native_socket, (int)backlog) != 0 ||
-        !fdn_net_nonblocking(native_socket)) {
+        !fdn_net_socket_nonblocking(native_socket)) {
         fdn_net_close_socket(native_socket);
         return FDN_NET_IO;
     }
@@ -1421,7 +1425,7 @@ static int32_t fdn_net_accept_ready(fdn_net_request *request) {
         fdn_net_socket native_socket =
             (fdn_net_socket)accept(request->socket, NULL, NULL);
         if (native_socket != FDN_NET_INVALID_SOCKET) {
-            if (!fdn_net_nonblocking(native_socket)) {
+            if (!fdn_net_socket_nonblocking(native_socket)) {
                 fdn_net_close_socket(native_socket);
                 fdn_net_listener_leave(listener);
                 return FDN_NET_IO;
@@ -1455,7 +1459,7 @@ static int32_t fdn_net_connect_next(fdn_net_request *request) {
         if (native_socket == FDN_NET_INVALID_SOCKET) {
             continue;
         }
-        if (!fdn_net_nonblocking(native_socket)) {
+        if (!fdn_net_socket_nonblocking(native_socket)) {
             fdn_net_close_socket(native_socket);
             continue;
         }
@@ -2409,16 +2413,16 @@ int32_t foundation_runtime_net_datagram_open(const fdn_string *address,
     }
     *handle = 0;
     *bound_port = 0;
-    const int32_t address_status =
-        fdn_net_datagram_address(address, port, &storage, &length);
-    if (address_status != FDN_NET_OK) {
-        return address_status;
-    }
     fdn_net_global_enter();
     const bool platform_ready = fdn_net_platform_start();
     fdn_net_global_leave();
     if (!platform_ready) {
         return FDN_NET_IO;
+    }
+    const int32_t address_status =
+        fdn_net_datagram_address(address, port, &storage, &length);
+    if (address_status != FDN_NET_OK) {
+        return address_status;
     }
     native_socket = socket(storage.ss_family, SOCK_DGRAM, IPPROTO_UDP);
     if (native_socket == FDN_NET_INVALID_SOCKET) {

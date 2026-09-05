@@ -150,11 +150,15 @@ fn compilerExecutablePath(directory String, name String) String {
     path.Join(directory, name + ".exe")
 }
 
-fn compilerRuntimeSources() [16]String {
+fn compilerRuntimeSources() [20]String {
     [
         "runtime.c",
         "fs_host.c",
         "process.c",
+        "pty_posix.c",
+        "pty_windows.c",
+        "terminal.c",
+        "desktop.c",
         "crypto.c",
         "parse.c",
         "task.c",
@@ -199,12 +203,17 @@ fn compilerAddPlatformLinks(&command process.Command) bool {
 @target(macos)
 fn compilerAddPlatformLinks(&command process.Command) bool {
     compilerAddArgument(&command, "-pthread") &&
-        compilerAddArgument(&command, "-lm")
+        compilerAddArgument(&command, "-lm") &&
+        compilerAddArgument(&command, "-framework") &&
+        compilerAddArgument(&command, "ApplicationServices")
 }
 
 @target(windows)
 fn compilerAddPlatformLinks(&command process.Command) bool {
     compilerAddArgument(&command, "-lbcrypt") &&
+        compilerAddArgument(&command, "-lgdi32") &&
+        compilerAddArgument(&command, "-liphlpapi") &&
+        compilerAddArgument(&command, "-luser32") &&
         compilerAddArgument(&command, "-lws2_32")
 }
 

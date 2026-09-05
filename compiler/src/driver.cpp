@@ -779,8 +779,8 @@ bool linkSharedLibrary(const std::filesystem::path &output,
                 arguments.push_back(link.name + ".lib");
             }
         }
-        arguments.insert(arguments.end(), {"bcrypt.lib", "iphlpapi.lib", "ws2_32.lib", "/link",
-                                           "/Brepro",
+        arguments.insert(arguments.end(), {"bcrypt.lib", "gdi32.lib", "iphlpapi.lib",
+                                           "user32.lib", "ws2_32.lib", "/link", "/Brepro",
                                            "/DEF:" + controlFile.string(),
                                            "/IMPLIB:" + importLibrary.string()});
         return runProcess(arguments, ProcessOutput::StdoutToStderrOnFailure) == 0;
@@ -793,13 +793,14 @@ bool linkSharedLibrary(const std::filesystem::path &output,
 #ifdef _WIN32
     arguments.insert(arguments.end(), {"-Wl,--no-undefined", controlFile.string(),
                                        "-Wl,--out-implib," + importLibrary.string(),
-                                       "-lbcrypt", "-liphlpapi", "-lws2_32"});
+                                       "-lbcrypt", "-lgdi32", "-liphlpapi", "-luser32",
+                                       "-lws2_32"});
 #elif defined(__APPLE__)
     const auto installName = "@rpath/" + sharedLibraryFilename(packageInterface.library,
                                                                  packageInterface.soVersion);
     arguments.insert(arguments.end(), {"-Wl,-undefined,error", "-Wl,-install_name," + installName,
                                        "-Wl,-exported_symbols_list," + controlFile.string(),
-                                       "-Wl,-S", "-pthread"});
+                                       "-Wl,-S", "-pthread", "-framework", "ApplicationServices"});
 #else
     arguments.insert(arguments.end(), {"-Wl,--no-undefined",
                                        "-Wl,-soname," + output.filename().string(),
