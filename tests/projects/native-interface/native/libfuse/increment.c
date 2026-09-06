@@ -1,4 +1,5 @@
 #include <math.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
 #include "foundation/runtime.h"
@@ -6,7 +7,8 @@
 extern int32_t sample_private_identity(int32_t value);
 
 int32_t sample_native_increment(int32_t value) {
-    return value + 1;
+    _Atomic int32_t result = value;
+    return atomic_fetch_add(&result, 1) + 1;
 }
 
 double sample_native_sine(double value) {

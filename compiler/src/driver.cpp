@@ -526,7 +526,8 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
     if (compilerId == "MSVC") {
         auto objectDirectory = generated.parent_path().string();
         objectDirectory.push_back(std::filesystem::path::preferred_separator);
-        arguments.insert(arguments.end(), {"/nologo", "/std:c11", "/W4", "/WX",
+        arguments.insert(arguments.end(), {"/nologo", "/std:c11",
+                                           "/experimental:c11atomics", "/W4", "/WX",
                                            "/Fo:" + objectDirectory,
                                            "/I" + runtimeInclude.string(),
                                            "/I" + nativeInclude.string(),
@@ -646,8 +647,9 @@ bool compileLibraryObject(const std::filesystem::path &source,
     const std::string compilerId = FOUNDATION_C_COMPILER_ID;
     std::vector<std::string> arguments{FOUNDATION_C_COMPILER};
     if (compilerId == "MSVC") {
-        arguments.insert(arguments.end(), {"/nologo", "/std:c11", "/O2", "/W4", "/WX", "/c",
-                                           source.string(), "/I" + runtimeInclude.string(),
+        arguments.insert(arguments.end(), {"/nologo", "/std:c11",
+                                           "/experimental:c11atomics", "/O2", "/W4", "/WX",
+                                           "/c", source.string(), "/I" + runtimeInclude.string(),
                                            "/I" + generatedInclude.string(),
                                            "/Fo:" + output.string()});
     } else {
