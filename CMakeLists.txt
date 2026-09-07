@@ -254,7 +254,7 @@ if(FOUNDATION_BUILD_SDL_PROVIDER)
         target_link_libraries(foundation_sdl_provider PRIVATE m)
     endif()
     if(MSVC)
-        target_compile_options(foundation_sdl_provider PRIVATE /W4)
+        target_compile_options(foundation_sdl_provider PRIVATE /W4 /wd5287)
         if(FOUNDATION_WARNINGS_AS_ERRORS)
             target_compile_options(foundation_sdl_provider PRIVATE /WX)
         endif()
@@ -352,6 +352,7 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_RUNTIME_PLUGIN_SANDBOX_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/plugin_sandbox.c"
     FOUNDATION_STANDARD_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/std"
     FOUNDATION_FRAMEWORK_LIBRARY="${CMAKE_CURRENT_SOURCE_DIR}/foundation"
+    FOUNDATION_SDK_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
 )
 if(FOUNDATION_WAMR_SANITIZERS)
     target_compile_definitions(foundation_compiler PRIVATE
@@ -866,6 +867,20 @@ if(BUILD_TESTING)
         add_test(NAME providers.sdl.abi-c COMMAND foundation_sdl_abi_test)
         add_test(NAME providers.sdl.abi-cpp COMMAND foundation_sdl_header_test)
         add_test(NAME providers.sdl.terminal COMMAND foundation_sdl_terminal_test)
+        add_test(
+            NAME providers.sdl.sdk-consumer
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/sdk-ui-consumer
+                -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/tests/sdk-ui-consumer
+                -DTARGET=${FOUNDATION_SELFHOST_TARGET}
+                -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-sdk-package-consumer.cmake
+        )
+        set_tests_properties(providers.sdl.sdk-consumer PROPERTIES
+            TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT}
+        )
     endif()
     if(TARGET foundation_wamr_provider)
         target_compile_definitions(foundation_wamr_provider PRIVATE FOUNDATION_WAMR_TESTING=1)
@@ -2416,7 +2431,9 @@ if(BUILD_TESTING)
     set_tests_properties(
         compiler.selfhost.llvm
         compiler.selfhost.c
-        PROPERTIES TIMEOUT ${FOUNDATION_SELFHOST_TEST_TIMEOUT}
+        PROPERTIES
+            TIMEOUT ${FOUNDATION_SELFHOST_TEST_TIMEOUT}
+            ENVIRONMENT "FOUNDATION_SDK_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
     )
     foreach(backend IN ITEMS llvm c)
         add_test(

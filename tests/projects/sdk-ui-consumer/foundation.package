@@ -1,0 +1,7 @@
+format foundation.package/v1
+name sdk.ui.consumer
+version 1.0.0
+language 1
+fcs strict
+source src
+dependency foundation.ui.sdl 1.0.0 sdk providers/sdl

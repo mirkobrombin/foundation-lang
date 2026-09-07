@@ -208,8 +208,10 @@ fn expectedPackageEdges(
                                 valid = packageRequirementAccepts(
                                     dependency.requirement,
                                     value.version
-                                ) && isPathLocation(dependency.kind) ==
-                                    isPathLocation(value.kind) && locationValue == value.location
+                                ) && samePackageLocationKind(
+                                    dependency.kind,
+                                    value.kind
+                                ) && locationValue == value.location
                             }
                         }
                     }
@@ -500,7 +502,7 @@ fn loadLockedPackageProject(
             lock.packages.restore(packageIndex, $locked)
             return result
         }
-        if isPathLocation(locked.kind) {
+        if !isRegistryLocation(locked.kind) {
             var inspected = inspectPackageSource(packageRoot, &dependencyManifest)
             const snapshot = match replace inspected.value with .None {
                 None: {
@@ -512,7 +514,7 @@ fn loadLockedPackageProject(
             }
             if snapshot.digest != locked.digest {
                 addPackageError(&result.errors, packageRoot, 1, 1, "FDN4112",
-                    "locked path dependency digest does not match")
+                    "locked package dependency digest does not match")
                 lock.packages.restore(packageIndex, $locked)
                 return result
             }
@@ -543,7 +545,7 @@ fn lockedPackageRoot(
     lockPath String,
     &errors arena<packageError>
 ) Option<String> {
-    if !isPathLocation(locked.kind) {
+    if isRegistryLocation(locked.kind) {
         const cache = match copyPackageStringOption(cacheRoot) {
             None: {
                 addPackageError(&errors, lockPath, 1, 1, "FDN4112",
@@ -561,14 +563,25 @@ fn lockedPackageRoot(
             Some(value): .Some(value)
         }
     } else {
-        const root = path.Join(projectRoot, locked.location)
-        match canonicalPackageDirectory(root) {
-            None: {
-                addPackageError(&errors, root, 1, 1, "FDN4112",
-                    "locked path dependency root is unavailable")
-                .None
+        if isSdkLocation(locked.kind) {
+            match sdkPackageDirectory(projectRoot, locked.location) {
+                None: {
+                    addPackageError(&errors, lockPath, 1, 1, "FDN4112",
+                        "locked SDK dependency root is unavailable")
+                    .None
+                }
+                Some(value): .Some(value)
             }
-            Some(value): .Some(value)
+        } else {
+            const root = path.Join(projectRoot, locked.location)
+            match canonicalPackageDirectory(root) {
+                None: {
+                    addPackageError(&errors, root, 1, 1, "FDN4112",
+                        "locked path dependency root is unavailable")
+                    .None
+                }
+                Some(value): .Some(value)
+            }
         }
     }
 }

@@ -438,7 +438,7 @@ fn fetchPackageCommand(&options packageOptions) i32 {
             None: panic("resolved package slot is empty")
             Some(value): value
         }
-        if !isPathLocation(candidate.kind) {
+        if isRegistryLocation(candidate.kind) {
             const locked = lockedPackageForCandidate(candidate)
             var cached = verifyPackageInCache(cache, locked)
             match replace cached.value with .None {
@@ -515,59 +515,29 @@ fn verifyPackageCommand(&options packageOptions) i32 {
         }
         Some(value): value
     }
-    const root = path.Parent(manifestPath)
-    var index u64 = 0
-    while index < lock.packages.len() {
-        const locked = match lock.packages.take(index) {
-            None: panic("locked package slot is empty")
+    const sdk = match parsePackageVersion("0.1.0") {
+        None: panic("compiler SDK version invariant failed")
+        Some(value): value
+    }
+    var loaded = loadLockedPackageProject(
+        manifestPath,
+        sdk,
+        lock.target,
+        .Some(cache),
+        true
+    )
+    var project = match replace loaded.value with .None {
+        None: { return printPackageErrors(&loaded.errors) }
+        Some(value): value
+    }
+    var index u64 = 1
+    while index < project.sources.len() {
+        const source = match project.sources.take(index) {
+            None: panic("locked package source slot is empty")
             Some(value): value
         }
-        if !isPathLocation(locked.kind) {
-            var verified = verifyPackageInCache(cache, locked)
-            match replace verified.value with .None {
-                None: {
-                    lock.packages.restore(index, $locked)
-                    return printPackageErrors(&verified.errors)
-                }
-                Some(value): {
-                    discard io.WriteStdoutText("verified " + value + "\n")
-                }
-            }
-        } else {
-            const packageRoot = path.Join(root, locked.location)
-            const dependencyPath = path.Join(packageRoot, "foundation.package")
-            var dependencyResult = readPackageManifest(dependencyPath)
-            var dependency = match replace dependencyResult.value with .None {
-                None: {
-                    lock.packages.restore(index, $locked)
-                    return printPackageErrors(&dependencyResult.errors)
-                }
-                Some(value): value
-            }
-            if dependency.name != locked.name ||
-                !samePackageVersion(dependency.version, locked.version) {
-                addPackageError(&errors, packageRoot, 1, 1, "FDN4106",
-                    "path dependency identity does not match the lock")
-                lock.packages.restore(index, $locked)
-                return printPackageErrors(&errors)
-            }
-            var inspected = inspectPackageSource(packageRoot, &dependency)
-            const snapshot = match replace inspected.value with .None {
-                None: {
-                    lock.packages.restore(index, $locked)
-                    return printPackageErrors(&inspected.errors)
-                }
-                Some(value): value
-            }
-            if snapshot.digest != locked.digest {
-                addPackageError(&errors, packageRoot, 1, 1, "FDN4106",
-                    "path dependency digest does not match the lock")
-                lock.packages.restore(index, $locked)
-                return printPackageErrors(&errors)
-            }
-            discard io.WriteStdoutText("verified " + packageRoot + "\n")
-        }
-        lock.packages.restore(index, $locked)
+        discard io.WriteStdoutText("verified " + source.packageRoot + "\n")
+        project.sources.restore(index, $source)
         index += 1
     }
     0
@@ -633,7 +603,7 @@ fn collectPackageRegistryRequirements(
             None: panic("package dependency slot is empty")
             Some(value): value
         }
-        if !isPathLocation(dependency.kind) &&
+        if isRegistryLocation(dependency.kind) &&
             packageDependencyActive(dependency, target) {
             discard result.add(packageRegistryRequirement {
                 registry = text.Copy(dependency.location)
@@ -744,7 +714,7 @@ fn packageLockedCommand(&options packageOptions) i32 {
             None: panic("locked package slot is empty")
             Some(value): value
         }
-        if !isPathLocation(locked.kind) {
+        if isRegistryLocation(locked.kind) {
             discard io.WriteStdoutText(
                 "registry " + locked.location + " " + locked.name + " " +
                 packageVersionString(locked.version) + " " + locked.digest + "\n"
@@ -854,7 +824,7 @@ fn prunePackageCommand(&options packageOptions) i32 {
             None: panic("locked package slot is empty")
             Some(value): value
         }
-        if !isPathLocation(locked.kind) {
+        if isRegistryLocation(locked.kind) {
             discard keep.add(text.Copy(locked.digest))
         }
         lock.packages.restore(index, $locked)

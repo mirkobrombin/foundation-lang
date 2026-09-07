@@ -36,7 +36,8 @@ test "package manifest parser renders canonical source" {
         "source src\n" +
         "test_source tests\n" +
         "dependency sample.test ~1.0.0 path ../test scope test\n" +
-        "dependency sample.core ^2.0.0 registry local target linux\n"
+        "dependency sample.core ^2.0.0 registry local target linux\n" +
+        "dependency foundation.ui.sdl 1.0.0 sdk providers/sdl\n"
     )
     expect(parsed.errors.len() == 0)
     var manifest = match replace parsed.value with .None {
@@ -44,7 +45,7 @@ test "package manifest parser renders canonical source" {
         Some(value): value
     }
     expect(manifest.name == "sample.app")
-    expect(manifest.dependencies.len() == 2)
+    expect(manifest.dependencies.len() == 3)
     expect(manifest.languageExplicit)
     expect(manifest.language == 1)
     expect(packageRequirementAccepts(manifest.sdk, requiredPackageVersion("99.0.0")))
@@ -57,6 +58,7 @@ test "package manifest parser renders canonical source" {
         "fcs_rule FCS7004 error\n" +
         "source src\n" +
         "test_source tests\n" +
+        "dependency foundation.ui.sdl 1.0.0 sdk providers/sdl\n" +
         "dependency sample.core ^2.0.0 registry local target linux\n" +
         "dependency sample.test ~1.0.0 path ../test scope test\n")
 }
@@ -125,6 +127,16 @@ test "package manifest rejects duplicate and overlapping declarations" {
     }
     expect(packageErrorsContain(&parsed.errors, "FDN4011"))
     expect(packageErrorsContain(&parsed.errors, "FDN4013"))
+    var sdkTraversal = parsePackageManifest(
+        "foundation.package",
+        "format foundation.package/v1\n" +
+        "name sample\n" +
+        "version 1.0.0\n" +
+        "language 1\n" +
+        "source src\n" +
+        "dependency foundation.ui.sdl 1.0.0 sdk ../providers/sdl\n"
+    )
+    expect(packageErrorsContain(&sdkTraversal.errors, "FDN4009"))
 }
 
 test "package lock parser validates and canonicalizes graph entries" {
@@ -135,8 +147,11 @@ test "package lock parser validates and canonicalizes graph entries" {
         "target linux\n" +
         "package sample.z 1.0.0 " + packageDigest("1") + " registry local\n" +
         "package sample.a 2.0.0 " + packageDigest("2") + " path ../a\n" +
+        "package foundation.ui.sdl 1.0.0 " + packageDigest("3") +
+        " sdk providers/sdl\n" +
         "edge sample.app sample.z\n" +
-        "edge sample.app sample.a scope test\n"
+        "edge sample.app sample.a scope test\n" +
+        "edge sample.app foundation.ui.sdl\n"
     )
     expect(parsed.errors.len() == 0)
     var lock = match replace parsed.value with .None {
@@ -147,8 +162,11 @@ test "package lock parser validates and canonicalizes graph entries" {
         "format foundation.lock/v1\n" +
         "root sample.app 1.0.0\n" +
         "target linux\n" +
+        "package foundation.ui.sdl 1.0.0 " + packageDigest("3") +
+        " sdk providers/sdl\n" +
         "package sample.a 2.0.0 " + packageDigest("2") + " path ../a\n" +
         "package sample.z 1.0.0 " + packageDigest("1") + " registry local\n" +
+        "edge sample.app foundation.ui.sdl\n" +
         "edge sample.app sample.a scope test\n" +
         "edge sample.app sample.z\n")
 }
@@ -174,6 +192,15 @@ test "package lock rejects cycles and unreachable packages" {
         "package sample.a 1.0.0 " + packageDigest("a") + " registry local\n"
     )
     expect(packageErrorsContain(&unreachable.errors, "FDN4027"))
+    var sdkTraversal = parsePackageLock(
+        "foundation.lock",
+        "format foundation.lock/v1\n" +
+        "root sample 1.0.0\n" +
+        "target linux\n" +
+        "package foundation.ui.sdl 1.0.0 " + packageDigest("c") +
+        " sdk ../providers/sdl\n"
+    )
+    expect(packageErrorsContain(&sdkTraversal.errors, "FDN4023"))
 }
 
 test "package diagnostics distinguish size and duplicate lock entries" {
@@ -298,6 +325,67 @@ test "package source digest and cache preserve verified content" {
     var pruned = prunePackageCache(cacheRoot, &keep)
     expect(pruned.errors.len() == 0)
     expect(pruned.changed.len() == 1)
+    expectResult(fs.RemoveTree(path.Normalize(workspace), 10000, 128))
+}
+
+test "SDK package dependencies resolve and load from the SDK root" {
+    const workspace = fs.CreateTempDirectory(".", ".foundation-sdk-package-test-") else error {
+        discard error
+        panic("cannot create SDK package test directory")
+    }
+    const sourceRoot = path.Join(workspace, "src")
+    expectResult(fs.CreateDirectory(sourceRoot))
+    expectResult(fs.WriteTextAtomic(
+            path.Join(sourceRoot, "main.fn"),
+            "package sample.sdk\nimport foundation.ui.sdl\n",
+            4096
+        ))
+    const manifestPath = path.Join(workspace, "foundation.package")
+    expectResult(fs.WriteTextAtomic(
+            manifestPath,
+            "format foundation.package/v1\n" +
+            "name sample.sdk\n" +
+            "version 1.0.0\n" +
+            "language 1\n" +
+            "source src\n" +
+            "dependency foundation.ui.sdl 1.0.0 sdk providers/sdl\n",
+            1048576
+        ))
+    var manifestResult = readPackageManifest(manifestPath)
+    var manifest = match replace manifestResult.value with .None {
+        None: panic("expected SDK consumer manifest")
+        Some(value): value
+    }
+    var registries = newArena<packageRegistryRoot>()
+    var resolved = resolveProjectPackages(
+        manifestPath,
+        &manifest,
+        requiredPackageVersion("0.1.0"),
+        .Linux,
+        &registries
+    )
+    var resolution = match replace resolved.value with .None {
+        None: panic("expected SDK package resolution")
+        Some(value): value
+    }
+    expect(resolution.packages.len() == 1)
+    var written = writePackageLockAtomically(
+        path.Join(workspace, "foundation.lock"),
+        &resolution.lock
+    )
+    expect(written.errors.len() == 0)
+    var loaded = loadLockedPackageProject(
+        manifestPath,
+        requiredPackageVersion("0.1.0"),
+        .Linux,
+        .None,
+        false
+    )
+    var project = match replace loaded.value with .None {
+        None: panic("expected locked SDK package project")
+        Some(value): value
+    }
+    expect(project.sources.len() == 2)
     expectResult(fs.RemoveTree(path.Normalize(workspace), 10000, 128))
 }
 

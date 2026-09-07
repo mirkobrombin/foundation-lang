@@ -7,6 +7,10 @@ library.
 The SDK includes `foundation.ui.sdl`, an optional SDL3 and Nuklear provider. Importing that package
 adds its native sources and SDL3 link requirement through `foundation.package`.
 
+```text
+dependency foundation.ui.sdl 1.0.0 sdk providers/sdl
+```
+
 ```foundation
 package example
 

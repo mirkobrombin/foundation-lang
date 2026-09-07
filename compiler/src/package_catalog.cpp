@@ -1,11 +1,17 @@
 #include "foundation/package.hpp"
 
+#include "foundation/sdk.hpp"
+
 #include <algorithm>
 #include <deque>
 #include <map>
 #include <set>
 #include <system_error>
 #include <tuple>
+
+#ifndef FOUNDATION_SDK_SOURCE_ROOT
+#define FOUNDATION_SDK_SOURCE_ROOT ""
+#endif
 
 namespace foundation {
 
@@ -40,6 +46,23 @@ std::optional<std::filesystem::path> canonicalDirectory(
     return canonical;
 }
 
+std::optional<std::filesystem::path> sdkPackageDirectory(std::string_view location) {
+    const auto root =
+        canonicalDirectory(sdkAsset({}, std::filesystem::path{FOUNDATION_SDK_SOURCE_ROOT}));
+    if (!root.has_value()) {
+        return std::nullopt;
+    }
+    const auto package = canonicalDirectory(*root / std::filesystem::path{location});
+    if (!package.has_value()) {
+        return std::nullopt;
+    }
+    const auto relative = package->lexically_relative(*root);
+    if (relative.empty() || relative.is_absolute() || *relative.begin() == "..") {
+        return std::nullopt;
+    }
+    return package;
+}
+
 std::optional<PackageManifest> normalizeManifest(
     const std::filesystem::path &path, PackageManifest manifest,
     const std::filesystem::path &manifestRoot, const std::filesystem::path &projectRoot,
@@ -70,7 +93,12 @@ std::optional<PackageManifest> normalizeManifest(
 }
 
 std::string catalogKey(const PackageDependency &dependency) {
-    const auto kind = dependency.kind == PackageLocationKind::Path ? "path" : "registry";
+    auto kind = std::string_view{"registry"};
+    if (dependency.kind == PackageLocationKind::Path) {
+        kind = "path";
+    } else if (dependency.kind == PackageLocationKind::Sdk) {
+        kind = "sdk";
+    }
     return std::string(kind) + '\n' + dependency.location + '\n' + dependency.name + '\n' +
            dependency.requirement.string();
 }
@@ -144,9 +172,10 @@ collectPackageCatalog(const std::filesystem::path &rootManifestPath,
             }
             discovered = std::move(*loaded.value);
         } else {
-            const auto packageRoot = canonicalDirectory(*projectRoot / dependency.location);
-            if (!packageRoot.has_value() ||
-                !realFile(*packageRoot / "foundation.package")) {
+            const auto packageRoot = dependency.kind == PackageLocationKind::Sdk
+                                         ? sdkPackageDirectory(dependency.location)
+                                         : canonicalDirectory(*projectRoot / dependency.location);
+            if (!packageRoot.has_value() || !realFile(*packageRoot / "foundation.package")) {
                 continue;
             }
             const auto parsed = readPackageManifest(*packageRoot / "foundation.package");
@@ -162,9 +191,8 @@ collectPackageCatalog(const std::filesystem::path &rootManifestPath,
                 result.errors = snapshot.errors;
                 return result;
             }
-            discovered.push_back({*parsed.value, snapshot.value->digest,
-                                  PackageLocationKind::Path, dependency.location,
-                                  *packageRoot});
+            discovered.push_back({*parsed.value, snapshot.value->digest, dependency.kind,
+                                  dependency.location, *packageRoot});
         }
 
         for (auto &candidate : discovered) {

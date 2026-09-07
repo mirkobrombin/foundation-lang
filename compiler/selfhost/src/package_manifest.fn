@@ -181,6 +181,7 @@ fn copyPackageManifest(&manifest packageManifest) own packageManifest {
 fn packageLocationKindFor(value String) Option<packageLocationKind> {
     if value == "path" return .Some(.Path)
     if value == "registry" return .Some(.Registry)
+    if value == "sdk" return .Some(.Sdk)
     .None
 }
 
@@ -188,6 +189,7 @@ fn packageLocationKindName(kind packageLocationKind) String {
     match kind {
         Path: "path"
         Registry: "registry"
+        Sdk: "sdk"
     }
 }
 
@@ -245,6 +247,27 @@ fn validPackageLocation(kind packageLocationKind, value String) bool {
     match kind {
         Registry: isValidPackageName(value)
         Path: !path.IsAbsolute(value)
+        Sdk: relativePackageSource(value)
+    }
+}
+
+fn samePackageLocationKind(
+    left packageLocationKind,
+    right packageLocationKind
+) bool {
+    match left {
+        Path: match right {
+            Path: true
+            _: false
+        }
+        Registry: match right {
+            Registry: true
+            _: false
+        }
+        Sdk: match right {
+            Sdk: true
+            _: false
+        }
     }
 }
 

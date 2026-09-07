@@ -525,37 +525,14 @@ int verifyCommand(const PackageOptions& options) {
     if (!cache.has_value()) {
         return printErrors(errors);
     }
-    const auto root = manifestPath(options.project).parent_path();
-    for (const auto& package : lock.value->packages) {
-        if (package.kind == PackageLocationKind::Registry) {
-            const auto verified = verifyPackageInCache(*cache, package);
-            if (!verified.value.has_value()) {
-                return printErrors(verified.errors);
-            }
-            std::cout << "verified " << verified.value->generic_string() << '\n';
-            continue;
-        }
-        const auto packageRoot = root / package.location;
-        const auto dependencyManifest = readPackageManifest(packageRoot / "foundation.package");
-        if (!dependencyManifest.value.has_value()) {
-            return printErrors(dependencyManifest.errors);
-        }
-        if (dependencyManifest.value->name != package.name ||
-            dependencyManifest.value->version != package.version) {
-            addError(errors, packageRoot, "FDN4106",
-                     "path dependency identity does not match the lock");
-            return printErrors(errors);
-        }
-        const auto snapshot = inspectPackageSource(packageRoot, *dependencyManifest.value);
-        if (!snapshot.value.has_value()) {
-            return printErrors(snapshot.errors);
-        }
-        if (snapshot.value->digest != package.digest) {
-            addError(errors, packageRoot, "FDN4106",
-                     "path dependency digest does not match the lock");
-            return printErrors(errors);
-        }
-        std::cout << "verified " << packageRoot.generic_string() << '\n';
+    const auto loaded = loadLockedPackageProject(
+        manifestPath(options.project), *parsePackageVersion("0.1.0"), lock.value->target, cache);
+    if (!loaded.value.has_value()) {
+        return printErrors(loaded.errors);
+    }
+    for (std::size_t index = 1; index < loaded.value->sources.size(); ++index) {
+        std::cout << "verified " << loaded.value->sources[index].packageRoot.generic_string()
+                  << '\n';
     }
     return 0;
 }

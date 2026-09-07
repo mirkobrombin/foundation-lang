@@ -54,6 +54,7 @@ struct PackageRequirement {
 enum class PackageLocationKind {
     Path,
     Registry,
+    Sdk,
 };
 
 enum class PackageDependencyScope {

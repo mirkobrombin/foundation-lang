@@ -89,6 +89,23 @@ void lockedProjectsLoadVerifiedSources() {
            "locked project loads root and path dependency sources");
 }
 
+void lockedProjectsLoadSdkSources() {
+    Fixture fixture;
+    Fixture::package(fixture.app, "sample.app", "1.0.0",
+                     "dependency foundation.ui.sdl 1.0.0 sdk providers/sdl\n");
+    const auto resolution = fixture.resolve();
+    const auto written =
+        foundation::writePackageLockAtomically(fixture.app / "foundation.lock", resolution.lock);
+    expect(written.errors.empty(), "SDK package fixture lock writes");
+    const auto loaded = foundation::loadLockedPackageProject(
+        fixture.app / "foundation.package", *foundation::parsePackageVersion("0.1.0"),
+        foundation::TargetPlatform::Linux, fixture.cache);
+    expect(loaded.value.has_value() && loaded.value->sources.size() == 2 &&
+               loaded.value->sources[1].name == "foundation.ui.sdl" &&
+               loaded.value->sources[1].packageRoot.generic_string().ends_with("providers/sdl"),
+           "locked project loads verified SDK package sources");
+}
+
 void lockedProjectsRejectChangedPathsAndTargets() {
     Fixture fixture;
     const auto resolution = fixture.resolve();
@@ -213,6 +230,7 @@ void testSourcesStayOutOfProductionProjects() {
 
 int runPackageProjectTests() {
     lockedProjectsLoadVerifiedSources();
+    lockedProjectsLoadSdkSources();
     lockedProjectsRejectChangedPathsAndTargets();
     lockedProjectsRejectLockSymlinks();
     lockedProjectsRejectChangedForeignContent();

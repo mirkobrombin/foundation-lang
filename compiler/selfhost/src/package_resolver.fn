@@ -169,7 +169,7 @@ fn resolverCandidateMatches(
         const matches = packageRequirementAccepts(
             dependency.requirement,
             candidate.manifest.version
-        ) && isPathLocation(dependency.kind) == isPathLocation(candidate.kind) &&
+        ) && samePackageLocationKind(dependency.kind, candidate.kind) &&
             dependency.location == candidate.location
         entry.constraints.restore(index, $constraint)
         if !matches return false
@@ -770,7 +770,7 @@ fn validateResolverCatalog(
             }
             const duplicate = previous.manifest.name == candidate.manifest.name &&
                 samePackageVersion(previous.manifest.version, candidate.manifest.version) &&
-                isPathLocation(previous.kind) == isPathLocation(candidate.kind) &&
+                samePackageLocationKind(previous.kind, candidate.kind) &&
                 previous.location == candidate.location
             catalog.restore(index - 1, $previous)
             if duplicate {

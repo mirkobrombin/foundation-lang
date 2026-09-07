@@ -1,0 +1,11 @@
+package sdk.ui.consumer
+
+import foundation.ui.sdl
+
+fn main() i32 {
+    const opened = sdl.Open("SDK UI consumer", 320, 240) else { return 1 }
+    var window = opened
+    const size = window.Size() else { return 1 }
+    if size.Width != 320 || size.Height != 240 { return 1 }
+    0
+}

@@ -43,6 +43,7 @@ struct packageRequirement {
 enum packageLocationKind {
     Path
     Registry
+    Sdk
 }
 
 enum packageDependencyScope {

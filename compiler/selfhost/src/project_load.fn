@@ -2,6 +2,7 @@ package foundation.compiler
 
 import std.fs
 import std.path
+import std.process
 import std.text
 
 fn projectModeIsTest(mode projectMode) bool {
@@ -159,6 +160,22 @@ fn findProjectSdkRoot(input String) Option<String> {
         Some(value): {
             if !text.IsEmpty(value) && projectSdkRootValid(value) {
                 return .Some(path.Normalize(value))
+            }
+        }
+    }
+    match process.Executable() {
+        Err(error): {
+            discard error
+        }
+        Ok(executable): {
+            var root = path.Parent(path.Normalize(executable))
+            var depth u64 = 0
+            while depth < 4 && !text.IsEmpty(root) {
+                if projectSdkRootValid(root) return .Some(root)
+                const parent = path.Parent(root)
+                if parent == root break
+                root = parent
+                depth += 1
             }
         }
     }

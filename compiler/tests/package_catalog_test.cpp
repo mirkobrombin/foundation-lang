@@ -136,11 +136,32 @@ void catalogsIgnoreIncompatibleAndInactiveDependencies() {
            "inactive targets and incompatible versions do not expand the catalog");
 }
 
+void catalogsResolveSdkDependencies() {
+    Fixture fixture;
+    fixture.package(fixture.project, "sample.app", "1.0.0",
+                    "dependency foundation.ui.sdl 1.0.0 sdk providers/sdl\n");
+    const auto manifest = foundation::readPackageManifest(fixture.project / "foundation.package");
+    const auto resolved = foundation::resolveProjectPackages(
+        fixture.project / "foundation.package", *manifest.value,
+        *foundation::parsePackageVersion("0.1.0"), foundation::TargetPlatform::Linux, {});
+    expect(resolved.value.has_value() && resolved.value->packages.size() == 1,
+           "SDK package dependency resolves from the configured SDK root");
+    if (!resolved.value.has_value()) {
+        return;
+    }
+    const auto& candidate = resolved.value->packages.front();
+    expect(candidate.kind == foundation::PackageLocationKind::Sdk &&
+               candidate.location == "providers/sdl" &&
+               candidate.manifest.name == "foundation.ui.sdl",
+           "SDK package resolution preserves source identity");
+}
+
 } // namespace
 
 int runPackageCatalogTests() {
     catalogsCombineRegistryAndPathDependencies();
     catalogsRejectMissingAdaptersAndPathIdentityMismatch();
     catalogsIgnoreIncompatibleAndInactiveDependencies();
+    catalogsResolveSdkDependencies();
     return failures;
 }

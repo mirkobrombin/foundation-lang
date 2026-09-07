@@ -33,3 +33,46 @@ endif()
 if(NOT run_output STREQUAL "hello from foundation\n")
     message(FATAL_ERROR "unexpected relocated SDK output: ${run_output}")
 endif()
+
+function(run_relocated_package_command label)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env --unset=FOUNDATION_SDK_ROOT
+                "${compiler}" ${ARGN}
+        RESULT_VARIABLE status
+        OUTPUT_VARIABLE output
+        ERROR_VARIABLE error
+    )
+    if(NOT status EQUAL 0)
+        message(FATAL_ERROR
+            "relocated SDK ${label} failed:\n${output}${error}"
+        )
+    endif()
+endfunction()
+
+set(consumer "${SDK_DIR}-consumer")
+file(REMOVE_RECURSE "${consumer}")
+file(MAKE_DIRECTORY "${consumer}/src")
+file(WRITE "${consumer}/foundation.package"
+    "format foundation.package/v1\n"
+    "name sdk.ui.consumer\n"
+    "version 1.0.0\n"
+    "language 1\n"
+    "fcs strict\n"
+    "source src\n"
+    "dependency foundation.ui.sdl 1.0.0 sdk providers/sdl\n"
+)
+file(WRITE "${consumer}/src/main.fn"
+    "package sdk.ui.consumer\n\n"
+    "import foundation.ui.sdl\n\n"
+    "fn main() i32 {\n"
+    "    const opened = sdl.Open(\"SDK UI consumer\", 320, 240) else { return 1 }\n"
+    "    var window = opened\n"
+    "    const size = window.Size() else { return 1 }\n"
+    "    if size.Width != 320 || size.Height != 240 { return 1 }\n"
+    "    0\n"
+    "}\n"
+)
+run_relocated_package_command("package resolve" package resolve "${consumer}")
+run_relocated_package_command("package verify" package verify "${consumer}")
+run_relocated_package_command("package check" package check "${consumer}")
+file(REMOVE_RECURSE "${consumer}")

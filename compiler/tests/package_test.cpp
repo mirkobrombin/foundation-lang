@@ -76,6 +76,7 @@ source src
 test_source tests
 dependency sample.local 2.0.0 path "../local package"
 dependency sample.platform ~3.1.0 registry default scope test target linux
+dependency foundation.ui.sdl 1.0.0 sdk providers/sdl
 )";
     const auto parsed = foundation::parsePackageManifest("foundation.package", source);
     expect(parsed.value.has_value() && parsed.errors.empty(), "valid package manifest parses");
@@ -93,6 +94,8 @@ dependency sample.platform ~3.1.0 registry default scope test target linux
     expect(rendered.find("test_source tests") != std::string::npos &&
                rendered.find("target linux scope test") != std::string::npos,
            "test sources and dependency scopes render canonically");
+    expect(rendered.find("foundation.ui.sdl 1.0.0 sdk providers/sdl") != std::string::npos,
+           "SDK package locations round trip");
     expect(rendered.find("fcs strict") != std::string::npos &&
                parsed.value->codeStandard == foundation::CodeStandardProfile::Strict,
            "FCS profile renders canonically");
@@ -353,6 +356,17 @@ source src
     expect(hasCode(foundation::parsePackageManifest("foundation.package", profile).errors,
                    "FDN4014"),
            "manifest rejects invalid or duplicate FCS profiles");
+
+    constexpr std::string_view sdkTraversal = R"(format foundation.package/v1
+name sample.app
+version 1.0.0
+language 1
+source src
+dependency foundation.ui.sdl 1.0.0 sdk ../providers/sdl
+)";
+    expect(hasCode(foundation::parsePackageManifest("foundation.package", sdkTraversal).errors,
+                   "FDN4009"),
+           "SDK package locations reject parent traversal");
 }
 
 void locksRoundTripCanonically() {
@@ -369,8 +383,12 @@ void locksRoundTripCanonically() {
     lock.packages.push_back({"sample.lib", *foundation::parsePackageVersion("2.0.0"),
                              std::string(digest), foundation::PackageLocationKind::Registry,
                              "default"});
+    lock.packages.push_back({"foundation.ui.sdl", *foundation::parsePackageVersion("1.0.0"),
+                             std::string(digest), foundation::PackageLocationKind::Sdk,
+                             "providers/sdl"});
     lock.edges.push_back(
         {"sample.app", "sample.lib", foundation::PackageDependencyScope::Test});
+    lock.edges.push_back({"sample.app", "foundation.ui.sdl"});
     const auto rendered = foundation::renderPackageLock(lock);
     const auto parsed = foundation::parsePackageLock("foundation.lock", rendered);
     expect(parsed.value.has_value() && parsed.errors.empty(), "valid package lock parses");
@@ -378,6 +396,9 @@ void locksRoundTripCanonically() {
            "package lock serialization is canonical");
     expect(rendered.find("edge sample.app sample.lib scope test") != std::string::npos,
            "test dependency scope is retained in the lock");
+    expect(rendered.find("package foundation.ui.sdl 1.0.0 sha256:") != std::string::npos &&
+               rendered.find(" sdk providers/sdl") != std::string::npos,
+           "SDK package identity is retained in the lock");
     expect(rendered.find("native c sample_native 2 sha256:") != std::string::npos &&
                rendered.find("foreign c libfuse 2.9.9 path native/libfuse abi c/v1 sha256:") !=
                    std::string::npos,
@@ -454,6 +475,13 @@ void locksRejectIncoherentGraphs() {
         "foundation.lock", prefix + "edge sample.lib sample.lib scope test\n");
     expect(hasCode(transitiveTest.errors, "FDN4027"),
            "test-scoped lock edges can originate only at the root");
+
+    const auto sdkTraversal = foundation::parsePackageLock(
+        "foundation.lock", std::string{"format foundation.lock/v1\n"} + "root sample.app 1.0.0\n" +
+                               "target linux\n" + "package foundation.ui.sdl 1.0.0 " +
+                               std::string(digest) + " sdk ../providers/sdl\n");
+    expect(hasCode(sdkTraversal.errors, "FDN4023"),
+           "locked SDK package locations reject parent traversal");
 }
 
 } // namespace

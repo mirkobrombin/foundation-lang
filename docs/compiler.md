@@ -121,6 +121,11 @@ rejects symbolic links, non-portable paths, source changes during the copy, and 
 already exists. Its line-oriented report includes the package name, version, digest, and file count.
 Package publishers use this boundary instead of interpreting manifest directories.
 
+Optional packages shipped inside the SDK use the `sdk` dependency source kind with an SDK-relative
+location. Resolution and locked-project loading reject traversal, absolute locations, and paths that
+resolve outside the configured SDK root. The lock records and verifies their source digest. Registry
+transport commands exclude them because their source is already part of the selected toolchain.
+
 `foundationc package check <project> [--target <platform>]` checks a package without requiring an
 application entry point. The same command accepts library and executable packages.
 

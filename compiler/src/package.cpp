@@ -273,11 +273,22 @@ std::optional<PackageLocationKind> locationKind(std::string_view value) {
     if (value == "registry") {
         return PackageLocationKind::Registry;
     }
+    if (value == "sdk") {
+        return PackageLocationKind::Sdk;
+    }
     return std::nullopt;
 }
 
 std::string locationName(PackageLocationKind kind) {
-    return kind == PackageLocationKind::Path ? "path" : "registry";
+    switch (kind) {
+    case PackageLocationKind::Path:
+        return "path";
+    case PackageLocationKind::Registry:
+        return "registry";
+    case PackageLocationKind::Sdk:
+        return "sdk";
+    }
+    return "registry";
 }
 
 std::string scopeName(PackageDependencyScope scope) {
@@ -465,6 +476,9 @@ bool validLocation(PackageLocationKind kind, std::string_view value) {
     }
     if (kind == PackageLocationKind::Registry) {
         return identifier(value);
+    }
+    if (kind == PackageLocationKind::Sdk) {
+        return relativeSource(value);
     }
     return !std::filesystem::path(value).has_root_path();
 }

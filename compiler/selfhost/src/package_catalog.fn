@@ -72,7 +72,21 @@ fn normalizePackageManifest(
 fn isPathLocation(kind packageLocationKind) bool {
     match kind {
         Path: true
-        Registry: false
+        _: false
+    }
+}
+
+fn isRegistryLocation(kind packageLocationKind) bool {
+    match kind {
+        Registry: true
+        _: false
+    }
+}
+
+fn isSdkLocation(kind packageLocationKind) bool {
+    match kind {
+        Sdk: true
+        _: false
     }
 }
 
@@ -139,10 +153,11 @@ fn comparePackageCandidate(left packageCandidate, right packageCandidate) i32 {
     if compared != 0 return compared
     compared = comparePackageVersion(left.manifest.version, right.manifest.version)
     if compared != 0 return compared
-    if isPathLocation(left.kind) != isPathLocation(right.kind) {
-        if isPathLocation(left.kind) return -1
-        return 1
-    }
+    compared = text.Compare(
+        packageLocationKindName(left.kind),
+        packageLocationKindName(right.kind)
+    )
+    if compared != 0 return compared
     compared = text.Compare(left.location, right.location)
     if compared != 0 return compared
     text.Compare(left.digest, right.digest)
@@ -232,10 +247,10 @@ fn collectPackageCatalog(
         discard visited.add($key)
         var discovered = newArena<packageCandidate>()
         if isPathLocation(dependency.kind) {
-            collectPathPackageCandidate(
+            collectDirectoryPackageCandidate(
                 &discovered,
                 &result.errors,
-                projectRoot,
+                canonicalPackageDirectory(path.Join(projectRoot, dependency.location)),
                 dependency
             )
             if result.errors.len() > 0 {
@@ -243,23 +258,32 @@ fn collectPackageCatalog(
                 return result
             }
         } else {
-            match findRegistryRoot(&registries, dependency.location) {
-                None: {}
-                Some(registryRoot): {
-                    var loaded = readLocalPackageRegistry(
-                        registryRoot,
-                        dependency.location,
-                        dependency.name
-                    )
-                    match replace loaded.value with .None {
-                        None: {
-                            movePackageErrors(&result.errors, &loaded.errors)
-                            pending.restore(cursor - 1, $dependency)
-                            return result
-                        }
-                        Some(values): {
-                            const empty = replace discovered with values
-                            discard empty
+            if isSdkLocation(dependency.kind) {
+                collectDirectoryPackageCandidate(
+                    &discovered,
+                    &result.errors,
+                    sdkPackageDirectory(projectRoot, dependency.location),
+                    dependency
+                )
+            } else {
+                match findRegistryRoot(&registries, dependency.location) {
+                    None: {}
+                    Some(registryRoot): {
+                        var loaded = readLocalPackageRegistry(
+                            registryRoot,
+                            dependency.location,
+                            dependency.name
+                        )
+                        match replace loaded.value with .None {
+                            None: {
+                                movePackageErrors(&result.errors, &loaded.errors)
+                                pending.restore(cursor - 1, $dependency)
+                                return result
+                            }
+                            Some(values): {
+                                const empty = replace discovered with values
+                                discard empty
+                            }
                         }
                     }
                 }
@@ -313,15 +337,43 @@ fn collectPackageCatalog(
     result
 }
 
-fn collectPathPackageCandidate(
+fn sdkPackageDirectory(
+    input String,
+    location String
+) Option<String> {
+    const sdkRoot = match findProjectSdkRoot(input) {
+        None: { return .None }
+        Some(value): value
+    }
+    const canonicalRoot = match canonicalPackageDirectory(sdkRoot) {
+        None: { return .None }
+        Some(value): value
+    }
+    const packageRoot = match canonicalPackageDirectory(path.Join(canonicalRoot, location)) {
+        None: { return .None }
+        Some(value): value
+    }
+    const relative = path.Relative(canonicalRoot, packageRoot)
+    match relative {
+        Err(error): {
+            discard error
+            .None
+        }
+        Ok(value): {
+            if value == ".." || text.StartsWith(value, ".." + path.Separator()) {
+                return .None
+            }
+            .Some(packageRoot)
+        }
+    }
+}
+
+fn collectDirectoryPackageCandidate(
     &candidates arena<packageCandidate>,
     &errors arena<packageError>,
-    projectRoot String,
+    $packageRootOption Option<String>,
     dependency packageDependency
 ) void {
-    const packageRootOption = canonicalPackageDirectory(
-        path.Join(projectRoot, dependency.location)
-    )
     const packageRoot = match packageRootOption {
         None: {
             return
@@ -355,7 +407,7 @@ fn collectPathPackageCandidate(
     discard candidates.add(packageCandidate {
         manifest = manifest
         digest = text.Copy(snapshot.digest)
-        kind = .Path
+        kind = dependency.kind
         location = text.Copy(dependency.location)
         root = packageRoot
     })

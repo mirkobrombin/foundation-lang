@@ -1,10 +1,16 @@
 #include "foundation/package.hpp"
 
+#include "foundation/sdk.hpp"
+
 #include <algorithm>
 #include <map>
 #include <set>
 #include <system_error>
 #include <tuple>
+
+#ifndef FOUNDATION_SDK_SOURCE_ROOT
+#define FOUNDATION_SDK_SOURCE_ROOT ""
+#endif
 
 namespace foundation {
 
@@ -38,10 +44,28 @@ bool realFile(const std::filesystem::path &path) {
            !std::filesystem::is_symlink(status);
 }
 
+std::optional<std::filesystem::path> sdkPackageDirectory(std::string_view location) {
+    const auto root =
+        canonicalDirectory(sdkAsset({}, std::filesystem::path{FOUNDATION_SDK_SOURCE_ROOT}));
+    if (!root.has_value()) {
+        return std::nullopt;
+    }
+    const auto package = canonicalDirectory(*root / std::filesystem::path{location});
+    if (!package.has_value()) {
+        return std::nullopt;
+    }
+    const auto relative = package->lexically_relative(*root);
+    if (relative.empty() || relative.is_absolute() || *relative.begin() == "..") {
+        return std::nullopt;
+    }
+    return package;
+}
+
 std::optional<std::string> lockedLocation(const PackageDependency &dependency,
                                           const std::filesystem::path &packageRoot,
                                           const std::filesystem::path &projectRoot) {
-    if (dependency.kind == PackageLocationKind::Registry) {
+    if (dependency.kind == PackageLocationKind::Registry ||
+        dependency.kind == PackageLocationKind::Sdk) {
         return dependency.location;
     }
     const auto target = canonicalDirectory(packageRoot / dependency.location);
@@ -255,6 +279,14 @@ loadLockedPackageProject(const std::filesystem::path &manifestPath,
                 return result;
             }
             packageRoot = *verified.value;
+        } else if (package.kind == PackageLocationKind::Sdk) {
+            const auto sdkPackage = sdkPackageDirectory(package.location);
+            if (!sdkPackage.has_value()) {
+                addError(result.errors, lockPath, "FDN4112",
+                         "locked SDK dependency root is unavailable");
+                return result;
+            }
+            packageRoot = *sdkPackage;
         } else {
             const auto canonical = canonicalDirectory(*projectRoot / package.location);
             if (!canonical.has_value()) {
@@ -277,7 +309,7 @@ loadLockedPackageProject(const std::filesystem::path &manifestPath,
                      "locked package identity or SDK requirement does not match");
             return result;
         }
-        if (package.kind == PackageLocationKind::Path) {
+        if (package.kind != PackageLocationKind::Registry) {
             const auto snapshot = inspectPackageSource(packageRoot, *dependencyManifest.value);
             if (!snapshot.value.has_value()) {
                 result.errors = snapshot.errors;
@@ -285,7 +317,7 @@ loadLockedPackageProject(const std::filesystem::path &manifestPath,
             }
             if (snapshot.value->digest != package.digest) {
                 addError(result.errors, packageRoot, "FDN4112",
-                         "locked path dependency digest does not match");
+                         "locked package dependency digest does not match");
                 return result;
             }
         }

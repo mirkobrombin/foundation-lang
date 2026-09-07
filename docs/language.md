@@ -388,7 +388,9 @@ acyclic.
 All compiler commands accept one source file or a directory. A directory with
 `foundation.package` requires a matching target-specific `foundation.lock` and loads only the root
 and locked dependency source trees. Registry dependencies come from the verified immutable cache;
-path dependencies must still match their locked digest. A manifestless source directory
+path dependencies and SDK dependencies must still match their locked digest. An SDK dependency
+uses `dependency <name> <requirement> sdk <sdk-relative-path>` and resolves only inside the
+configured SDK root. It does not use the package cache or a registry adapter. A manifestless source directory
 recursively discovers regular `.fn` files. Source paths are sorted bytewise and every project file
 requires a package declaration. The complete executable graph declares exactly one entry point.
 Diagnostics name stable root, `packages/`, or `std/` paths, and fatal traces retain package,
@@ -1604,14 +1606,15 @@ transport may consume this tree without implementing a second manifest parser or
 requiring `main`, so the same command accepts library and application packages.
 
 `foundationc package requirements <project> [--target <platform>]` emits active registry
-requirements from the project and its local path graph. Its first line is `format
+requirements from the project, its local path graph, and its SDK package graph. SDK packages are
+already shipped with the toolchain and are not emitted as registry requirements. The first line is `format
 foundation.package.requirements/v1`; each remaining line is `registry <identity> <name>
 <requirement>`. `foundationc package select <requirement> <version>...` applies the compiler's
 semantic-version rules and prints the highest accepted candidate.
 
 `foundationc package locked <project>` emits the target and registry releases selected by the
 current lock in the stable `foundation.package.locked/v1` format. It reports an absent lock without
-resolving one.
+resolving one. Path and SDK packages remain in `foundation.lock` but are not registry releases.
 
 `go-source` is a distinct source translation mode. It emits `go.mod`, one Go source file, and the
 same canonical PII, but no native directory. It exports normal public Foundation functions and does

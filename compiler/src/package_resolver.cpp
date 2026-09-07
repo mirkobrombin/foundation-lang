@@ -59,7 +59,15 @@ std::string nativeDigest(const PackageManifest &manifest, TargetPlatform target)
 }
 
 std::string locationName(PackageLocationKind kind) {
-    return kind == PackageLocationKind::Path ? "path" : "registry";
+    switch (kind) {
+    case PackageLocationKind::Path:
+        return "path";
+    case PackageLocationKind::Registry:
+        return "registry";
+    case PackageLocationKind::Sdk:
+        return "sdk";
+    }
+    return "registry";
 }
 
 std::string pathText(const std::vector<std::string> &path) {
