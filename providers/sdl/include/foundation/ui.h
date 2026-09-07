@@ -12,7 +12,7 @@
 #define FOUNDATION_UI_ABI_CURRENT                                                                  \
     FOUNDATION_UI_ABI_VERSION(FOUNDATION_UI_ABI_MAJOR, FOUNDATION_UI_ABI_MINOR)
 #define FOUNDATION_UI_ABI_MAJOR_OF(value) ((uint32_t)((uint64_t)(value) >> 32U))
-#define FOUNDATION_UI_ABI_MINOR_OF(value) ((uint32_t)(uint64_t)(value))
+#define FOUNDATION_UI_ABI_MINOR_OF(value) ((uint32_t)((uint64_t)(value) & UINT64_C(0xffffffff)))
 
 enum foundation_ui_status {
     FOUNDATION_UI_OK = 0,
