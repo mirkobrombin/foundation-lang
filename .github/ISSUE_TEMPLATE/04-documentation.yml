@@ -1,0 +1,57 @@
+name: Documentation problem
+description: Report missing, incorrect, or unclear Foundation documentation
+title: "docs: "
+labels: ["documentation"]
+assignees: []
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: Provide the repository path, section, or public URL.
+      placeholder: docs/language.md, section "Ownership"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Problem type
+      options:
+        - Incorrect behavior or example
+        - Missing information
+        - Unclear explanation
+        - Broken link or reference
+        - Typographical or formatting error
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Quote only the minimum text needed to identify the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Required correction
+      description: Explain what the documentation should state or show.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Affected version
+      description: Provide a release version or commit hash when the problem is version-specific.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I checked that a newer document or existing issue does not already resolve this problem.
+          required: true

@@ -1,0 +1,77 @@
+name: Internal compiler error
+description: Report a compiler crash, hang, assertion, or internal error
+title: "compiler: internal error: "
+labels: ["bug", "internal compiler error"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reduce the source when possible, but keep every line needed to reproduce the failure. For a hang, include the last output and the time allowed before termination.
+
+  - type: textarea
+    id: version
+    attributes:
+      label: Foundation version
+      description: Paste the complete output of `foundationc version` or provide the commit hash used to build Foundation.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Host and target
+      description: Include the operating system, architecture, and target triple when cross-compiling.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: failure
+    attributes:
+      label: Failure type
+      options:
+        - Internal compiler error diagnostic
+        - Assertion failure
+        - Crash
+        - Hang or timeout
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal reproducer
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Command and complete output
+      description: Include the command, diagnostic output, stack trace, and debugger backtrace when available.
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Reproduction frequency
+      options:
+        - Every run
+        - Intermittent
+        - Reproduced once
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing internal compiler errors for this failure.
+          required: true
+        - label: The report does not contain credentials or private data.
+          required: true

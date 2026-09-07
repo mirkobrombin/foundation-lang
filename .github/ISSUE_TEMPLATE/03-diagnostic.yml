@@ -1,0 +1,61 @@
+name: Diagnostic problem
+description: Report a missing, incorrect, unstable, or unclear compiler diagnostic
+title: "diagnostics: "
+labels: ["bug", "diagnostics"]
+assignees: []
+body:
+  - type: textarea
+    id: version
+    attributes:
+      label: Foundation version
+      description: Paste the complete output of `foundationc version` or provide the commit hash used to build Foundation.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: diagnostic-code
+    attributes:
+      label: Diagnostic code
+      description: Enter the FDN code, or state that no diagnostic was produced.
+      placeholder: FDN0000 or no diagnostic
+    validations:
+      required: true
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Minimal source
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and current output
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected diagnostic
+      description: State the failure boundary that should be identified. Exact prose is optional.
+    validations:
+      required: true
+
+  - type: textarea
+    id: related
+    attributes:
+      label: Related cases
+      description: Include small source changes that produce a different diagnostic when they help isolate the problem.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing diagnostic reports for the same case.
+          required: true

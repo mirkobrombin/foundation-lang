@@ -1,0 +1,90 @@
+name: Language, API, or tooling proposal
+description: Propose a change to a public Foundation contract
+title: "proposal: area: "
+labels: ["enhancement", "proposal"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An issue starts discussion but does not accept a design. Changes to syntax, semantics, ownership, diagnostics, standard packages, Foundation packages, or a stable ABI require a proposal under `docs/proposals/` before implementation.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Language syntax or semantics
+        - Ownership or type system
+        - Compiler diagnostics
+        - Stable runtime ABI
+        - Standard library
+        - Foundation application packages
+        - Packages, manifests, or build tooling
+        - Language server or editor integration
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Show the real task that is difficult or impossible today. Include a small example.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-approach
+    attributes:
+      label: Current approach and cost
+      description: Explain how the task is handled now and what cost remains.
+    validations:
+      required: true
+
+  - type: textarea
+    id: design
+    attributes:
+      label: Proposed design
+      description: Define the source form, public API, or tool behavior precisely enough to evaluate it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility
+      description: Cover source compatibility, stable ABI impact, migration, and deprecation where applicable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: implementation-surfaces
+    attributes:
+      label: Affected implementation surfaces
+      description: Identify compiler phases, backends, runtime, packages, diagnostics, language services, documentation, and conformance tests that must change.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and tradeoff
+      description: Describe serious alternatives, including keeping the current behavior, and state the cost accepted by this design.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence or prototype
+      description: Add measurements, prior art, a prototype, or representative code when available.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and `docs/proposals/` for the same design.
+          required: true
+        - label: I read the compatibility contract and contribution process.
+          required: true

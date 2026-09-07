@@ -1,0 +1,100 @@
+name: Bug report
+description: Report incorrect compiler, runtime, library, package, or editor behavior
+title: "component: "
+labels: ["bug"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use the regression form if the same program worked with an earlier Foundation version. Use the internal compiler error form when the compiler crashes, hangs, or reports an internal error.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - Compiler
+        - Runtime
+        - Standard library
+        - Foundation application packages
+        - Package manager and manifests
+        - Language server
+        - VS Code extension
+        - Build and release tooling
+    validations:
+      required: true
+
+  - type: textarea
+    id: version
+    attributes:
+      label: Foundation version
+      description: Paste the complete output of `foundationc version` or provide the commit hash used to build Foundation.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Host and target
+      description: Include the operating system, architecture, and target triple when cross-compiling.
+      placeholder: Linux x86_64 targeting x86_64-linux-gnu
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options:
+        - LLVM
+        - C11
+        - Both LLVM and C11
+        - Not backend-specific
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal reproducer
+      description: Provide the smallest complete source file or project that shows the problem.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and output
+      description: Paste the exact command and its complete output as text.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Describe what happened and whether it happens every time.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe the behavior required by the language, package, or tool contract.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: The reproducer does not contain credentials, private paths, or other sensitive data.
+          required: true

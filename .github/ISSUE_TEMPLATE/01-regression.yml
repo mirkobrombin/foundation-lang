@@ -1,0 +1,89 @@
+name: Regression
+description: Report behavior that worked with an earlier Foundation version
+title: "regression: component: "
+labels: ["bug", "regression"]
+assignees: []
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - Compiler
+        - Runtime
+        - Standard library
+        - Foundation application packages
+        - Package manager and manifests
+        - Language server
+        - VS Code extension
+        - Build and release tooling
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal reproducer
+      description: Provide the smallest complete source file or project that shows the regression.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Paste the exact command used for both versions.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: working-version
+    attributes:
+      label: Last known working version
+      description: Provide a release version or commit hash.
+    validations:
+      required: true
+
+  - type: input
+    id: broken-version
+    attributes:
+      label: First known broken version
+      description: Provide a release version or commit hash.
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Host and target
+      description: Include the operating system, architecture, and target triple when cross-compiling.
+    validations:
+      required: true
+
+  - type: textarea
+    id: working-output
+    attributes:
+      label: Working output
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: broken-output
+    attributes:
+      label: Broken output
+      render: shell
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I reproduced both results with the same source and command.
+          required: true
+        - label: I searched existing regressions for the same behavior.
+          required: true
