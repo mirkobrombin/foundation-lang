@@ -879,7 +879,7 @@ if(BUILD_TESTING)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-sdk-package-consumer.cmake
         )
         set_tests_properties(providers.sdl.sdk-consumer PROPERTIES
-            TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT}
+            TIMEOUT 180
         )
     endif()
     if(TARGET foundation_wamr_provider)
