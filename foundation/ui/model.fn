@@ -1,0 +1,140 @@
+package foundation.ui
+
+// Classifies failures reported by a native UI provider.
+enum Error {
+    // The selected provider or required platform service is unavailable.
+    Unavailable
+    // An argument or resource identifier is invalid.
+    Invalid
+    // The provider failed to complete the operation.
+    Failed
+}
+
+// Selects the light or dark application palette.
+enum Theme {
+    // Uses a dark application surface.
+    Dark
+    // Uses a light application surface.
+    Light
+}
+
+// Describes whether a window can produce another frame.
+enum FrameState {
+    // The window is visible and ready to draw.
+    Active
+    // The provider has no frame work until another event arrives.
+    Idle
+    // The user requested that the window close.
+    Closing
+}
+
+// Selects the semantic color of a text label.
+enum LabelTone {
+    // Uses the ordinary foreground color.
+    Primary
+    // Uses the secondary foreground color.
+    Muted
+    // Uses the application accent color.
+    Accent
+    // Uses the destructive-action color.
+    Danger
+}
+
+// Selects one provider-independent interface symbol.
+enum Icon {
+    // Draws two connected links.
+    Link
+    // Draws an outward share action.
+    Share
+    // Draws a terminal prompt.
+    Terminal
+    // Draws a folder.
+    Folder
+    // Draws a display.
+    Display
+    // Draws a theme control.
+    Theme
+}
+
+// Stores one RGBA color with eight-bit channels.
+struct Color {
+    // Stores the red channel.
+    Red u8
+    // Stores the green channel.
+    Green u8
+    // Stores the blue channel.
+    Blue u8
+    // Stores the alpha channel.
+    Alpha u8
+}
+
+// Classifies input forwarded through a drawn surface.
+enum SurfaceInputKind {
+    // Reports pointer motion in normalized surface coordinates.
+    MouseMove
+    // Reports a pointer button transition.
+    MouseButton
+    // Reports a keyboard key transition.
+    Key
+    // Reports vertical wheel motion.
+    Wheel
+}
+
+// Carries one input event for the current surface.
+struct SurfaceInput {
+    // Identifies the event payload.
+    Type SurfaceInputKind
+    // Stores the horizontal surface coordinate.
+    X u64
+    // Stores the vertical surface coordinate.
+    Y u64
+    // Stores the provider-independent pointer button.
+    Button u64
+    // Stores the platform key code.
+    Key u64
+    // Distinguishes press from release.
+    Down bool
+    // Stores signed wheel motion.
+    Delta i64
+}
+
+// Describes the result of one text editing widget.
+struct TextEdit {
+    // Owns the current field value.
+    Value String
+    // Reports a value change during this frame.
+    Changed bool
+    // Reports that the user committed the field.
+    Committed bool
+}
+
+// Carries terminal input and the visible cell dimensions.
+struct TerminalFrame {
+    // Owns bytes entered during this frame.
+    Input String
+    // Stores the visible terminal width in cells.
+    Columns u64
+    // Stores the visible terminal height in cells.
+    Rows u64
+    // Reports a cell-size change.
+    Resized bool
+}
+
+// Stores a two-dimensional size in logical pixels.
+struct Size {
+    // Stores the horizontal extent.
+    Width u64
+    // Stores the vertical extent.
+    Height u64
+}
+
+// Identifies one drawable surface owned by a window.
+struct Surface {
+    window u64
+    id u64
+}
+
+// Owns one native application window and its provider resources.
+struct Window {
+    handle u64
+}

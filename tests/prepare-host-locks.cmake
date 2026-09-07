@@ -8,6 +8,7 @@ file(GLOB_RECURSE lock_files
     "${ROOT}/examples/foundation.lock"
     "${ROOT}/examples/*/foundation.lock"
     "${ROOT}/examples/*/*/foundation.lock"
+    "${ROOT}/providers/*/foundation.lock"
     "${ROOT}/tests/compatibility/*/foundation/foundation.lock"
     "${ROOT}/tests/projects/*/foundation.lock"
     "${ROOT}/tests/projects/*/*/foundation.lock"

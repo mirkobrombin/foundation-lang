@@ -129,7 +129,7 @@ provide it yet.
 | Services, actions, state machines, pipelines, sagas | Implemented | Application-plan, host, compiler, and language-server tests |
 | LLVM and C11 native output | Implemented | Build, run, library, and backend test suites |
 | C ABI, Zig, Rust, and Go package export | Implemented | Generated consumer and deterministic-output tests |
-| OpenSSL and WAMR providers | Optional | Disabled by default; CMake enforces their dependency pins |
+| OpenSSL, SDL3, and WAMR providers | Optional | Disabled by default; CI builds pinned upstream revisions |
 | Default parameter values | Specified | Defined by Language 1; not accepted by the current parser |
 | Integrated cross-target build, run, and test | Specified | Target selection works; native commands remain host-targeted |
 
@@ -158,6 +158,7 @@ cmake --build --preset dev --target foundation_selfhost_bootstrap
 - [Code standard](docs/foundation-code-standard.md)
 - [Standard library](docs/stdlib/)
 - [Foundation application packages](docs/framework/)
+- [Native UI](docs/framework/ui.md)
 - [C and language interoperability](docs/language.md#c-abi)
 - [Compatibility contract](docs/compatibility.md)
 - [API documentation](docs/documentation.md)

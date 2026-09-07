@@ -1,0 +1,218 @@
+package foundation.ui.sdl
+
+import foundation.ui
+import std.bytes
+
+test "provider opens a native window" {
+    const opened = Open("Foundation UI", 720, 480) else {
+        fail("provider did not open a window")
+    }
+    var window = opened
+    window.SetTheme(.Dark) else {
+        fail("provider did not apply the theme")
+    }
+    window.SetAccent(ui.Color {
+        Red = 95
+        Green = 221
+        Blue = 122
+        Alpha = 255
+    }) else {
+        fail("provider did not apply the accent")
+    }
+    const size = window.Size() else {
+        fail("provider did not report the window size")
+    }
+    if size.Width != 720 || size.Height != 480 {
+        fail("provider reported the wrong window size")
+    }
+    pass()
+}
+
+test "provider keeps surfaces independent" {
+    const opened = Open("Foundation UI", 720, 480) else {
+        fail("provider did not open a window")
+    }
+    var window = opened
+    const first = window.CreateSurface() else {
+        fail("provider did not create the first surface")
+    }
+    const second = window.CreateSurface() else {
+        fail("provider did not create the second surface")
+    }
+    window.UpdateSurface(first, 1, 1, bytes.FromText("RGBA")) else {
+        fail("provider did not update the first surface")
+    }
+    window.UpdateSurface(second, 1, 1, bytes.FromText("ARGB")) else {
+        fail("provider did not update the second surface")
+    }
+    pass()
+}
+
+test "provider rejects a surface from another window" {
+    const firstOpened = Open("First", 320, 240) else {
+        fail("provider did not open the first window")
+    }
+    const secondOpened = Open("Second", 320, 240) else {
+        fail("provider did not open the second window")
+    }
+    var firstWindow = firstOpened
+    var secondWindow = secondOpened
+    const surface = firstWindow.CreateSurface() else {
+        fail("provider did not create a surface")
+    }
+    const rejected = match secondWindow.DestroySurface(surface) {
+        Ok: false
+        Err(error): match error {
+            Invalid: true
+            _: false
+        }
+    }
+    if !rejected {
+        fail("provider accepted a surface from another window")
+    }
+    const firstFrame = firstWindow.BeginFrame() else {
+        fail("provider did not begin the first window frame")
+    }
+    discard firstFrame
+    firstWindow.EndFrame() else {
+        fail("provider did not end the first window frame")
+    }
+    const secondFrame = secondWindow.BeginFrame() else {
+        fail("provider did not begin the second window frame")
+    }
+    discard secondFrame
+    secondWindow.EndFrame() else {
+        fail("provider did not end the second window frame")
+    }
+    pass()
+}
+
+test "provider draws and destroys a surface" {
+    const opened = Open("Foundation UI", 720, 480) else {
+        fail("provider did not open a window")
+    }
+    var window = opened
+    const surface = window.CreateSurface() else {
+        fail("provider did not create a surface")
+    }
+    window.UpdateSurface(surface, 1, 1, bytes.FromText("RGBA")) else {
+        fail("provider did not update the surface")
+    }
+    const frame = window.BeginFrame() else {
+        fail("provider did not begin a frame")
+    }
+    discard frame
+    if window.BeginRoot() {
+        window.Row(80.0, 1)
+        window.DrawSurface(surface) else {
+            fail("provider did not draw the surface")
+        }
+        window.EndRoot()
+    }
+    window.EndFrame() else {
+        fail("provider did not end the frame")
+    }
+    window.DestroySurface(surface) else {
+        fail("provider did not destroy the surface")
+    }
+    const rejected = match window.DestroySurface(surface) {
+        Ok: false
+        Err(error): match error {
+            Invalid: true
+            _: false
+        }
+    }
+    if !rejected {
+        fail("provider accepted a destroyed surface")
+    }
+    pass()
+}
+
+test "provider draws standard widgets" {
+    const opened = Open("Foundation UI", 720, 480) else {
+        fail("provider did not open a window")
+    }
+    var window = opened
+    window.SetApplicationIcon(1, 1, bytes.FromText("RGBA")) else {
+        fail("provider did not set the application icon")
+    }
+    const frame = window.BeginFrame() else {
+        fail("provider did not begin a frame")
+    }
+    discard frame
+    if window.BeginRoot() {
+        window.Titlebar("Foundation UI", "widgets")
+        window.Row(48.0, 2)
+        window.ApplicationIcon()
+        discard window.IconButton(.Theme, "Theme", false, true)
+        window.Row(36.0, 1)
+        window.Heading("Heading")
+        window.Label("Label", .Accent, false)
+        discard window.Button("Button", false, true)
+        discard window.FileEntry("src", "directory", true)
+        const edited = window.Edit("field", "value", 32) else {
+            fail("provider did not draw a text field")
+        }
+        if edited.Value != "value" {
+            fail("provider changed an idle text field")
+        }
+        const fieldNames = [
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine"
+        ]
+        for name in fieldNames {
+            const repeated = window.Edit(name, "", 8) else {
+                fail("provider exhausted text field state")
+            }
+            discard repeated
+        }
+        window.Row(80.0, 1)
+        if window.BeginScrollable("outer") {
+            window.Row(36.0, 1)
+            if window.BeginGroup("inner") {
+                window.Label("Nested", .Primary, false)
+                window.EndGroup()
+            }
+            window.EndGroup()
+        }
+        window.EndRoot()
+    }
+    window.EndFrame() else {
+        fail("provider did not end a frame")
+    }
+    pass()
+}
+
+test "provider renders terminal output" {
+    const opened = Open("Foundation UI", 720, 480) else {
+        fail("provider did not open a window")
+    }
+    var window = opened
+    window.UpdateTerminal(bytes.FromText("ready\n")) else {
+        fail("provider did not update terminal output")
+    }
+    const frame = window.BeginFrame() else {
+        fail("provider did not begin a frame")
+    }
+    discard frame
+    if window.BeginRoot() {
+        const terminal = window.Terminal(240.0) else {
+            fail("provider did not draw the terminal")
+        }
+        if terminal.Columns < 2 || terminal.Rows < 2 {
+            fail("provider reported invalid terminal dimensions")
+        }
+        window.EndRoot()
+    }
+    window.EndFrame() else {
+        fail("provider did not end a frame")
+    }
+    pass()
+}

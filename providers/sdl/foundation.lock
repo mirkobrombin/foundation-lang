@@ -1,0 +1,4 @@
+format foundation.lock/v1
+root foundation.ui.sdl 1.0.0
+target linux
+foreign c sdl3-nuklear 1.0.0 path native abi c/v1 sha256:0ee91c7df3966325beb20056a13199157727a3a7492e236d334458f7283987ed

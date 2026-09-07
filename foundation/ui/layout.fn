@@ -1,0 +1,53 @@
+package foundation.ui
+
+methods Window {
+    // Starts a fixed-column row with equal column widths.
+    fn Row(&self, height f32, columns u64) void {
+        rowNative(self.handle, height, columns)
+    }
+
+    // Starts a row whose column ratios are supplied explicitly.
+    fn BeginRow(&self, height f32, columns u64) void {
+        rowBeginNative(self.handle, height, columns)
+    }
+
+    // Adds one relative-width column to the current explicit row.
+    fn PushColumn(&self, ratio f32) void {
+        rowPushNative(self.handle, ratio)
+    }
+
+    // Finishes the current explicit row.
+    fn EndRow(&self) void {
+        rowEndNative(self.handle)
+    }
+
+    // Opens a clipped layout group without scrollbars.
+    fn BeginGroup(&self, name String) bool {
+        beginGroupNative(self.handle, name, false)
+    }
+
+    // Opens a clipped layout group with provider-managed scrolling.
+    fn BeginScrollable(&self, name String) bool {
+        beginGroupNative(self.handle, name, true)
+    }
+
+    // Closes the current layout group.
+    fn EndGroup(&self) void {
+        endGroupNative(self.handle)
+    }
+
+    // Reserves vertical space in the current row flow.
+    fn Space(&self, height f32) void {
+        spaceNative(self.handle, height)
+    }
+
+    // Leaves the current layout cell empty.
+    fn Empty(&self) void {
+        emptyNative(self.handle)
+    }
+
+    // Draws a horizontal separator in the current cell.
+    fn Separator(&self) void {
+        separatorNative(self.handle)
+    }
+}

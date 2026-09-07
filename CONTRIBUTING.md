@@ -42,7 +42,7 @@ model and remain inspectable through their explicit emit commands.
 
 The required tools are CMake 3.25 or newer, Ninja, LLVM 21.1 development files, a C11 compiler, and
 a C++20 compiler. Node.js is required by the VS Code client test. Go 1.25 is required only for the
-Foundation v2 compatibility fixtures. The standard build does not require OpenSSL or WAMR.
+Foundation v2 compatibility fixtures. The standard build does not require OpenSSL, SDL, or WAMR.
 
 LLVM must be discoverable through its CMake package or `llvm-config-21`. When more than one LLVM is
 installed, pass its CMake directory explicitly:
@@ -69,7 +69,7 @@ cmake --preset dev -DFOUNDATION_V2_SOURCE="$PWD/build/go-foundation-v2"
 cmake --build --preset dev
 ```
 
-Optional provider builds must use the OpenSSL and WAMR versions and configuration recorded in
+Optional provider builds must use the OpenSSL, SDL, and WAMR versions and configuration recorded in
 `.github/workflows/ci.yml`. Do not change a dependency pin as part of an unrelated contribution.
 
 ## Daily work
@@ -199,8 +199,8 @@ ctest --preset dev
 ```
 
 CI is the release gate. It builds with GCC, Clang, AppleClang, and MSVC; verifies the self-hosted
-compiler; runs the suite three times on the primary compiler jobs; exercises optional OpenSSL and
-WAMR providers; and runs parser fuzzing with sanitizers. A pull request is not ready while any
+compiler; runs the suite three times on the primary compiler jobs; exercises optional OpenSSL, SDL,
+and WAMR providers; and runs parser fuzzing with sanitizers. A pull request is not ready while any
 required job is pending, skipped unexpectedly, cancelled, or failing.
 
 ## Language proposals

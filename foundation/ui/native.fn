@@ -1,0 +1,159 @@
+package foundation.ui
+
+extern c fn providerABINative() u64 as foundation_ui_provider_abi
+extern c fn openNative(
+    title String,
+    width u64,
+    height u64,
+    &handle u64
+) i32 as foundation_ui_open
+extern c fn closeNative(&handle u64) void as foundation_ui_close
+extern c fn beginFrameNative(handle u64) i32 as foundation_ui_begin_frame
+extern c fn endFrameNative(handle u64) i32 as foundation_ui_end_frame
+extern c fn setThemeNative(handle u64, theme u64) i32 as foundation_ui_set_theme
+extern c fn setAccentNative(
+    handle u64,
+    red u64,
+    green u64,
+    blue u64,
+    alpha u64
+) i32 as foundation_ui_set_accent
+extern c fn sizeNative(
+    handle u64,
+    &width u64,
+    &height u64
+) i32 as foundation_ui_size
+extern c fn beginRootNative(handle u64) bool as foundation_ui_begin_root
+extern c fn endRootNative(handle u64) void as foundation_ui_end_root
+extern c fn titlebarNative(
+    handle u64,
+    title String,
+    subtitle String
+) void as foundation_ui_titlebar
+extern c fn rowNative(
+    handle u64,
+    height f32,
+    columns u64
+) void as foundation_ui_row
+extern c fn rowBeginNative(
+    handle u64,
+    height f32,
+    columns u64
+) void as foundation_ui_row_begin
+extern c fn rowPushNative(handle u64, ratio f32) void as foundation_ui_row_push
+extern c fn rowEndNative(handle u64) void as foundation_ui_row_end
+extern c fn beginGroupNative(
+    handle u64,
+    name String,
+    scrollable bool
+) bool as foundation_ui_begin_group
+extern c fn endGroupNative(handle u64) void as foundation_ui_end_group
+extern c fn spaceNative(handle u64, height f32) void as foundation_ui_space
+extern c fn emptyNative(handle u64) void as foundation_ui_empty
+extern c fn separatorNative(handle u64) void as foundation_ui_separator
+extern c fn applicationIconBufferNative(
+    handle u64,
+    width u64,
+    height u64,
+    &capacity u64
+) *u8 as foundation_ui_application_icon_buffer
+extern c fn applicationIconCommitNative(
+    handle u64
+) i32 as foundation_ui_application_icon_commit
+extern c fn applicationIconNative(
+    handle u64
+) void as foundation_ui_application_icon
+extern c fn iconButtonNative(
+    handle u64,
+    icon u64,
+    label String,
+    selected bool,
+    enabled bool
+) bool as foundation_ui_icon_button
+extern c fn headingNative(
+    handle u64,
+    value String
+) void as foundation_ui_heading
+extern c fn labelNative(
+    handle u64,
+    value String,
+    tone u64,
+    wrap bool
+) void as foundation_ui_label
+extern c fn terminalBufferNative(
+    handle u64,
+    length u64,
+    &capacity u64
+) *u8 as foundation_ui_terminal_buffer
+extern c fn terminalCommitNative(
+    handle u64,
+    length u64
+) i32 as foundation_ui_terminal_commit
+extern c fn terminalNative(
+    handle u64,
+    height f32,
+    &input String,
+    &columns u64,
+    &rows u64,
+    &resized bool
+) i32 as foundation_ui_terminal
+extern c fn buttonNative(
+    handle u64,
+    value String,
+    selected bool,
+    primary bool
+) bool as foundation_ui_button
+extern c fn fileEntryNative(
+    handle u64,
+    name String,
+    details String,
+    directory bool
+) bool as foundation_ui_file_entry
+extern c fn editNative(
+    handle u64,
+    name String,
+    value String,
+    capacity u64,
+    &result String,
+    &changed bool,
+    &committed bool
+) i32 as foundation_ui_edit
+extern c fn createSurfaceNative(
+    handle u64,
+    &surface u64
+) i32 as foundation_ui_create_surface
+extern c fn destroySurfaceNative(
+    handle u64,
+    surface u64
+) i32 as foundation_ui_destroy_surface
+extern c fn imageBufferNative(
+    handle u64,
+    surface u64,
+    width u64,
+    height u64,
+    &capacity u64
+) *u8 as foundation_ui_image_buffer
+extern c fn imageCommitNative(
+    handle u64,
+    surface u64
+) i32 as foundation_ui_image_commit
+extern c fn imageNative(handle u64, surface u64) i32 as foundation_ui_image
+extern c fn pollSurfaceInputNative(
+    handle u64,
+    surface u64,
+    &kind u64,
+    &x u64,
+    &y u64,
+    &button u64,
+    &key u64,
+    &down bool,
+    &delta i64
+) i32 as foundation_ui_poll_surface_input
+extern c fn surfaceCapturedNative(
+    handle u64,
+    surface u64
+) bool as foundation_ui_surface_captured
+extern c fn releaseSurfaceNative(
+    handle u64,
+    surface u64
+) i32 as foundation_ui_release_surface

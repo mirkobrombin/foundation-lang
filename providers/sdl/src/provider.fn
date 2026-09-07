@@ -1,0 +1,12 @@
+package foundation.ui.sdl
+
+import foundation.ui
+
+// Opens a native SDL3 window backed by the Foundation UI provider.
+fn Open(
+    title String,
+    width u64,
+    height u64
+) Result<own ui.Window, ui.Error> {
+    ui.Open(title, width, height)
+}

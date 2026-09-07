@@ -56,9 +56,9 @@ jobs:
       - name: Install LLVM 21 on Linux
         if: runner.os == 'Linux'
         run: |
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 21
+          wget -qO "$RUNNER_TEMP/llvm.sh" https://apt.llvm.org/llvm.sh
+          chmod +x "$RUNNER_TEMP/llvm.sh"
+          sudo "$RUNNER_TEMP/llvm.sh" 21
           sudo apt-get install --no-install-recommends -y llvm-21-dev
           echo "LLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm" >> "$GITHUB_ENV"
 
@@ -278,6 +278,14 @@ jobs:
           path: build/go-foundation-v2
           persist-credentials: false
 
+      - name: Checkout SDL
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: libsdl-org/SDL
+          ref: 8e37db5e797b6167f3a00d697d816a684bd259c7
+          path: build/deps/sdl
+          persist-credentials: false
+
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -286,10 +294,12 @@ jobs:
 
       - name: Install LLVM 21
         run: |
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 21
-          sudo apt-get install --no-install-recommends -y llvm-21-dev
+          wget -qO "$RUNNER_TEMP/llvm.sh" https://apt.llvm.org/llvm.sh
+          chmod +x "$RUNNER_TEMP/llvm.sh"
+          sudo "$RUNNER_TEMP/llvm.sh" 21
+          sudo apt-get install --no-install-recommends -y \
+            libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
+            libxrandr-dev libxss-dev libxtst-dev llvm-21-dev xvfb
 
       - name: Build pinned OpenSSL
         run: |
@@ -302,6 +312,22 @@ jobs:
           ./Configure linux-x86_64 shared --prefix="${{ github.workspace }}/build/deps/openssl-3.5.6-prefix"
           make -j"$(nproc)"
           make install_sw
+
+      - name: Build pinned SDL
+        run: |
+          prefix="${{ github.workspace }}/build/deps/sdl-prefix"
+          cmake -S build/deps/sdl -B build/deps/sdl-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DSDL_SHARED=ON \
+            -DSDL_STATIC=OFF \
+            -DSDL_TEST_LIBRARY=OFF \
+            -DSDL_TESTS=OFF \
+            -DSDL_EXAMPLES=OFF
+          cmake --build build/deps/sdl-build --target install --parallel 3
+          echo "CPATH=$prefix/include${CPATH:+:$CPATH}" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$prefix/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
       - name: Checkout and build pinned WAMR
         run: |
@@ -325,7 +351,8 @@ jobs:
           -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
           -DFOUNDATION_BUILD_OPENSSL_PROVIDER=ON
           -DOPENSSL_ROOT_DIR=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
-          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
+          "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix;${{ github.workspace }}/build/deps/sdl-prefix"
+          -DFOUNDATION_BUILD_SDL_PROVIDER=ON
           -DFOUNDATION_BUILD_WAMR_PROVIDER=ON
           -DFOUNDATION_WAMR_SOURCE=${{ github.workspace }}/build/deps/wasm-micro-runtime
           -DFOUNDATION_WAMR_LIBRARY=${{ github.workspace }}/build/deps/wamr-build/libiwasm.a
@@ -342,8 +369,11 @@ jobs:
 
       - name: Test providers
         env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/build/deps/openssl-3.5.6-prefix/lib64
-        run: ctest --test-dir build/providers --output-on-failure --parallel 4
+          LD_LIBRARY_PATH: ${{ github.workspace }}/build/deps/openssl-3.5.6-prefix/lib64:${{ github.workspace }}/build/deps/sdl-prefix/lib
+        run: |
+          xvfb-run -a ./build/providers/foundationc test providers/sdl --backend llvm
+          xvfb-run -a ./build/providers/foundationc test providers/sdl --backend c
+          ctest --test-dir build/providers --output-on-failure --parallel 4
 
       - name: Configure WAMR ASan and UBSan
         env:
@@ -422,6 +452,14 @@ jobs:
           path: build/go-foundation-v2
           persist-credentials: false
 
+      - name: Checkout SDL
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: libsdl-org/SDL
+          ref: 8e37db5e797b6167f3a00d697d816a684bd259c7
+          path: build/deps/sdl
+          persist-credentials: false
+
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -448,6 +486,22 @@ jobs:
           make -j"$(sysctl -n hw.ncpu)"
           make install_sw
 
+      - name: Build pinned SDL
+        run: |
+          prefix="${{ github.workspace }}/build/deps/sdl-prefix"
+          cmake -S build/deps/sdl -B build/deps/sdl-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DSDL_SHARED=ON \
+            -DSDL_STATIC=OFF \
+            -DSDL_TEST_LIBRARY=OFF \
+            -DSDL_TESTS=OFF \
+            -DSDL_EXAMPLES=OFF
+          cmake --build build/deps/sdl-build --target install --parallel 3
+          echo "CPATH=$prefix/include${CPATH:+:$CPATH}" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$prefix/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$prefix/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
       - name: Checkout and build pinned WAMR
         run: |
           git init build/deps/wasm-micro-runtime
@@ -470,7 +524,8 @@ jobs:
           -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
           -DFOUNDATION_BUILD_OPENSSL_PROVIDER=ON
           -DOPENSSL_ROOT_DIR=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
-          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
+          "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix;${{ github.workspace }}/build/deps/sdl-prefix"
+          -DFOUNDATION_BUILD_SDL_PROVIDER=ON
           -DFOUNDATION_BUILD_WAMR_PROVIDER=ON
           -DFOUNDATION_WAMR_SOURCE=${{ github.workspace }}/build/deps/wasm-micro-runtime
           -DFOUNDATION_WAMR_LIBRARY=${{ github.workspace }}/build/deps/wamr-build/libiwasm.a
@@ -487,7 +542,7 @@ jobs:
 
       - name: Test providers
         env:
-          DYLD_LIBRARY_PATH: ${{ github.workspace }}/build/deps/openssl-3.5.6-prefix/lib:${{ github.workspace }}/build/deps/openssl-3.5.6-prefix/lib64
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/build/deps/openssl-3.5.6-prefix/lib:${{ github.workspace }}/build/deps/openssl-3.5.6-prefix/lib64:${{ github.workspace }}/build/deps/sdl-prefix/lib
         run: ctest --test-dir build/providers --output-on-failure --parallel 4
 
   windows-providers:
@@ -506,6 +561,14 @@ jobs:
           repository: mirkobrombin/go-foundation
           ref: 06679f06495151fbd0d491e76121ba98b939a291
           path: build/go-foundation-v2
+          persist-credentials: false
+
+      - name: Checkout SDL
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: libsdl-org/SDL
+          ref: 8e37db5e797b6167f3a00d697d816a684bd259c7
+          path: build/deps/sdl
           persist-credentials: false
 
       - name: Set up Go
@@ -549,6 +612,25 @@ jobs:
             exit $LASTEXITCODE
           }
 
+      - name: Build pinned SDL
+        shell: pwsh
+        run: |
+          $prefix = Join-Path "${{ github.workspace }}" "build\deps\sdl-prefix"
+          cmake -S build/deps/sdl -B build/deps/sdl-build -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_INSTALL_PREFIX=$prefix" `
+            -DSDL_SHARED=ON `
+            -DSDL_STATIC=OFF `
+            -DSDL_TEST_LIBRARY=OFF `
+            -DSDL_TESTS=OFF `
+            -DSDL_EXAMPLES=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/deps/sdl-build --config Release --target install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "INCLUDE=$prefix\include;$env:INCLUDE" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LIB=$prefix\lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$prefix\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Checkout and build pinned WAMR
         shell: pwsh
         run: |
@@ -569,7 +651,8 @@ jobs:
           -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
           -DFOUNDATION_BUILD_OPENSSL_PROVIDER=ON
           -DOPENSSL_ROOT_DIR=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
-          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix
+          "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/deps/openssl-3.5.6-prefix;${{ github.workspace }}/build/deps/sdl-prefix"
+          -DFOUNDATION_BUILD_SDL_PROVIDER=ON
           -DFOUNDATION_BUILD_WAMR_PROVIDER=ON
           -DFOUNDATION_WAMR_SOURCE=${{ github.workspace }}/build/deps/wasm-micro-runtime
           -DFOUNDATION_WAMR_LIBRARY=${{ github.workspace }}/build/deps/wamr-build/Release/libiwasm.lib

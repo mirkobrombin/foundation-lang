@@ -1,0 +1,74 @@
+package foundation.ui
+
+// Opens a window through the linked ABI 1 UI provider.
+fn Open(title String, width u64, height u64) Result<own Window, Error> {
+    if providerABINative() >> 32 != 1 return .Err(.Unavailable)
+    var handle u64 = 0
+    const value = openNative(title, width, height, &handle)
+    if value != 0 return .Err(errorFor(value))
+    .Ok(own Window { handle = handle })
+}
+
+methods Window {
+    // Applies a palette to later frames.
+    fn SetTheme(&self, theme Theme) Result<void, Error> {
+        const value u64 = match theme {
+            Dark: 0
+            Light: 1
+        }
+        status(setThemeNative(self.handle, value))
+    }
+
+    // Replaces the application accent used by later frames.
+    fn SetAccent(&self, color Color) Result<void, Error> {
+        status(setAccentNative(
+                self.handle,
+                u64.From(color.Red),
+                u64.From(color.Green),
+                u64.From(color.Blue),
+                u64.From(color.Alpha)
+            ))
+    }
+
+    // Starts one frame and reports whether drawing should continue.
+    fn BeginFrame(&self) Result<FrameState, Error> {
+        const value = beginFrameNative(self.handle)
+        if value == 0 return .Ok(.Active)
+        if value == 1 return .Ok(.Closing)
+        if value == 2 return .Ok(.Idle)
+        .Err(errorFor(value))
+    }
+
+    // Submits the current frame to the native window.
+    fn EndFrame(&self) Result<void, Error> {
+        status(endFrameNative(self.handle))
+    }
+
+    // Reads the current drawable size in logical pixels.
+    fn Size(self) Result<Size, Error> {
+        var width u64 = 0
+        var height u64 = 0
+        const value = sizeNative(self.handle, &width, &height)
+        if value != 0 return .Err(errorFor(value))
+        .Ok(Size { Width = width Height = height })
+    }
+
+    // Opens the provider-owned root drawing region for this frame.
+    fn BeginRoot(&self) bool {
+        beginRootNative(self.handle)
+    }
+
+    // Draws the client-side titlebar and window controls.
+    fn Titlebar(&self, title String, subtitle String) void {
+        titlebarNative(self.handle, title, subtitle)
+    }
+
+    // Closes the root drawing region opened in this frame.
+    fn EndRoot(&self) void {
+        endRootNative(self.handle)
+    }
+
+    fn drop(&self) void {
+        closeNative(&self.handle)
+    }
+}

@@ -1,0 +1,62 @@
+package foundation.ui
+
+import std.bytes
+
+methods Window {
+    // Replaces the terminal byte stream consumed by the emulator.
+    fn UpdateTerminal(
+        &self,
+        $value own bytes.Bytes
+    ) Result<void, Error> {
+        const length = value.Len() else error {
+            discard error
+            discard value
+            return .Err(.Invalid)
+        }
+        if length == 0 {
+            discard value
+            return status(terminalCommitNative(self.handle, 0))
+        }
+        // SAFETY: the provider returns storage with the reported capacity.
+        unsafe {
+            var capacity u64 = 0
+            const destination = terminalBufferNative(
+                self.handle,
+                length,
+                &capacity
+            )
+            if isNull(destination) {
+                discard value
+                return .Err(.Failed)
+            }
+            value.CopyToRaw(destination, capacity) else error {
+                discard error
+                return .Err(.Failed)
+            }
+        }
+        status(terminalCommitNative(self.handle, length))
+    }
+
+    // Draws the terminal and collects input and resize changes for this frame.
+    fn Terminal(&self, height f32) Result<TerminalFrame, Error> {
+        var input = ""
+        var columns u64 = 0
+        var rows u64 = 0
+        var resized = false
+        const value = terminalNative(
+            self.handle,
+            height,
+            &input,
+            &columns,
+            &rows,
+            &resized
+        )
+        if value != 0 return .Err(errorFor(value))
+        .Ok(TerminalFrame {
+            Input = input
+            Columns = columns
+            Rows = rows
+            Resized = resized
+        })
+    }
+}

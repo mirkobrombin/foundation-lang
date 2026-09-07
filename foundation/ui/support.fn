@@ -1,0 +1,47 @@
+package foundation.ui
+
+fn validImage(width u64, height u64, length u64) bool {
+    if width == 0 || height == 0 return false
+    if width > 18446744073709551615 / height return false
+    if width * height > 4611686018427387903 return false
+    length == width * height * 4
+}
+
+fn labelToneValue(value LabelTone) u64 {
+    match value {
+        Primary: 0
+        Muted: 1
+        Accent: 2
+        Danger: 3
+    }
+}
+
+fn iconValue(value Icon) u64 {
+    match value {
+        Link: 0
+        Share: 1
+        Terminal: 2
+        Folder: 3
+        Display: 4
+        Theme: 5
+    }
+}
+
+fn surfaceInputKind(value u64) Result<SurfaceInputKind, Error> {
+    if value == 0 return .Ok(.MouseMove)
+    if value == 1 return .Ok(.MouseButton)
+    if value == 2 return .Ok(.Key)
+    if value == 3 return .Ok(.Wheel)
+    .Err(.Invalid)
+}
+
+fn status(value i32) Result<void, Error> {
+    if value == 0 return .Ok
+    .Err(errorFor(value))
+}
+
+fn errorFor(value i32) Error {
+    if value == -1 return .Unavailable
+    if value == -2 return .Invalid
+    .Failed
+}

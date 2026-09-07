@@ -1,0 +1,117 @@
+package foundation.ui
+
+import std.bytes
+
+methods Window {
+    // Creates a drawable surface owned by this window.
+    fn CreateSurface(&self) Result<Surface, Error> {
+        var id u64 = 0
+        const value = createSurfaceNative(self.handle, &id)
+        if value != 0 return .Err(errorFor(value))
+        .Ok(Surface { window = self.handle id = id })
+    }
+
+    // Destroys a surface created by this window.
+    fn DestroySurface(&self, surface Surface) Result<void, Error> {
+        if surface.window != self.handle return .Err(.Invalid)
+        status(destroySurfaceNative(self.handle, surface.id))
+    }
+
+    // Replaces an RGBA8 surface and transfers its pixels.
+    fn UpdateSurface(
+        &self,
+        surface Surface,
+        width u64,
+        height u64,
+        $pixels own bytes.Bytes
+    ) Result<void, Error> {
+        if surface.window != self.handle {
+            discard pixels
+            return .Err(.Invalid)
+        }
+        const length = pixels.Len() else error {
+            discard error
+            return .Err(.Invalid)
+        }
+        if !validImage(width, height, length) {
+            discard pixels
+            return .Err(.Invalid)
+        }
+        // SAFETY: the provider returns storage with the reported capacity.
+        unsafe {
+            var capacity u64 = 0
+            const destination = imageBufferNative(
+                self.handle,
+                surface.id,
+                width,
+                height,
+                &capacity
+            )
+            if isNull(destination) {
+                discard pixels
+                return .Err(.Failed)
+            }
+            pixels.CopyToRaw(destination, capacity) else error {
+                discard error
+                return .Err(.Failed)
+            }
+        }
+        status(imageCommitNative(self.handle, surface.id))
+    }
+
+    // Draws a surface in the active cell.
+    fn DrawSurface(&self, surface Surface) Result<void, Error> {
+        if surface.window != self.handle return .Err(.Invalid)
+        status(imageNative(self.handle, surface.id))
+    }
+
+    // Removes and returns the oldest queued input for a surface.
+    fn PollSurfaceInput(
+        &self,
+        surface Surface
+    ) Result<Option<SurfaceInput>, Error> {
+        if surface.window != self.handle return .Err(.Invalid)
+        var kind u64 = 0
+        var x u64 = 0
+        var y u64 = 0
+        var button u64 = 0
+        var key u64 = 0
+        var down = false
+        var delta i64 = 0
+        const value = pollSurfaceInputNative(
+            self.handle,
+            surface.id,
+            &kind,
+            &x,
+            &y,
+            &button,
+            &key,
+            &down,
+            &delta
+        )
+        if value < 0 return .Err(.Failed)
+        if value == 0 return .Ok(.None)
+        const type = surfaceInputKind(kind) else error { return .Err(error) }
+        .Ok(.Some(SurfaceInput {
+            Type = type
+            X = x
+            Y = y
+            Button = button
+            Key = key
+            Down = down
+            Delta = delta
+        }))
+    }
+
+    // Reports whether a surface owns pointer and keyboard input.
+    fn SurfaceCaptured(self, surface Surface) bool {
+        if surface.window != self.handle return false
+        surfaceCapturedNative(self.handle, surface.id)
+    }
+
+    // Releases all keys, buttons, and capture held by a surface.
+    fn ReleaseSurfaceInput(&self, surface Surface) Result<void, Error> {
+        if surface.window != self.handle return .Err(.Invalid)
+        status(releaseSurfaceNative(self.handle, surface.id))
+    }
+}

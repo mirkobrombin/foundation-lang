@@ -1,0 +1,104 @@
+package foundation.ui
+
+import std.bytes
+
+methods Window {
+    // Replaces the RGBA8 application icon and transfers its pixels.
+    fn SetApplicationIcon(
+        &self,
+        width u64,
+        height u64,
+        $pixels own bytes.Bytes
+    ) Result<void, Error> {
+        const length = pixels.Len() else error {
+            discard error
+            return .Err(.Invalid)
+        }
+        if !validImage(width, height, length) {
+            discard pixels
+            return .Err(.Invalid)
+        }
+        // SAFETY: the provider returns storage with the reported capacity.
+        unsafe {
+            var capacity u64 = 0
+            const destination = applicationIconBufferNative(
+                self.handle,
+                width,
+                height,
+                &capacity
+            )
+            if isNull(destination) {
+                discard pixels
+                return .Err(.Failed)
+            }
+            pixels.CopyToRaw(destination, capacity) else error {
+                discard error
+                return .Err(.Failed)
+            }
+        }
+        status(applicationIconCommitNative(self.handle))
+    }
+
+    // Draws the current application icon in the active cell.
+    fn ApplicationIcon(&self) void {
+        applicationIconNative(self.handle)
+    }
+
+    // Draws an icon action and reports activation.
+    fn IconButton(
+        &self,
+        icon Icon,
+        label String,
+        selected bool,
+        enabled bool
+    ) bool {
+        iconButtonNative(self.handle, iconValue(icon), label, selected, enabled)
+    }
+
+    // Draws a heading with the active application palette.
+    fn Heading(&self, value String) void {
+        headingNative(self.handle, value)
+    }
+
+    // Draws a semantic text label with optional wrapping.
+    fn Label(&self, value String, tone LabelTone, wrap bool) void {
+        labelNative(self.handle, value, labelToneValue(tone), wrap)
+    }
+
+    // Draws a text button and reports activation.
+    fn Button(&self, value String, selected bool, primary bool) bool {
+        buttonNative(self.handle, value, selected, primary)
+    }
+
+    // Draws one file or directory row and reports activation.
+    fn FileEntry(&self, name String, details String, directory bool) bool {
+        fileEntryNative(self.handle, name, details, directory)
+    }
+
+    // Edits a named text value within a bounded UTF-8 buffer.
+    fn Edit(
+        &self,
+        name String,
+        value String,
+        capacity u64
+    ) Result<TextEdit, Error> {
+        var result = ""
+        var changed = false
+        var committed = false
+        const valueStatus = editNative(
+            self.handle,
+            name,
+            value,
+            capacity,
+            &result,
+            &changed,
+            &committed
+        )
+        if valueStatus != 0 return .Err(errorFor(valueStatus))
+        .Ok(TextEdit {
+            Value = result
+            Changed = changed
+            Committed = committed
+        })
+    }
+}

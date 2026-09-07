@@ -76,6 +76,7 @@ option(FOUNDATION_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(FOUNDATION_BUILD_FUZZERS "Build Clang libFuzzer targets" OFF)
 option(FOUNDATION_BUILD_OPENSSL_PROVIDER "Build the optional OpenSSL 3.5.6 provider" OFF)
 option(FOUNDATION_OPENSSL_TSAN "Build the OpenSSL provider native test with ThreadSanitizer" OFF)
+option(FOUNDATION_BUILD_SDL_PROVIDER "Build the optional SDL 3 UI provider" OFF)
 option(FOUNDATION_BUILD_WAMR_PROVIDER "Build the optional WAMR 2.4.5 provider" OFF)
 option(FOUNDATION_WAMR_SANITIZERS "Instrument the WAMR provider path with ASan and UBSan" OFF)
 option(FOUNDATION_WAMR_TSAN "Instrument the WAMR provider path with ThreadSanitizer" OFF)
@@ -229,6 +230,39 @@ if(FOUNDATION_BUILD_OPENSSL_PROVIDER)
     elseif(FOUNDATION_OPENSSL_TSAN)
         target_compile_options(foundation_openssl_provider PRIVATE -fsanitize=thread)
         target_link_options(foundation_openssl_provider PRIVATE -fsanitize=thread)
+    endif()
+endif()
+
+if(FOUNDATION_BUILD_SDL_PROVIDER)
+    find_package(SDL3 3.4 CONFIG REQUIRED)
+    add_library(foundation_sdl_provider STATIC
+        providers/sdl/native/sdl_ui.c
+        providers/sdl/native/sdl_layout.c
+        providers/sdl/native/sdl_surface.c
+        providers/sdl/native/sdl_terminal.c
+        providers/sdl/native/sdl_widgets.c
+        providers/sdl/native/terminal_emulator.c
+    )
+    target_include_directories(foundation_sdl_provider
+        PUBLIC providers/sdl/include
+        PRIVATE runtime/include providers/sdl/native
+    )
+    target_link_libraries(foundation_sdl_provider
+        PUBLIC foundation_runtime SDL3::SDL3
+    )
+    if(NOT MSVC)
+        target_link_libraries(foundation_sdl_provider PRIVATE m)
+    endif()
+    if(MSVC)
+        target_compile_options(foundation_sdl_provider PRIVATE /W4)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_sdl_provider PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(foundation_sdl_provider PRIVATE -Wall -Wextra -Wpedantic)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_sdl_provider PRIVATE -Werror)
+        endif()
     endif()
 endif()
 
@@ -462,6 +496,10 @@ if(TARGET foundation_openssl_provider)
     install(TARGETS foundation_openssl_provider ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
     install(FILES providers/openssl/foundation_openssl.h DESTINATION include/foundation)
 endif()
+if(TARGET foundation_sdl_provider)
+    install(TARGETS foundation_sdl_provider ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()
+install(FILES providers/sdl/include/foundation/ui.h DESTINATION include/foundation)
 if(TARGET foundation_wamr_provider)
     install(TARGETS foundation_wamr_provider
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -473,6 +511,7 @@ install(DIRECTORY runtime/src/ DESTINATION runtime/src
         FILES_MATCHING PATTERN "*.c" PATTERN "*.h")
 install(DIRECTORY std/ DESTINATION std FILES_MATCHING PATTERN "*.fn")
 install(DIRECTORY foundation/ DESTINATION foundation FILES_MATCHING PATTERN "*.fn")
+install(DIRECTORY providers/sdl/ DESTINATION providers/sdl)
 install(DIRECTORY docs/ DESTINATION docs FILES_MATCHING PATTERN "*.md")
 install(DIRECTORY examples/ DESTINATION examples
         FILES_MATCHING
@@ -794,6 +833,36 @@ if(BUILD_TESTING)
         set_tests_properties(providers.openssl.foundation PROPERTIES
             TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT}
         )
+    endif()
+    if(TARGET foundation_sdl_provider)
+        add_executable(foundation_sdl_abi_test providers/sdl/tests/abi_test.c)
+        add_executable(foundation_sdl_header_test providers/sdl/tests/header_test.cpp)
+        add_executable(foundation_sdl_terminal_test
+            providers/sdl/tests/terminal_emulator_test.c
+            providers/sdl/native/terminal_emulator.c
+        )
+        target_include_directories(foundation_sdl_terminal_test PRIVATE providers/sdl/native)
+        target_link_libraries(foundation_sdl_abi_test PRIVATE foundation_sdl_provider)
+        target_link_libraries(foundation_sdl_header_test PRIVATE foundation_sdl_provider)
+        foreach(sdl_test_target IN ITEMS
+                foundation_sdl_abi_test
+                foundation_sdl_header_test
+                foundation_sdl_terminal_test)
+            if(MSVC)
+                target_compile_options(${sdl_test_target} PRIVATE /W4)
+                if(FOUNDATION_WARNINGS_AS_ERRORS)
+                    target_compile_options(${sdl_test_target} PRIVATE /WX)
+                endif()
+            else()
+                target_compile_options(${sdl_test_target} PRIVATE -Wall -Wextra -Wpedantic)
+                if(FOUNDATION_WARNINGS_AS_ERRORS)
+                    target_compile_options(${sdl_test_target} PRIVATE -Werror)
+                endif()
+            endif()
+        endforeach()
+        add_test(NAME providers.sdl.abi-c COMMAND foundation_sdl_abi_test)
+        add_test(NAME providers.sdl.abi-cpp COMMAND foundation_sdl_header_test)
+        add_test(NAME providers.sdl.terminal COMMAND foundation_sdl_terminal_test)
     endif()
     if(TARGET foundation_wamr_provider)
         target_compile_definitions(foundation_wamr_provider PRIVATE FOUNDATION_WAMR_TESTING=1)
