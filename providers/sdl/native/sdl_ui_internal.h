@@ -75,6 +75,7 @@ typedef struct foundation_ui_input {
 #define FOUNDATION_UI_SURFACE_CAPACITY 16
 #define FOUNDATION_UI_EVENT_CAPACITY 256
 #define FOUNDATION_UI_GROUP_CAPACITY 32
+#define FOUNDATION_UI_TITLEBAR_REGION_CAPACITY 64
 #define FOUNDATION_UI_TERMINAL_INPUT_CAPACITY 16384
 #define FOUNDATION_UI_TERMINAL_MAX_COLUMNS 240
 #define FOUNDATION_UI_TERMINAL_MAX_ROWS 120
@@ -139,8 +140,10 @@ typedef struct foundation_ui {
     size_t terminal_scroll;
     foundation_ui_edit_state* edit_states;
     foundation_ui_group_state group_states[FOUNDATION_UI_GROUP_CAPACITY];
+    struct nk_rect titlebar_regions[FOUNDATION_UI_TITLEBAR_REGION_CAPACITY];
     size_t edit_count;
     size_t edit_capacity;
+    size_t titlebar_region_count;
     uint64_t group_depth;
     uint64_t surface_draw_sequence;
     uint64_t event_head;
@@ -166,6 +169,7 @@ typedef struct foundation_ui {
     bool closing;
     bool first_frame;
     bool event_overflow;
+    bool titlebar_region_overflow;
 } foundation_ui;
 
 foundation_ui* foundation_ui_from(uint64_t handle);
@@ -185,5 +189,8 @@ void foundation_ui_draw_icon(struct nk_command_buffer* canvas, struct nk_rect bo
                              struct nk_color color);
 bool foundation_ui_button_input(nk_flags* state, struct nk_rect bounds,
                                 const struct nk_input* input);
+void foundation_ui_register_titlebar_region(foundation_ui* ui, struct nk_rect bounds);
+SDL_HitTestResult foundation_ui_window_hit_test(const foundation_ui* ui, int width, int height,
+                                                bool maximized, const SDL_Point* area);
 
 #endif

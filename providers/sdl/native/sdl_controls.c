@@ -24,6 +24,7 @@ bool foundation_ui_icon_button(uint64_t handle, uint64_t icon, const fdn_string*
         return false;
     if (nk_widget(&bounds, ui->context) == NK_WIDGET_INVALID)
         return false;
+    foundation_ui_register_titlebar_region(ui, bounds);
     if (enabled)
         pressed = foundation_ui_button_input(&state, bounds, &ui->context->input);
     canvas = nk_window_get_canvas(ui->context);
@@ -60,6 +61,7 @@ bool foundation_ui_monogram_button(uint64_t handle, const fdn_string* monogram,
     }
     if (nk_widget(&bounds, ui->context) == NK_WIDGET_INVALID)
         return false;
+    foundation_ui_register_titlebar_region(ui, bounds);
     if (enabled)
         pressed = foundation_ui_button_input(&state, bounds, &ui->context->input);
     canvas = nk_window_get_canvas(ui->context);

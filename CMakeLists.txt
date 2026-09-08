@@ -843,16 +843,20 @@ if(BUILD_TESTING)
     if(TARGET foundation_sdl_provider)
         add_executable(foundation_sdl_abi_test providers/sdl/tests/abi_test.c)
         add_executable(foundation_sdl_header_test providers/sdl/tests/header_test.cpp)
+        add_executable(foundation_sdl_hit_test_test providers/sdl/tests/hit_test_test.c)
         add_executable(foundation_sdl_terminal_test
             providers/sdl/tests/terminal_emulator_test.c
             providers/sdl/native/terminal_emulator.c
         )
+        target_include_directories(foundation_sdl_hit_test_test PRIVATE providers/sdl/native)
         target_include_directories(foundation_sdl_terminal_test PRIVATE providers/sdl/native)
         target_link_libraries(foundation_sdl_abi_test PRIVATE foundation_sdl_provider)
         target_link_libraries(foundation_sdl_header_test PRIVATE foundation_sdl_provider)
+        target_link_libraries(foundation_sdl_hit_test_test PRIVATE foundation_sdl_provider)
         foreach(sdl_test_target IN ITEMS
                 foundation_sdl_abi_test
                 foundation_sdl_header_test
+                foundation_sdl_hit_test_test
                 foundation_sdl_terminal_test)
             if(MSVC)
                 target_compile_options(${sdl_test_target} PRIVATE /W4)
@@ -868,6 +872,7 @@ if(BUILD_TESTING)
         endforeach()
         add_test(NAME providers.sdl.abi-c COMMAND foundation_sdl_abi_test)
         add_test(NAME providers.sdl.abi-cpp COMMAND foundation_sdl_header_test)
+        add_test(NAME providers.sdl.hit-test COMMAND foundation_sdl_hit_test_test)
         add_test(NAME providers.sdl.terminal COMMAND foundation_sdl_terminal_test)
         add_test(
             NAME providers.sdl.sdk-consumer

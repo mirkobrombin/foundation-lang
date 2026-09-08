@@ -358,19 +358,48 @@ static bool foundation_ui_set_window_shape(foundation_ui* ui) {
     return true;
 }
 
-static SDL_HitTestResult foundation_ui_hit_test(SDL_Window* window, const SDL_Point* area,
-                                                void* data) {
-    int width;
-    int height;
+void foundation_ui_register_titlebar_region(foundation_ui* ui, struct nk_rect bounds) {
+    if (ui == NULL || !isfinite(bounds.x) || !isfinite(bounds.y) || !isfinite(bounds.w) ||
+        !isfinite(bounds.h) || bounds.w <= 0.0f || bounds.h <= 0.0f || bounds.y >= 40.0f ||
+        bounds.y + bounds.h <= 0.0f) {
+        return;
+    }
+    if (ui->titlebar_region_count == FOUNDATION_UI_TITLEBAR_REGION_CAPACITY) {
+        ui->titlebar_region_overflow = true;
+        return;
+    }
+    ui->titlebar_regions[ui->titlebar_region_count++] = bounds;
+}
+
+static bool foundation_ui_titlebar_region_at(const foundation_ui* ui, const SDL_Point* area) {
+    size_t index;
+    if (ui == NULL)
+        return false;
+    if (ui->titlebar_region_overflow)
+        return true;
+    for (index = 0; index < ui->titlebar_region_count; index++) {
+        const struct nk_rect bounds = ui->titlebar_regions[index];
+        if ((float)area->x >= bounds.x && (float)area->y >= bounds.y &&
+            (float)area->x < bounds.x + bounds.w && (float)area->y < bounds.y + bounds.h) {
+            return true;
+        }
+    }
+    return false;
+}
+
+SDL_HitTestResult foundation_ui_window_hit_test(const foundation_ui* ui, int width, int height,
+                                                bool maximized, const SDL_Point* area) {
     const int edge = 6;
     int drag_limit;
-    (void)data;
-    if (!SDL_GetWindowSize(window, &width, &height))
+    if (area == NULL || width <= 0 || height <= 0)
         return SDL_HITTEST_NORMAL;
     drag_limit = width > 108 ? width - 108 : width;
-    if ((SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0) {
-        if (area->y < 40 && area->x < drag_limit)
+    if (maximized) {
+        if (area->y < 40 && area->x < drag_limit) {
+            if (foundation_ui_titlebar_region_at(ui, area))
+                return SDL_HITTEST_NORMAL;
             return SDL_HITTEST_DRAGGABLE;
+        }
         return SDL_HITTEST_NORMAL;
     }
     const bool left = area->x < edge;
@@ -393,9 +422,22 @@ static SDL_HitTestResult foundation_ui_hit_test(SDL_Window* window, const SDL_Po
         return SDL_HITTEST_RESIZE_TOP;
     if (bottom)
         return SDL_HITTEST_RESIZE_BOTTOM;
-    if (area->y < 40 && area->x < drag_limit)
+    if (area->y < 40 && area->x < drag_limit) {
+        if (foundation_ui_titlebar_region_at(ui, area))
+            return SDL_HITTEST_NORMAL;
         return SDL_HITTEST_DRAGGABLE;
+    }
     return SDL_HITTEST_NORMAL;
+}
+
+static SDL_HitTestResult foundation_ui_hit_test(SDL_Window* window, const SDL_Point* area,
+                                                void* data) {
+    int width;
+    int height;
+    if (!SDL_GetWindowSize(window, &width, &height))
+        return SDL_HITTEST_NORMAL;
+    return foundation_ui_window_hit_test(
+        data, width, height, (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0, area);
 }
 
 int32_t foundation_ui_open(const fdn_string* title, uint64_t width, uint64_t height,
@@ -647,6 +689,8 @@ bool foundation_ui_begin_root(uint64_t handle) {
     }
     ui->surface_draw_sequence = 0;
     ui->terminal_bounds_valid = false;
+    ui->titlebar_region_count = 0;
+    ui->titlebar_region_overflow = false;
     return nk_begin(ui->context, "foundation-ui", nk_rect(0.0f, 0.0f, (float)width, (float)height),
                     NK_WINDOW_BACKGROUND | NK_WINDOW_NO_SCROLLBAR);
 }
