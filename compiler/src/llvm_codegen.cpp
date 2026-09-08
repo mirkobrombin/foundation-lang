@@ -13,6 +13,7 @@
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
@@ -1204,6 +1205,10 @@ class LlvmEmitter {
                                      : llvm::GlobalValue::ExternalLinkage;
             auto *declaration = llvm::Function::Create(signature, linkage,
                                                        functionName(program_, id), module_);
+            if (function.hasBody && options_.optimize &&
+                options_.libraryPackage.has_value()) {
+                declaration->addFnAttr(llvm::Attribute::AlwaysInline);
+            }
             if (function.diverges) {
                 declaration->addFnAttr(llvm::Attribute::NoReturn);
             }
@@ -2557,8 +2562,11 @@ class LlvmEmitter {
             const auto local = function_->parameters[parameterIndex++];
             builder_.CreateStore(&*argument, locals_[local]);
         }
-        frame_ = builder_.CreateAlloca(frameType_, nullptr, "frame");
-        enterFrame();
+        frame_ = nullptr;
+        if (!options_.optimize || !options_.libraryPackage.has_value()) {
+            frame_ = builder_.CreateAlloca(frameType_, nullptr, "frame");
+            enterFrame();
+        }
         if (function_->stateTransition.has_value()) {
             emitStateTransitionFunction();
             clearDebugLocation();
@@ -4695,6 +4703,51 @@ class LlvmEmitter {
             if (operation == FirBinaryOperator::BitwiseOr) {
                 return builder_.CreateOr(left, right);
             }
+            if (operation == FirBinaryOperator::Add ||
+                operation == FirBinaryOperator::Subtract ||
+                operation == FirBinaryOperator::Multiply) {
+                llvm::Intrinsic::ID intrinsic{};
+                if (isSignedInteger(type)) {
+                    if (operation == FirBinaryOperator::Add) {
+                        intrinsic = llvm::Intrinsic::sadd_with_overflow;
+                    } else if (operation == FirBinaryOperator::Subtract) {
+                        intrinsic = llvm::Intrinsic::ssub_with_overflow;
+                    } else {
+                        intrinsic = llvm::Intrinsic::smul_with_overflow;
+                    }
+                } else {
+                    if (operation == FirBinaryOperator::Add) {
+                        intrinsic = llvm::Intrinsic::uadd_with_overflow;
+                    } else if (operation == FirBinaryOperator::Subtract) {
+                        intrinsic = llvm::Intrinsic::usub_with_overflow;
+                    } else {
+                        intrinsic = llvm::Intrinsic::umul_with_overflow;
+                    }
+                }
+                auto *checked = builder_.CreateCall(
+                    llvm::Intrinsic::getOrInsertDeclaration(&module_, intrinsic,
+                                                            {typeOf(type)}),
+                    {left, right}, "checked.integer");
+                auto *value = builder_.CreateExtractValue(checked, 0,
+                                                          "checked.integer.value");
+                auto *overflow = builder_.CreateExtractValue(
+                    checked, 1, "checked.integer.overflow");
+                auto *owner = builder_.GetInsertBlock()->getParent();
+                auto *failed = llvm::BasicBlock::Create(context_, "integer.overflow", owner);
+                auto *done = llvm::BasicBlock::Create(context_, "integer.valid", owner);
+                builder_.CreateCondBr(overflow, failed, done);
+                builder_.SetInsertPoint(failed);
+                setLocation(span);
+                auto *message = builder_.CreateGlobalString(
+                    integerTypeTag(type) + " overflow", "integer.overflow.message");
+                builder_.CreateCall(
+                    runtimeFunction("fdn_panic_cstr", llvm::Type::getVoidTy(context_),
+                                    {pointerType()}),
+                    {message});
+                builder_.CreateUnreachable();
+                builder_.SetInsertPoint(done);
+                return value;
+            }
             std::string name;
             switch (operation) {
             case FirBinaryOperator::Add:
@@ -5870,6 +5923,9 @@ class LlvmEmitter {
     }
 
     void leaveFrame() {
+        if (frame_ == nullptr) {
+            return;
+        }
         builder_.CreateCall(
             runtimeFunction("fdn_frame_leave", llvm::Type::getVoidTy(context_), {pointerType()}),
             {frame_});

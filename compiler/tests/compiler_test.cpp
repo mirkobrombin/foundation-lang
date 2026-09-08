@@ -6,6 +6,7 @@
 #include "foundation/driver.hpp"
 #include "foundation/fsm.hpp"
 #include "foundation/lexer.hpp"
+#include "foundation/llvm_codegen.hpp"
 #include "foundation/lower.hpp"
 #include "foundation/metadata.hpp"
 #include "foundation/parser.hpp"
@@ -246,6 +247,49 @@ fn main() i32 {
            "structured loop is emitted from FIR");
     expect(firstC.find("fdn_fn_add_0") != std::string::npos,
            "user function call uses a stable C name");
+}
+
+void llvmIntegerArithmeticUsesOverflowIntrinsics() {
+    constexpr std::string_view source = R"(
+fn input() i32 {
+    41
+}
+
+fn add(value i32) i32 {
+    value + 1
+}
+
+fn main() i32 {
+    add(input())
+}
+)";
+    auto checked = check(source);
+    expect(!checked.diagnostics.hasErrors(), "LLVM integer fixture has no diagnostics");
+    expect(checked.fir.has_value(), "LLVM integer fixture lowers to FIR");
+    if (!checked.fir.has_value()) {
+        return;
+    }
+
+    const auto generated = foundation::emitLlvmIr(
+        *checked.fir, "integer-arithmetic.fn",
+        foundation::LlvmCodegenOptions{
+            .targetTriple = foundation::defaultLlvmTargetTriple(),
+            .optimize = false,
+            .verifyAllocations = false,
+            .debugInfo = false,
+            .sourcePaths = {"integer-arithmetic.fn"},
+            .entry = std::nullopt,
+            .libraryPackage = std::nullopt,
+        },
+        checked.diagnostics);
+    expect(generated.has_value(), "LLVM integer fixture emits IR");
+    if (!generated.has_value()) {
+        return;
+    }
+    expect(generated->find("llvm.sadd.with.overflow.i32") != std::string::npos,
+           "LLVM i32 addition uses an overflow intrinsic");
+    expect(generated->find("fdn_i32_add") == std::string::npos,
+           "LLVM i32 addition does not call the checked runtime helper");
 }
 
 void immutableBindingsAndCommentsLexDeterministically() {
@@ -3153,6 +3197,7 @@ int main() {
     targetAttributesSelectOneDeclaration();
     typedAttributesEmitMetadataWithoutRuntimeCode();
     typedProgramLowersToDeterministicC();
+    llvmIntegerArithmeticUsesOverflowIntrinsics();
     immutableBindingsAndCommentsLexDeterministically();
     tasksLowerToOwnedRuntimeHandles();
     taskWaitsLowerToStacklessStates();
