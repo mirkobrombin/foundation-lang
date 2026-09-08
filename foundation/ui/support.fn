@@ -24,6 +24,19 @@ fn iconValue(value Icon) u64 {
         Folder: 3
         Display: 4
         Theme: 5
+        Home: 6
+        Add: 7
+        Workspace: 8
+        Key: 9
+        Settings: 10
+        Back: 11
+        Forward: 12
+        Reload: 13
+        External: 14
+        Split: 15
+        Notification: 16
+        Download: 17
+        Web: 18
     }
 }
 
@@ -32,6 +45,8 @@ fn surfaceInputKind(value u64) Result<SurfaceInputKind, Error> {
     if value == 1 return .Ok(.MouseButton)
     if value == 2 return .Ok(.Key)
     if value == 3 return .Ok(.Wheel)
+    if value == 4 return .Ok(.Text)
+    if value == 5 return .Ok(.MouseLeave)
     .Err(.Invalid)
 }
 

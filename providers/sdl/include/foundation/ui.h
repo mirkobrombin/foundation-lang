@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #define FOUNDATION_UI_ABI_MAJOR 1
-#define FOUNDATION_UI_ABI_MINOR 0
+#define FOUNDATION_UI_ABI_MINOR 1
 #define FOUNDATION_UI_ABI_VERSION(major, minor) ((((uint64_t)(major)) << 32U) | (uint64_t)(minor))
 #define FOUNDATION_UI_ABI_CURRENT                                                                  \
     FOUNDATION_UI_ABI_VERSION(FOUNDATION_UI_ABI_MAJOR, FOUNDATION_UI_ABI_MINOR)
@@ -46,6 +46,19 @@ enum foundation_ui_icon {
     FOUNDATION_UI_ICON_FOLDER = 3,
     FOUNDATION_UI_ICON_DISPLAY = 4,
     FOUNDATION_UI_ICON_THEME = 5,
+    FOUNDATION_UI_ICON_HOME = 6,
+    FOUNDATION_UI_ICON_ADD = 7,
+    FOUNDATION_UI_ICON_WORKSPACE = 8,
+    FOUNDATION_UI_ICON_KEY = 9,
+    FOUNDATION_UI_ICON_SETTINGS = 10,
+    FOUNDATION_UI_ICON_BACK = 11,
+    FOUNDATION_UI_ICON_FORWARD = 12,
+    FOUNDATION_UI_ICON_RELOAD = 13,
+    FOUNDATION_UI_ICON_EXTERNAL = 14,
+    FOUNDATION_UI_ICON_SPLIT = 15,
+    FOUNDATION_UI_ICON_NOTIFICATION = 16,
+    FOUNDATION_UI_ICON_DOWNLOAD = 17,
+    FOUNDATION_UI_ICON_WEB = 18,
 };
 
 enum foundation_ui_input_kind {
@@ -53,6 +66,13 @@ enum foundation_ui_input_kind {
     FOUNDATION_UI_INPUT_MOUSE_BUTTON = 1,
     FOUNDATION_UI_INPUT_KEY = 2,
     FOUNDATION_UI_INPUT_WHEEL = 3,
+    FOUNDATION_UI_INPUT_TEXT = 4,
+    FOUNDATION_UI_INPUT_MOUSE_LEAVE = 5,
+};
+
+enum foundation_ui_surface_input_mode {
+    FOUNDATION_UI_SURFACE_INPUT_CAPTURED = 0,
+    FOUNDATION_UI_SURFACE_INPUT_EMBEDDED = 1,
 };
 
 enum foundation_ui_poll_result {
@@ -76,6 +96,9 @@ extern "C" {
  * Layout and drawing functions are valid only inside a successful begin-root/end-root pair. Row
  * heights and column ratios must be finite and positive. A successful begin-group must be paired
  * with end-group.
+ *
+ * Captured surfaces own pointer and keyboard input until release. Embedded surfaces retain keyboard
+ * focus after a click but return pointer input outside their latest bounds to ordinary widgets.
  *
  * Each buffer function returns writable provider storage and its capacity. Fill width * height * 4
  * RGBA8 bytes for image buffers, or the requested byte count for terminal buffers, then call the
@@ -116,6 +139,9 @@ int32_t foundation_ui_application_icon_commit(uint64_t handle);
 void foundation_ui_application_icon(uint64_t handle);
 bool foundation_ui_icon_button(uint64_t handle, uint64_t icon, const fdn_string* label,
                                bool selected, bool enabled);
+bool foundation_ui_monogram_button(uint64_t handle, const fdn_string* monogram,
+                                   const fdn_string* label, uint64_t red, uint64_t green,
+                                   uint64_t blue, uint64_t alpha, bool selected, bool enabled);
 void foundation_ui_heading(uint64_t handle, const fdn_string* value);
 void foundation_ui_label(uint64_t handle, const fdn_string* value, uint64_t tone, bool wrap);
 uint8_t* foundation_ui_terminal_buffer(uint64_t handle, uint64_t length, uint64_t* capacity);
@@ -133,10 +159,18 @@ uint8_t* foundation_ui_image_buffer(uint64_t handle, uint64_t surface, uint64_t 
                                     uint64_t height, uint64_t* capacity);
 int32_t foundation_ui_image_commit(uint64_t handle, uint64_t surface);
 int32_t foundation_ui_image(uint64_t handle, uint64_t surface);
+int32_t foundation_ui_surface_size(uint64_t handle, uint64_t surface, uint64_t* width,
+                                   uint64_t* height);
+int32_t foundation_ui_set_surface_input_mode(uint64_t handle, uint64_t surface, uint64_t mode);
 int32_t foundation_ui_poll_surface_input(uint64_t handle, uint64_t surface, uint64_t* kind,
                                          uint64_t* x, uint64_t* y, uint64_t* button, uint64_t* key,
                                          bool* down, int64_t* delta);
+int32_t foundation_ui_poll_surface_event(uint64_t handle, uint64_t surface, uint64_t* kind,
+                                         uint64_t* x, uint64_t* y, uint64_t* button, uint64_t* key,
+                                         bool* down, int64_t* delta, bool* control, bool* shift,
+                                         bool* alt, bool* super, fdn_string* text);
 bool foundation_ui_surface_captured(uint64_t handle, uint64_t surface);
+bool foundation_ui_surface_focused(uint64_t handle, uint64_t surface);
 int32_t foundation_ui_release_surface(uint64_t handle, uint64_t surface);
 
 #ifdef __cplusplus

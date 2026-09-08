@@ -15,8 +15,8 @@ static struct nk_color foundation_ui_shift_color(struct nk_color value, int amou
                    foundation_ui_shift_channel(value.b, amount), value.a);
 }
 
-static bool foundation_ui_button_input(nk_flags* state, struct nk_rect bounds,
-                                       const struct nk_input* input) {
+bool foundation_ui_button_input(nk_flags* state, struct nk_rect bounds,
+                                const struct nk_input* input) {
     bool pressed = false;
     *state = 0;
     if (input == NULL)
@@ -250,84 +250,6 @@ void foundation_ui_application_icon(uint64_t handle) {
     bounds.w = 40.0f;
     bounds.h = 40.0f;
     nk_draw_image(canvas, bounds, &image, nk_rgb(255, 255, 255));
-}
-
-static void foundation_ui_draw_icon(struct nk_command_buffer* canvas, struct nk_rect bounds,
-                                    uint64_t icon, struct nk_color color) {
-    const float x = bounds.x + bounds.w * 0.5f;
-    const float y = bounds.y + bounds.h * 0.5f;
-    const float left = x - 9.0f;
-    const float right = x + 9.0f;
-    const float top = y - 8.0f;
-    const float bottom = y + 8.0f;
-    if (icon == FOUNDATION_UI_ICON_LINK) {
-        nk_stroke_circle(canvas, nk_rect(left, y - 4.0f, 9.0f, 9.0f), 2.0f, color);
-        nk_stroke_circle(canvas, nk_rect(x, y - 4.0f, 9.0f, 9.0f), 2.0f, color);
-        nk_stroke_line(canvas, x - 4.0f, y, x + 4.0f, y, 2.0f, color);
-    } else if (icon == FOUNDATION_UI_ICON_SHARE) {
-        nk_stroke_rect(canvas, nk_rect(left, y, 18.0f, 10.0f), 2.0f, 2.0f, color);
-        nk_stroke_line(canvas, x, top, x, y + 3.0f, 2.0f, color);
-        nk_stroke_line(canvas, x, top, x - 5.0f, top + 5.0f, 2.0f, color);
-        nk_stroke_line(canvas, x, top, x + 5.0f, top + 5.0f, 2.0f, color);
-    } else if (icon == FOUNDATION_UI_ICON_TERMINAL) {
-        nk_stroke_rect(canvas, nk_rect(left, top, 18.0f, 16.0f), 3.0f, 2.0f, color);
-        nk_stroke_line(canvas, left + 4.0f, y - 3.0f, left + 8.0f, y, 2.0f, color);
-        nk_stroke_line(canvas, left + 8.0f, y, left + 4.0f, y + 3.0f, 2.0f, color);
-        nk_stroke_line(canvas, x + 1.0f, y + 4.0f, right - 3.0f, y + 4.0f, 2.0f, color);
-    } else if (icon == FOUNDATION_UI_ICON_FOLDER) {
-        const float points[] = {left,       top + 3.0f, x - 2.0f,   top + 3.0f, x + 1.0f,
-                                top + 6.0f, right,      top + 6.0f, right,      bottom,
-                                left,       bottom,     left,       top + 3.0f};
-        nk_stroke_polyline(canvas, points, 7, 2.0f, color);
-    } else if (icon == FOUNDATION_UI_ICON_DISPLAY) {
-        nk_stroke_rect(canvas, nk_rect(left, top, 18.0f, 13.0f), 2.0f, 2.0f, color);
-        nk_stroke_line(canvas, x, y + 5.0f, x, bottom, 2.0f, color);
-        nk_stroke_line(canvas, x - 6.0f, bottom, x + 6.0f, bottom, 2.0f, color);
-    } else {
-        nk_stroke_circle(canvas, nk_rect(x - 6.0f, y - 6.0f, 12.0f, 12.0f), 2.0f, color);
-        nk_stroke_line(canvas, x, top - 2.0f, x, top + 1.0f, 2.0f, color);
-        nk_stroke_line(canvas, x, bottom - 1.0f, x, bottom + 2.0f, 2.0f, color);
-        nk_stroke_line(canvas, left - 2.0f, y, left + 1.0f, y, 2.0f, color);
-        nk_stroke_line(canvas, right - 1.0f, y, right + 2.0f, y, 2.0f, color);
-    }
-}
-
-bool foundation_ui_icon_button(uint64_t handle, uint64_t icon, const fdn_string* label,
-                               bool selected, bool enabled) {
-    foundation_ui* ui = foundation_ui_from(handle);
-    struct nk_rect bounds;
-    struct nk_command_buffer* canvas;
-    nk_flags state = 0;
-    struct nk_color foreground;
-    bool pressed = false;
-    if (ui == NULL || !foundation_ui_string_valid(label) || icon > FOUNDATION_UI_ICON_THEME)
-        return false;
-    if (nk_widget(&bounds, ui->context) == NK_WIDGET_INVALID)
-        return false;
-    if (enabled) {
-        pressed = foundation_ui_button_input(&state, bounds, &ui->context->input);
-    }
-    canvas = nk_window_get_canvas(ui->context);
-    if (selected) {
-        nk_fill_rect(canvas, bounds, 8.0f, ui->accent);
-        foreground = nk_rgb(9, 12, 18);
-    } else if ((state & NK_WIDGET_STATE_HOVER) != 0) {
-        nk_fill_rect(canvas, bounds, 8.0f, ui->raised);
-        foreground = ui->text;
-    } else {
-        foreground = enabled ? ui->muted : nk_rgba(91, 105, 125, 110);
-    }
-    foundation_ui_draw_icon(canvas, bounds, icon, foreground);
-    if ((state & NK_WIDGET_STATE_HOVER) != 0) {
-        ui->tooltip_length =
-            label->length < sizeof(ui->tooltip) ? label->length : sizeof(ui->tooltip) - 1;
-        if (ui->tooltip_length != 0) {
-            SDL_memcpy(ui->tooltip, label->data, (size_t)ui->tooltip_length);
-        }
-        ui->tooltip[ui->tooltip_length] = '\0';
-        ui->tooltip_anchor = bounds;
-    }
-    return pressed;
 }
 
 void foundation_ui_heading(uint64_t handle, const fdn_string* value) {

@@ -54,6 +54,32 @@ enum Icon {
     Display
     // Draws a theme control.
     Theme
+    // Draws a home action.
+    Home
+    // Draws an add action.
+    Add
+    // Draws a workspace selector.
+    Workspace
+    // Draws a credential key.
+    Key
+    // Draws an application settings action.
+    Settings
+    // Draws backward navigation.
+    Back
+    // Draws forward navigation.
+    Forward
+    // Draws a reload action.
+    Reload
+    // Draws an external navigation action.
+    External
+    // Draws a split layout.
+    Split
+    // Draws a notification action.
+    Notification
+    // Draws a download action.
+    Download
+    // Draws a web service.
+    Web
 }
 
 // Stores one RGBA color with eight-bit channels.
@@ -78,6 +104,18 @@ enum SurfaceInputKind {
     Key
     // Reports vertical wheel motion.
     Wheel
+    // Reports committed UTF-8 text.
+    Text
+    // Reports that the pointer left an embedded surface.
+    MouseLeave
+}
+
+// Selects how a drawn surface participates in window input.
+enum SurfaceInputMode {
+    // Owns pointer and keyboard input until explicitly released.
+    Captured
+    // Keeps keyboard focus while pointer events outside return to the window UI.
+    Embedded
 }
 
 // Carries one input event for the current surface.
@@ -96,6 +134,16 @@ struct SurfaceInput {
     Down bool
     // Stores signed wheel motion.
     Delta i64
+    // Reports the Control modifier state.
+    Control bool
+    // Reports the Shift modifier state.
+    Shift bool
+    // Reports the Alt modifier state.
+    Alt bool
+    // Reports the platform command modifier state.
+    Super bool
+    // Owns committed UTF-8 text for a text event.
+    Text String
 }
 
 // Describes the result of one text editing widget.

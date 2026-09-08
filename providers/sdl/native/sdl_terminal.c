@@ -120,6 +120,7 @@ bool foundation_ui_handle_terminal_event(foundation_ui* ui, const SDL_Event* eve
             event->button.y >= ui->terminal_bounds.y &&
             event->button.x < ui->terminal_bounds.x + ui->terminal_bounds.w &&
             event->button.y < ui->terminal_bounds.y + ui->terminal_bounds.h) {
+            foundation_ui_release_surface_input(ui, ui->focused_surface);
             ui->terminal_focus = true;
             (void)SDL_StartTextInput(ui->window);
             if (event->button.button == SDL_BUTTON_RIGHT) {
@@ -429,6 +430,7 @@ int32_t foundation_ui_terminal(uint64_t handle, float height, fdn_string* input,
     ui->terminal_bounds_valid = true;
     if (ui->terminal_auto_focus) {
         ui->terminal_auto_focus = false;
+        foundation_ui_release_surface_input(ui, ui->focused_surface);
         ui->terminal_focus = true;
         (void)SDL_StartTextInput(ui->window);
     }

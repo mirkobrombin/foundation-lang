@@ -36,7 +36,7 @@ run_checked("verify" "${COMPILER}" package verify "${project}")
 
 file(READ "${project}/foundation.lock" lock)
 if(NOT lock MATCHES
-   "package foundation.ui.sdl 1.0.0 sha256:[0-9a-f]+ sdk providers/sdl")
+   "package foundation.ui.sdl 1.1.0 sha256:[0-9a-f]+ sdk providers/sdl")
     message(FATAL_ERROR "SDK package lock entry is missing")
 endif()
 

@@ -68,6 +68,14 @@ foundation_ui_surface* foundation_ui_surface_at(foundation_ui* ui, float x, floa
     return selected;
 }
 
+void foundation_ui_leave_surface(foundation_ui* ui, foundation_ui_surface* surface) {
+    if (surface == NULL || ui->hovered_surface != surface)
+        return;
+    (void)foundation_ui_enqueue_input(
+        surface, (foundation_ui_input){.kind = FOUNDATION_UI_INPUT_MOUSE_LEAVE});
+    ui->hovered_surface = NULL;
+}
+
 static uint64_t foundation_ui_linux_key(SDL_Scancode scancode) {
     switch (scancode) {
     case SDL_SCANCODE_A:
@@ -263,11 +271,39 @@ static uint64_t foundation_ui_linux_button(Uint8 button) {
     return 0;
 }
 
+static foundation_ui_input foundation_ui_with_modifiers(foundation_ui_input input,
+                                                        SDL_Keymod modifiers) {
+    input.control = (modifiers & SDL_KMOD_CTRL) != 0;
+    input.shift = (modifiers & SDL_KMOD_SHIFT) != 0;
+    input.alt = (modifiers & SDL_KMOD_ALT) != 0;
+    input.super = (modifiers & SDL_KMOD_GUI) != 0;
+    return input;
+}
+
+static bool foundation_ui_enqueue_text(foundation_ui_surface* surface, const char* value,
+                                       SDL_Keymod modifiers) {
+    foundation_ui_input input;
+    const size_t length = value == NULL ? 0 : SDL_strlen(value);
+    if (length == 0)
+        return true;
+    if (length >= sizeof(input.text)) {
+        surface->input_overflow = true;
+        return false;
+    }
+    SDL_memset(&input, 0, sizeof(input));
+    input.kind = FOUNDATION_UI_INPUT_TEXT;
+    input.text_length = length;
+    SDL_memcpy(input.text, value, length);
+    return foundation_ui_enqueue_input(surface, foundation_ui_with_modifiers(input, modifiers));
+}
+
 void foundation_ui_release_surface_input(foundation_ui* ui, foundation_ui_surface* surface) {
     uint64_t key;
     uint64_t button;
+    const bool captured = surface != NULL && ui->captured_surface == surface;
+    const bool focused = surface != NULL && ui->focused_surface == surface;
     const uint64_t buttons[] = {272, 273, 274};
-    if (surface == NULL || ui->captured_surface != surface)
+    if (!captured && !focused)
         return;
     for (key = 1; key < 256; key++) {
         if (!surface->keys[key])
@@ -286,78 +322,159 @@ void foundation_ui_release_surface_input(foundation_ui* ui, foundation_ui_surfac
                                            .down = false});
         surface->buttons[button] = false;
     }
-    ui->captured_surface = NULL;
-    (void)SDL_CaptureMouse(false);
+    if (captured) {
+        ui->captured_surface = NULL;
+        (void)SDL_CaptureMouse(false);
+    }
+    if (focused)
+        ui->focused_surface = NULL;
+    if (!ui->terminal_focus && ui->captured_surface == NULL && ui->focused_surface == NULL)
+        (void)SDL_StopTextInput(ui->window);
 }
 
 bool foundation_ui_handle_surface_event(foundation_ui* ui, const SDL_Event* event) {
-    foundation_ui_surface* surface = ui->captured_surface;
+    foundation_ui_surface* surface = NULL;
     uint64_t x;
     uint64_t y;
     uint64_t key;
     uint64_t button;
     uint64_t button_index;
     int64_t delta;
-    if (event->type == SDL_EVENT_KEY_DOWN && surface != NULL &&
+    if (event->type == SDL_EVENT_KEY_DOWN && ui->captured_surface != NULL &&
         event->key.scancode == SDL_SCANCODE_F8) {
-        foundation_ui_release_surface_input(ui, surface);
+        foundation_ui_release_surface_input(ui, ui->captured_surface);
         return true;
     }
-    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && surface == NULL) {
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && ui->captured_surface == NULL) {
         surface = foundation_ui_surface_at(ui, event->button.x, event->button.y);
-        if (surface != NULL) {
+        if (ui->hovered_surface != surface)
+            foundation_ui_leave_surface(ui, ui->hovered_surface);
+        if (surface == NULL) {
+            foundation_ui_release_surface_input(ui, ui->focused_surface);
+            return false;
+        }
+        if (surface->input_mode == FOUNDATION_UI_SURFACE_INPUT_EMBEDDED) {
+            ui->hovered_surface = surface;
+            if (ui->focused_surface != surface)
+                foundation_ui_release_surface_input(ui, ui->focused_surface);
+            ui->focused_surface = surface;
+        } else {
+            foundation_ui_leave_surface(ui, ui->hovered_surface);
+            foundation_ui_release_surface_input(ui, ui->focused_surface);
             ui->captured_surface = surface;
             (void)SDL_CaptureMouse(true);
         }
+        (void)SDL_StartTextInput(ui->window);
     }
-    if (surface == NULL)
-        return false;
     if (event->type == SDL_EVENT_MOUSE_MOTION) {
+        if (ui->captured_surface != NULL) {
+            surface = ui->captured_surface;
+        } else if (ui->focused_surface != NULL &&
+                   (ui->focused_surface->buttons[0] || ui->focused_surface->buttons[1] ||
+                    ui->focused_surface->buttons[2])) {
+            surface = ui->focused_surface;
+        } else {
+            surface = foundation_ui_surface_at(ui, event->motion.x, event->motion.y);
+            if (surface != NULL && surface->input_mode != FOUNDATION_UI_SURFACE_INPUT_EMBEDDED) {
+                surface = NULL;
+            }
+            if (ui->hovered_surface != surface)
+                foundation_ui_leave_surface(ui, ui->hovered_surface);
+            ui->hovered_surface = surface;
+        }
+        if (surface == NULL)
+            return false;
         if (foundation_ui_surface_point(surface, event->motion.x, event->motion.y, &x, &y)) {
             (void)foundation_ui_enqueue_input(
                 surface,
-                (foundation_ui_input){.kind = FOUNDATION_UI_INPUT_MOUSE_MOVE, .x = x, .y = y});
+                foundation_ui_with_modifiers(
+                    (foundation_ui_input){.kind = FOUNDATION_UI_INPUT_MOUSE_MOVE, .x = x, .y = y},
+                    SDL_GetModState()));
         }
         return true;
     }
     if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN || event->type == SDL_EVENT_MOUSE_BUTTON_UP) {
         button = foundation_ui_linux_button(event->button.button);
         if (button == 0)
-            return true;
+            return surface != NULL;
         button_index = button - 272;
+        if (ui->captured_surface != NULL) {
+            surface = ui->captured_surface;
+        } else if (event->type == SDL_EVENT_MOUSE_BUTTON_UP && ui->focused_surface != NULL &&
+                   ui->focused_surface->buttons[button_index]) {
+            surface = ui->focused_surface;
+        } else if (surface == NULL) {
+            surface = foundation_ui_surface_at(ui, event->button.x, event->button.y);
+            if (surface != NULL && surface->input_mode != FOUNDATION_UI_SURFACE_INPUT_EMBEDDED) {
+                surface = NULL;
+            }
+        }
+        if (surface == NULL)
+            return false;
         surface->buttons[button_index] = event->button.down;
         if (foundation_ui_surface_point(surface, event->button.x, event->button.y, &x, &y)) {
             (void)foundation_ui_enqueue_input(
                 surface,
-                (foundation_ui_input){.kind = FOUNDATION_UI_INPUT_MOUSE_MOVE, .x = x, .y = y});
+                foundation_ui_with_modifiers(
+                    (foundation_ui_input){.kind = FOUNDATION_UI_INPUT_MOUSE_MOVE, .x = x, .y = y},
+                    SDL_GetModState()));
         }
         (void)foundation_ui_enqueue_input(
-            surface, (foundation_ui_input){.kind = FOUNDATION_UI_INPUT_MOUSE_BUTTON,
-                                           .button = button,
-                                           .down = event->button.down});
+            surface, foundation_ui_with_modifiers(
+                         (foundation_ui_input){.kind = FOUNDATION_UI_INPUT_MOUSE_BUTTON,
+                                               .button = button,
+                                               .down = event->button.down},
+                         SDL_GetModState()));
+        if (!event->button.down && surface->input_mode == FOUNDATION_UI_SURFACE_INPUT_EMBEDDED &&
+            !foundation_ui_inside_surface(surface, event->button.x, event->button.y)) {
+            foundation_ui_leave_surface(ui, surface);
+        }
         return true;
     }
     if (event->type == SDL_EVENT_MOUSE_WHEEL) {
+        if (ui->captured_surface != NULL) {
+            surface = ui->captured_surface;
+        } else {
+            surface = foundation_ui_surface_at(ui, event->wheel.mouse_x, event->wheel.mouse_y);
+            if (surface != NULL && surface->input_mode != FOUNDATION_UI_SURFACE_INPUT_EMBEDDED) {
+                surface = NULL;
+            }
+        }
+        if (surface == NULL)
+            return false;
         delta = event->wheel.integer_y;
         if (delta == 0 && event->wheel.y != 0.0f) {
             delta = event->wheel.y > 0.0f ? 1 : -1;
         }
         if (delta != 0) {
             (void)foundation_ui_enqueue_input(
-                surface, (foundation_ui_input){.kind = FOUNDATION_UI_INPUT_WHEEL, .delta = delta});
+                surface,
+                foundation_ui_with_modifiers(
+                    (foundation_ui_input){.kind = FOUNDATION_UI_INPUT_WHEEL, .delta = delta},
+                    SDL_GetModState()));
         }
         return true;
     }
+    if (event->type == SDL_EVENT_TEXT_INPUT) {
+        surface = ui->captured_surface != NULL ? ui->captured_surface : ui->focused_surface;
+        if (surface == NULL)
+            return false;
+        (void)foundation_ui_enqueue_text(surface, event->text.text, SDL_GetModState());
+        return true;
+    }
     if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
-        if (event->key.repeat)
-            return true;
+        surface = ui->captured_surface != NULL ? ui->captured_surface : ui->focused_surface;
+        if (surface == NULL)
+            return false;
         key = foundation_ui_linux_key(event->key.scancode);
         if (key == 0)
             return true;
         surface->keys[key] = event->key.down;
         (void)foundation_ui_enqueue_input(
-            surface, (foundation_ui_input){
-                         .kind = FOUNDATION_UI_INPUT_KEY, .key = key, .down = event->key.down});
+            surface, foundation_ui_with_modifiers(
+                         (foundation_ui_input){
+                             .kind = FOUNDATION_UI_INPUT_KEY, .key = key, .down = event->key.down},
+                         event->key.mod));
         return true;
     }
     return false;
@@ -394,6 +511,7 @@ int32_t foundation_ui_destroy_surface(uint64_t handle, uint64_t surface_id) {
     if (surface == NULL)
         return FOUNDATION_UI_INVALID;
     foundation_ui_release_surface_input(ui, surface);
+    foundation_ui_leave_surface(ui, surface);
     SDL_free(surface->image.pixels);
     SDL_DestroyTexture(surface->image.texture);
     SDL_memset(surface, 0, sizeof(*surface));
@@ -455,22 +573,54 @@ int32_t foundation_ui_image(uint64_t handle, uint64_t surface_id) {
     image = nk_image_ptr(surface->image.texture);
     nk_draw_image(canvas, target, &image, nk_rgb(255, 255, 255));
     surface->bounds = target;
+    surface->layout_bounds = bounds;
     surface->bounds_valid = true;
     ui->surface_draw_sequence++;
     surface->draw_order = ui->surface_draw_sequence;
     return FOUNDATION_UI_OK;
 }
 
-int32_t foundation_ui_poll_surface_input(uint64_t handle, uint64_t surface_id, uint64_t* kind,
-                                         uint64_t* x, uint64_t* y, uint64_t* button, uint64_t* key,
-                                         bool* down, int64_t* delta) {
+int32_t foundation_ui_surface_size(uint64_t handle, uint64_t surface_id, uint64_t* width,
+                                   uint64_t* height) {
     foundation_ui* ui = foundation_ui_from(handle);
     foundation_ui_surface* surface;
-    foundation_ui_input input;
-    if (ui == NULL || kind == NULL || x == NULL || y == NULL || button == NULL || key == NULL ||
-        down == NULL || delta == NULL) {
-        return FOUNDATION_UI_POLL_FAILED;
+    if (ui == NULL || width == NULL || height == NULL)
+        return FOUNDATION_UI_INVALID;
+    surface = foundation_ui_surface_for(ui, surface_id);
+    if (surface == NULL)
+        return FOUNDATION_UI_INVALID;
+    if (!surface->bounds_valid || !isfinite(surface->layout_bounds.w) ||
+        !isfinite(surface->layout_bounds.h) || surface->layout_bounds.w <= 0.0f ||
+        surface->layout_bounds.h <= 0.0f) {
+        return FOUNDATION_UI_FAILED;
     }
+    *width = (uint64_t)(surface->layout_bounds.w + 0.5f);
+    *height = (uint64_t)(surface->layout_bounds.h + 0.5f);
+    return *width == 0 || *height == 0 ? FOUNDATION_UI_FAILED : FOUNDATION_UI_OK;
+}
+
+int32_t foundation_ui_set_surface_input_mode(uint64_t handle, uint64_t surface_id, uint64_t mode) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    foundation_ui_surface* surface;
+    if (ui == NULL || mode > FOUNDATION_UI_SURFACE_INPUT_EMBEDDED)
+        return FOUNDATION_UI_INVALID;
+    surface = foundation_ui_surface_for(ui, surface_id);
+    if (surface == NULL)
+        return FOUNDATION_UI_INVALID;
+    if (surface->input_mode != mode) {
+        foundation_ui_release_surface_input(ui, surface);
+        if (mode != FOUNDATION_UI_SURFACE_INPUT_EMBEDDED)
+            foundation_ui_leave_surface(ui, surface);
+    }
+    surface->input_mode = mode;
+    return FOUNDATION_UI_OK;
+}
+
+static int32_t foundation_ui_take_surface_input(foundation_ui* ui, uint64_t surface_id,
+                                                foundation_ui_input* input) {
+    foundation_ui_surface* surface;
+    if (ui == NULL || input == NULL)
+        return FOUNDATION_UI_POLL_FAILED;
     surface = foundation_ui_surface_for(ui, surface_id);
     if (surface == NULL)
         return FOUNDATION_UI_POLL_FAILED;
@@ -483,9 +633,27 @@ int32_t foundation_ui_poll_surface_input(uint64_t handle, uint64_t surface_id, u
     }
     if (surface->input_count == 0)
         return FOUNDATION_UI_POLL_EMPTY;
-    input = surface->input_queue[surface->input_head];
+    *input = surface->input_queue[surface->input_head];
     surface->input_head = (surface->input_head + 1) % FOUNDATION_UI_INPUT_CAPACITY;
     surface->input_count--;
+    return FOUNDATION_UI_POLL_EVENT;
+}
+
+int32_t foundation_ui_poll_surface_input(uint64_t handle, uint64_t surface_id, uint64_t* kind,
+                                         uint64_t* x, uint64_t* y, uint64_t* button, uint64_t* key,
+                                         bool* down, int64_t* delta) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    foundation_ui_input input;
+    int32_t result;
+    if (ui == NULL || kind == NULL || x == NULL || y == NULL || button == NULL || key == NULL ||
+        down == NULL || delta == NULL) {
+        return FOUNDATION_UI_POLL_FAILED;
+    }
+    do {
+        result = foundation_ui_take_surface_input(ui, surface_id, &input);
+        if (result != FOUNDATION_UI_POLL_EVENT)
+            return result;
+    } while (input.kind > FOUNDATION_UI_INPUT_WHEEL);
     *kind = input.kind;
     *x = input.x;
     *y = input.y;
@@ -496,6 +664,39 @@ int32_t foundation_ui_poll_surface_input(uint64_t handle, uint64_t surface_id, u
     return FOUNDATION_UI_POLL_EVENT;
 }
 
+int32_t foundation_ui_poll_surface_event(uint64_t handle, uint64_t surface_id, uint64_t* kind,
+                                         uint64_t* x, uint64_t* y, uint64_t* button, uint64_t* key,
+                                         bool* down, int64_t* delta, bool* control, bool* shift,
+                                         bool* alt, bool* super, fdn_string* text) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    foundation_ui_input input;
+    int32_t result;
+    if (ui == NULL || kind == NULL || x == NULL || y == NULL || button == NULL || key == NULL ||
+        down == NULL || delta == NULL || control == NULL || shift == NULL || alt == NULL ||
+        super == NULL || text == NULL) {
+        return FOUNDATION_UI_POLL_FAILED;
+    }
+    result = foundation_ui_take_surface_input(ui, surface_id, &input);
+    if (result != FOUNDATION_UI_POLL_EVENT)
+        return result;
+    *kind = input.kind;
+    *x = input.x;
+    *y = input.y;
+    *button = input.button;
+    *key = input.key;
+    *down = input.down;
+    *delta = input.delta;
+    *control = input.control;
+    *shift = input.shift;
+    *alt = input.alt;
+    *super = input.super;
+    fdn_string_drop(text);
+    *text = foundation_runtime_string_copy(&(fdn_string){input.text, input.text_length, 0});
+    if (input.text_length != 0 && text->length == 0)
+        return FOUNDATION_UI_POLL_FAILED;
+    return FOUNDATION_UI_POLL_EVENT;
+}
+
 bool foundation_ui_surface_captured(uint64_t handle, uint64_t surface_id) {
     foundation_ui* ui = foundation_ui_from(handle);
     foundation_ui_surface* surface;
@@ -503,6 +704,15 @@ bool foundation_ui_surface_captured(uint64_t handle, uint64_t surface_id) {
         return false;
     surface = foundation_ui_surface_for(ui, surface_id);
     return surface != NULL && ui->captured_surface == surface;
+}
+
+bool foundation_ui_surface_focused(uint64_t handle, uint64_t surface_id) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    foundation_ui_surface* surface;
+    if (ui == NULL)
+        return false;
+    surface = foundation_ui_surface_for(ui, surface_id);
+    return surface != NULL && (ui->captured_surface == surface || ui->focused_surface == surface);
 }
 
 int32_t foundation_ui_release_surface(uint64_t handle, uint64_t surface_id) {

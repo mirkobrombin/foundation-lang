@@ -238,6 +238,8 @@ if(FOUNDATION_BUILD_SDL_PROVIDER)
     add_library(foundation_sdl_provider STATIC
         providers/sdl/native/sdl_ui.c
         providers/sdl/native/sdl_layout.c
+        providers/sdl/native/sdl_controls.c
+        providers/sdl/native/sdl_icons.c
         providers/sdl/native/sdl_surface.c
         providers/sdl/native/sdl_terminal.c
         providers/sdl/native/sdl_widgets.c

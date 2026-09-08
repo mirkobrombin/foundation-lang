@@ -65,6 +65,30 @@ methods Window {
         status(imageNative(self.handle, surface.id))
     }
 
+    // Reports the logical cell size assigned by the latest draw.
+    fn SurfaceSize(self, surface Surface) Result<Size, Error> {
+        if surface.window != self.handle return .Err(.Invalid)
+        var width u64 = 0
+        var height u64 = 0
+        const value = surfaceSizeNative(self.handle, surface.id, &width, &height)
+        if value != 0 return .Err(errorFor(value))
+        .Ok(Size { Width = width Height = height })
+    }
+
+    // Selects exclusive capture or ordinary embedded focus for later input.
+    fn SetSurfaceInputMode(
+        &self,
+        surface Surface,
+        mode SurfaceInputMode
+    ) Result<void, Error> {
+        if surface.window != self.handle return .Err(.Invalid)
+        const value u64 = match mode {
+            Captured: 0
+            Embedded: 1
+        }
+        status(setSurfaceInputModeNative(self.handle, surface.id, value))
+    }
+
     // Removes and returns the oldest queued input for a surface.
     fn PollSurfaceInput(
         &self,
@@ -78,7 +102,12 @@ methods Window {
         var key u64 = 0
         var down = false
         var delta i64 = 0
-        const value = pollSurfaceInputNative(
+        var control = false
+        var shift = false
+        var alt = false
+        var super = false
+        var text = ""
+        const value = pollSurfaceEventNative(
             self.handle,
             surface.id,
             &kind,
@@ -87,7 +116,12 @@ methods Window {
             &button,
             &key,
             &down,
-            &delta
+            &delta,
+            &control,
+            &shift,
+            &alt,
+            &super,
+            &text
         )
         if value < 0 return .Err(.Failed)
         if value == 0 return .Ok(.None)
@@ -100,6 +134,11 @@ methods Window {
             Key = key
             Down = down
             Delta = delta
+            Control = control
+            Shift = shift
+            Alt = alt
+            Super = super
+            Text = text
         }))
     }
 
@@ -107,6 +146,12 @@ methods Window {
     fn SurfaceCaptured(self, surface Surface) bool {
         if surface.window != self.handle return false
         surfaceCapturedNative(self.handle, surface.id)
+    }
+
+    // Reports whether a surface owns keyboard input in either input mode.
+    fn SurfaceFocused(self, surface Surface) bool {
+        if surface.window != self.handle return false
+        surfaceFocusedNative(self.handle, surface.id)
     }
 
     // Releases all keys, buttons, and capture held by a surface.

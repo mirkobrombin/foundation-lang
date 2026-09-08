@@ -3,6 +3,16 @@ package foundation.ui.sdl
 import foundation.ui
 import std.bytes
 
+fn surfaceSizeFailed(window ui.Window, surface ui.Surface) bool {
+    match window.SurfaceSize(surface) {
+        Ok(value): { discard value false }
+        Err(error): match error {
+            Failed: true
+            _: false
+        }
+    }
+}
+
 test "provider opens a native window" {
     const opened = Open("Foundation UI", 720, 480) else {
         fail("provider did not open a window")
@@ -48,6 +58,23 @@ test "provider keeps surfaces independent" {
     pass()
 }
 
+test "provider selects embedded surface input" {
+    const opened = Open("Foundation UI", 720, 480) else {
+        fail("provider did not open a window")
+    }
+    var window = opened
+    const surface = window.CreateSurface() else {
+        fail("provider did not create a surface")
+    }
+    window.SetSurfaceInputMode(surface, .Embedded) else {
+        fail("provider did not select embedded surface input")
+    }
+    if window.SurfaceCaptured(surface) || window.SurfaceFocused(surface) {
+        fail("provider focused an idle embedded surface")
+    }
+    pass()
+}
+
 test "provider rejects a surface from another window" {
     const firstOpened = Open("First", 320, 240) else {
         fail("provider did not open the first window")
@@ -83,6 +110,43 @@ test "provider rejects a surface from another window" {
     discard secondFrame
     secondWindow.EndFrame() else {
         fail("provider did not end the second window frame")
+    }
+    pass()
+}
+
+test "provider reports a surface layout size" {
+    const opened = Open("Foundation UI", 720, 480) else {
+        fail("provider did not open a window")
+    }
+    var window = opened
+    const surface = window.CreateSurface() else {
+        fail("provider did not create a surface")
+    }
+    window.UpdateSurface(surface, 1, 1, bytes.FromText("RGBA")) else {
+        fail("provider did not update the surface")
+    }
+    if !surfaceSizeFailed(window, surface) {
+        fail("provider reported an undrawn surface size")
+    }
+    const frame = window.BeginFrame() else {
+        fail("provider did not begin a frame")
+    }
+    discard frame
+    if window.BeginRoot() {
+        window.Row(80.0, 1)
+        window.DrawSurface(surface) else {
+            fail("provider did not draw the surface")
+        }
+        const surfaceSize = window.SurfaceSize(surface) else {
+            fail("provider did not report the surface cell size")
+        }
+        if surfaceSize.Width == 0 || surfaceSize.Height == 0 {
+            fail("provider reported an empty surface cell")
+        }
+        window.EndRoot()
+    }
+    window.EndFrame() else {
+        fail("provider did not end the frame")
     }
     pass()
 }
@@ -142,9 +206,28 @@ test "provider draws standard widgets" {
     discard frame
     if window.BeginRoot() {
         window.Titlebar("Foundation UI", "widgets")
-        window.Row(48.0, 2)
+        window.Row(48.0, 16)
         window.ApplicationIcon()
+        discard window.MonogramButton("UI", "Monogram", ui.Color {
+            Red = 98
+            Green = 100
+            Blue = 167
+            Alpha = 255
+        }, false, true)
         discard window.IconButton(.Theme, "Theme", false, true)
+        discard window.IconButton(.Home, "Home", false, true)
+        discard window.IconButton(.Add, "Add", false, true)
+        discard window.IconButton(.Workspace, "Workspace", false, true)
+        discard window.IconButton(.Key, "Key", false, true)
+        discard window.IconButton(.Settings, "Settings", false, true)
+        discard window.IconButton(.Back, "Back", false, true)
+        discard window.IconButton(.Forward, "Forward", false, true)
+        discard window.IconButton(.Reload, "Reload", false, true)
+        discard window.IconButton(.External, "External", false, true)
+        discard window.IconButton(.Split, "Split", false, true)
+        discard window.IconButton(.Notification, "Notification", false, true)
+        discard window.IconButton(.Download, "Download", false, true)
+        discard window.IconButton(.Web, "Web", false, true)
         window.Row(36.0, 1)
         window.Heading("Heading")
         window.Label("Label", .Accent, false)

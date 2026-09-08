@@ -8,7 +8,7 @@ The SDK includes `foundation.ui.sdl`, an optional SDL3 and Nuklear provider. Imp
 adds its native sources and SDL3 link requirement through `foundation.package`.
 
 ```text
-dependency foundation.ui.sdl 1.0.0 sdk providers/sdl
+dependency foundation.ui.sdl 1.1.0 sdk providers/sdl
 ```
 
 ```foundation
@@ -61,15 +61,20 @@ The drawing API uses immediate-mode rows and groups. Widget calls apply to the c
 between `BeginRoot` and `EndRoot`. The provider supplies client-side window controls and removes
 rounded corners while maximized on platforms that support shaped windows.
 
+`IconButton` draws provider-owned interface symbols. `MonogramButton` draws a compact application
+or account mark from caller-owned text and color, so rails can identify dynamic entries without
+adding product symbols to the provider ABI.
+
 ## Surfaces
 
 A surface carries RGBA8 pixels from a browser, remote desktop, game renderer, or another producer.
 Each window can create up to 16 surfaces. Their textures, bounds, draw order, input queues, and
-capture state remain independent.
+focus state remain independent.
 
 ```foundation
 const surface = window.CreateSurface() else { return 1 }
 window.UpdateSurface(surface, width, height, pixels) else { return 1 }
+window.SetSurfaceInputMode(surface, .Embedded) else { return 1 }
 window.DrawSurface(surface) else { return 1 }
 ```
 
@@ -77,11 +82,19 @@ window.DrawSurface(surface) else { return 1 }
 the active cell. `DestroySurface` releases the provider resource; using its identifier afterward
 returns `Invalid`.
 
-`PollSurfaceInput` reports coordinates in the inclusive 0 through 32767 range. Buttons and keys
-use the same Linux input-event wire representation as `std.desktop`, so remote input can cross
-platform boundaries without rewriting the protocol. Pressing F8 releases a captured surface and
-emits release events for held keys and buttons. If the bounded input queue fills, the next poll
-returns `Failed` after releasing capture and every held input.
+`SurfaceSize` reports the logical cell assigned by the latest `DrawSurface` call. A browser or game
+renderer can resize its viewport to that cell before producing the next frame.
+
+`PollSurfaceInput` reports coordinates in the inclusive 0 through 32767 range, modifier state, and
+committed UTF-8 text. Buttons and keys use the same Linux input-event wire representation as
+`std.desktop`, so remote input can cross platform boundaries without rewriting the protocol.
+The default `Captured` mode owns pointer and keyboard input until F8 or an explicit release. It is
+suited to a remote desktop. `Embedded` mode retains keyboard focus after a click while clicks and
+pointer motion outside the surface return to surrounding widgets. A `MouseLeave` event clears
+provider hover state, and repeated key-down events remain visible to the consumer. Embedded mode is
+suited to browsers, games, and other views hosted inside an application shell. A release emits
+transitions for held keys and buttons. If the bounded input queue fills, the next poll returns
+`Failed` after releasing focus and every held input.
 
 ## Terminal
 
@@ -92,7 +105,7 @@ remote transport and for forwarding resize events.
 
 ## Provider boundary
 
-The C header `foundation/ui.h` defines UI ABI 1.0. The provider reports the major in the upper 32
+The C header `foundation/ui.h` defines UI ABI 1.1. The provider reports the major in the upper 32
 bits and the minor in the lower 32 bits. Clients accept the required major and a minor at least as
 new as the contract they use. Existing functions and layouts remain stable under the Foundation
 compatibility contract; compatible releases may append functions or provider capabilities. The

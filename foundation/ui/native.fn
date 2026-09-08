@@ -70,6 +70,17 @@ extern c fn iconButtonNative(
     selected bool,
     enabled bool
 ) bool as foundation_ui_icon_button
+extern c fn monogramButtonNative(
+    handle u64,
+    monogram String,
+    label String,
+    red u64,
+    green u64,
+    blue u64,
+    alpha u64,
+    selected bool,
+    enabled bool
+) bool as foundation_ui_monogram_button
 extern c fn headingNative(
     handle u64,
     value String
@@ -138,7 +149,18 @@ extern c fn imageCommitNative(
     surface u64
 ) i32 as foundation_ui_image_commit
 extern c fn imageNative(handle u64, surface u64) i32 as foundation_ui_image
-extern c fn pollSurfaceInputNative(
+extern c fn surfaceSizeNative(
+    handle u64,
+    surface u64,
+    &width u64,
+    &height u64
+) i32 as foundation_ui_surface_size
+extern c fn setSurfaceInputModeNative(
+    handle u64,
+    surface u64,
+    mode u64
+) i32 as foundation_ui_set_surface_input_mode
+extern c fn pollSurfaceEventNative(
     handle u64,
     surface u64,
     &kind u64,
@@ -147,12 +169,21 @@ extern c fn pollSurfaceInputNative(
     &button u64,
     &key u64,
     &down bool,
-    &delta i64
-) i32 as foundation_ui_poll_surface_input
+    &delta i64,
+    &control bool,
+    &shift bool,
+    &alt bool,
+    &super bool,
+    &text String
+) i32 as foundation_ui_poll_surface_event
 extern c fn surfaceCapturedNative(
     handle u64,
     surface u64
 ) bool as foundation_ui_surface_captured
+extern c fn surfaceFocusedNative(
+    handle u64,
+    surface u64
+) bool as foundation_ui_surface_focused
 extern c fn releaseSurfaceNative(
     handle u64,
     surface u64

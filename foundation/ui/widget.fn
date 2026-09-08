@@ -55,6 +55,28 @@ methods Window {
         iconButtonNative(self.handle, iconValue(icon), label, selected, enabled)
     }
 
+    // Draws a compact colored monogram action and reports activation.
+    fn MonogramButton(
+        &self,
+        monogram String,
+        label String,
+        color Color,
+        selected bool,
+        enabled bool
+    ) bool {
+        monogramButtonNative(
+            self.handle,
+            monogram,
+            label,
+            u64.From(color.Red),
+            u64.From(color.Green),
+            u64.From(color.Blue),
+            u64.From(color.Alpha),
+            selected,
+            enabled
+        )
+    }
+
     // Draws a heading with the active application palette.
     fn Heading(&self, value String) void {
         headingNative(self.handle, value)

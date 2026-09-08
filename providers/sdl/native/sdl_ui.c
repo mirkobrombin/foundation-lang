@@ -207,6 +207,8 @@ static void foundation_ui_process_event(foundation_ui* ui, SDL_Event* event, boo
     }
     if (event->type == SDL_EVENT_WINDOW_FOCUS_LOST) {
         foundation_ui_release_surface_input(ui, ui->captured_surface);
+        foundation_ui_release_surface_input(ui, ui->focused_surface);
+        foundation_ui_leave_surface(ui, ui->hovered_surface);
         ui->terminal_focus = false;
     }
     if (!foundation_ui_handle_terminal_event(ui, event) &&
@@ -592,7 +594,7 @@ int32_t foundation_ui_end_frame(uint64_t handle) {
     if (!SDL_RenderPresent(ui->renderer))
         return FOUNDATION_UI_FAILED;
     nk_sdl_update_TextInput(ui->context);
-    if (ui->terminal_focus)
+    if (ui->terminal_focus || ui->captured_surface != NULL || ui->focused_surface != NULL)
         (void)SDL_StartTextInput(ui->window);
     return FOUNDATION_UI_OK;
 }
