@@ -45,8 +45,15 @@
 #define NK_SDL3_RENDERER_IMPLEMENTATION
 #endif
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 5287)
+#endif
 #include "vendor/nuklear.h"
 #include "vendor/nuklear_sdl3_renderer.h"
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 typedef struct foundation_ui_input {
     uint64_t kind;
