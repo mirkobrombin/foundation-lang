@@ -150,8 +150,8 @@ bool foundation_ui_image_button(uint64_t handle, uint64_t surface_id, const fdn_
     else if ((state & NK_WIDGET_STATE_HOVER) != 0)
         nk_fill_rect(canvas, button_bounds, 8.0f, ui->raised);
     image_bounds = button_bounds;
-    image_bounds.w = button_bounds.w < 24.0f ? button_bounds.w : 24.0f;
-    image_bounds.h = button_bounds.h < 24.0f ? button_bounds.h : 24.0f;
+    image_bounds.w = button_bounds.w < 20.0f ? button_bounds.w : 20.0f;
+    image_bounds.h = button_bounds.h < 20.0f ? button_bounds.h : 20.0f;
     source_ratio = (float)surface->image.width / (float)surface->image.height;
     if (image_bounds.w / image_bounds.h > source_ratio)
         image_bounds.w = image_bounds.h * source_ratio;
