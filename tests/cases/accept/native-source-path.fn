@@ -1,0 +1,6 @@
+extern c fn nativeSourcePathIsRelative() bool as foundation_native_source_path_is_relative
+
+fn main() i32 {
+    if nativeSourcePathIsRelative() return 0
+    1
+}

@@ -141,6 +141,25 @@ std::vector<std::string> llvmReproducibleSourcePaths(
     return paths;
 }
 
+std::filesystem::path normalizedAbsolutePath(const std::filesystem::path &path) {
+    std::error_code error;
+    const auto absolute = std::filesystem::absolute(path, error);
+    return (error ? path : absolute).lexically_normal();
+}
+
+void appendSourcePathMap(std::vector<std::string> &arguments, std::string_view compilerId,
+                         const std::filesystem::path &source, std::string_view replacement) {
+    if (source.empty()) {
+        return;
+    }
+    const auto prefix = normalizedAbsolutePath(source).string();
+    if (compilerId == "MSVC") {
+        arguments.push_back("/pathmap:" + prefix + "=" + std::string(replacement));
+        return;
+    }
+    arguments.push_back("-ffile-prefix-map=" + prefix + "=" + std::string(replacement));
+}
+
 std::filesystem::path sourceIdentity(const std::filesystem::path &path) {
     std::error_code error;
     auto result = std::filesystem::absolute(path, error);
@@ -539,6 +558,15 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
         if (verifyAllocations) {
             arguments.push_back("/DFOUNDATION_VERIFY_ALLOCATIONS=1");
         }
+        appendSourcePathMap(arguments, compilerId, runtimeInclude.parent_path().parent_path(),
+                            "foundation-sdk");
+        appendSourcePathMap(arguments, compilerId, generated.parent_path(), "foundation-build");
+        for (std::size_t index = 0; index < nativeInputs.size(); ++index) {
+            if (nativeInputs[index].extension() == ".c") {
+                appendSourcePathMap(arguments, compilerId, nativeInputs[index].parent_path(),
+                                    "native/" + std::to_string(index));
+            }
+        }
         arguments.push_back(generated.string());
         for (const auto &source : runtimeSources) {
             arguments.push_back(source.string());
@@ -560,6 +588,15 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
 
     arguments.insert(arguments.end(), {"-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
                                        generated.string()});
+    appendSourcePathMap(arguments, compilerId, runtimeInclude.parent_path().parent_path(),
+                        "foundation-sdk");
+    appendSourcePathMap(arguments, compilerId, generated.parent_path(), "foundation-build");
+    for (std::size_t index = 0; index < nativeInputs.size(); ++index) {
+        if (nativeInputs[index].extension() == ".c") {
+            appendSourcePathMap(arguments, compilerId, nativeInputs[index].parent_path(),
+                                "native/" + std::to_string(index));
+        }
+    }
 #if defined(FOUNDATION_GENERATED_ADDRESS_UNDEFINED_SANITIZER)
     arguments.push_back("-fsanitize=address,undefined");
 #elif defined(FOUNDATION_GENERATED_THREAD_SANITIZER)
@@ -660,6 +697,9 @@ bool compileLibraryObject(const std::filesystem::path &source,
                                            "/c", source.string(), "/I" + runtimeInclude.string(),
                                            "/I" + generatedInclude.string(),
                                            "/Fo:" + output.string()});
+        appendSourcePathMap(arguments, compilerId, runtimeInclude.parent_path().parent_path(),
+                            "foundation-sdk");
+        appendSourcePathMap(arguments, compilerId, source.parent_path(), "source");
     } else {
         arguments.insert(arguments.end(), {"-std=c11", "-O2", "-Wall", "-Wextra",
                                            "-Wpedantic", "-Werror"});
@@ -669,6 +709,9 @@ bool compileLibraryObject(const std::filesystem::path &source,
         arguments.insert(arguments.end(), {"-I", runtimeInclude.string(), "-I",
                                            generatedInclude.string(), "-c", source.string(),
                                            "-o", output.string()});
+        appendSourcePathMap(arguments, compilerId, runtimeInclude.parent_path().parent_path(),
+                            "foundation-sdk");
+        appendSourcePathMap(arguments, compilerId, source.parent_path(), "source");
     }
     return runProcess(arguments, ProcessOutput::StdoutToStderrOnFailure) == 0;
 }

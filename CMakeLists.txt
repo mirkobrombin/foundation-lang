@@ -3592,6 +3592,18 @@ if(BUILD_TESTING)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
         )
     endforeach()
+    foreach(native_source_path_backend IN ITEMS llvm c)
+        add_test(
+            NAME compiler.run.native-source-path-${native_source_path_backend}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/native-source-path.fn
+                -DNATIVE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/native_source_path.c
+                -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/native-source-path.out
+                -DBACKEND=${native_source_path_backend}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run-native-single.cmake
+        )
+    endforeach()
     add_test(
         NAME compiler.run.service-actions
         COMMAND ${CMAKE_COMMAND}
