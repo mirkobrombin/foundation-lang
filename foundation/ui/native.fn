@@ -36,6 +36,14 @@ extern c fn sizeNative(
 extern c fn setVisibleNative(handle u64, visible bool) i32 as foundation_ui_set_visible
 extern c fn visibleNative(handle u64) bool as foundation_ui_visible
 extern c fn raiseNative(handle u64) i32 as foundation_ui_raise
+extern c fn requestOpenFileDialogNative(
+    handle u64
+) i32 as foundation_ui_request_open_file_dialog
+extern c fn pollOpenFileDialogNative(
+    handle u64,
+    &state u64,
+    &path String
+) i32 as foundation_ui_poll_open_file_dialog
 extern c fn createTrayNative(
     handle u64,
     tooltip String

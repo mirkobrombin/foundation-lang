@@ -1,0 +1,21 @@
+package foundation.ui
+
+methods Window {
+    // Starts one provider-owned native file selection.
+    fn RequestOpenFileDialog(&self) Result<void, Error> {
+        status(requestOpenFileDialogNative(self.handle))
+    }
+
+    // Polls the active file selection and consumes its terminal result.
+    fn PollOpenFileDialog(&self) Result<FileDialog, Error> {
+        var state u64 = 0
+        var path = ""
+        const value = pollOpenFileDialogNative(self.handle, &state, &path)
+        if value != 0 return .Err(errorFor(value))
+        if state == 0 return .Ok(FileDialog.Idle)
+        if state == 1 return .Ok(FileDialog.Pending)
+        if state == 2 return .Ok(FileDialog.Cancelled)
+        if state == 3 return .Ok(FileDialog.Selected(path = path))
+        .Err(.Failed)
+    }
+}

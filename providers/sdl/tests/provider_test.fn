@@ -114,6 +114,21 @@ test "provider configures content geometry" {
     pass()
 }
 
+test "provider reports an idle file dialog" {
+    const opened = Open("Foundation UI", 720, 480) else {
+        fail("provider did not open a window")
+    }
+    var window = opened
+    const dialog = window.PollOpenFileDialog() else {
+        fail("provider did not report file dialog state")
+    }
+    match dialog {
+        Idle: {}
+        _: { fail("provider reported an active file dialog") }
+    }
+    pass()
+}
+
 test "provider keeps surfaces independent" {
     const opened = Open("Foundation UI", 720, 480) else {
         fail("provider did not open a window")

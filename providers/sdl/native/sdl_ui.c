@@ -566,6 +566,10 @@ void foundation_ui_close(uint64_t* handle) {
     }
     foundation_ui_destroy_tray(ui->id);
     foundation_ui_unregister(ui);
+    if (ui->file_dialog != NULL) {
+        foundation_ui_file_dialog_release(ui->file_dialog);
+        ui->file_dialog = NULL;
+    }
     for (edit_index = 0; edit_index < ui->edit_count; edit_index++) {
         if (ui->edit_states[edit_index].secret) {
             SDL_memset(ui->edit_states[edit_index].buffer, 0, ui->edit_states[edit_index].capacity);

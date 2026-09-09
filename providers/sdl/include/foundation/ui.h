@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #define FOUNDATION_UI_ABI_MAJOR 1
-#define FOUNDATION_UI_ABI_MINOR 4
+#define FOUNDATION_UI_ABI_MINOR 5
 #define FOUNDATION_UI_ABI_VERSION(major, minor) ((((uint64_t)(major)) << 32U) | (uint64_t)(minor))
 #define FOUNDATION_UI_ABI_CURRENT                                                                  \
     FOUNDATION_UI_ABI_VERSION(FOUNDATION_UI_ABI_MAJOR, FOUNDATION_UI_ABI_MINOR)
@@ -81,6 +81,13 @@ enum foundation_ui_poll_result {
     FOUNDATION_UI_POLL_EVENT = 1,
 };
 
+enum foundation_ui_file_dialog_state {
+    FOUNDATION_UI_FILE_DIALOG_IDLE = 0,
+    FOUNDATION_UI_FILE_DIALOG_PENDING = 1,
+    FOUNDATION_UI_FILE_DIALOG_CANCELLED = 2,
+    FOUNDATION_UI_FILE_DIALOG_SELECTED = 3,
+};
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -108,6 +115,10 @@ extern "C" {
  * retain caller storage.
  *
  * Secret edits permit paste but suppress clipboard copies and wipe provider buffers before release.
+ * A window owns at most one open-file dialog. Request starts a single-file selection on the UI
+ * thread. Poll returns PENDING until the provider callback completes, then reports CANCELLED,
+ * SELECTED, or a failed status once before returning to IDLE. A selected path is an owned string.
+ * Closing the window discards its pending dialog result without invalidating the callback storage.
  * String output parameters must point to initialized fdn_string values. The function drops the
  * previous value and returns an owned string that the caller must drop. Other output pointers must
  * be non-null. Open writes zero to handle on failure; close accepts zero or stale handles.
@@ -128,6 +139,8 @@ int32_t foundation_ui_size(uint64_t handle, uint64_t* width, uint64_t* height);
 int32_t foundation_ui_set_visible(uint64_t handle, bool visible);
 bool foundation_ui_visible(uint64_t handle);
 int32_t foundation_ui_raise(uint64_t handle);
+int32_t foundation_ui_request_open_file_dialog(uint64_t handle);
+int32_t foundation_ui_poll_open_file_dialog(uint64_t handle, uint64_t* state, fdn_string* path);
 int32_t foundation_ui_create_tray(uint64_t handle, const fdn_string* tooltip);
 int32_t foundation_ui_set_tray_tooltip(uint64_t handle, const fdn_string* tooltip);
 int32_t foundation_ui_add_tray_action(uint64_t handle, const fdn_string* label, uint64_t* action);

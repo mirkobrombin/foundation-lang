@@ -8,7 +8,7 @@ The SDK includes `foundation.ui.sdl`, an optional SDL3 and Nuklear provider. Imp
 adds its native sources and SDL3 link requirement through `foundation.package`.
 
 ```text
-dependency foundation.ui.sdl 1.4.0 sdk providers/sdl
+dependency foundation.ui.sdl 1.5.0 sdk providers/sdl
 ```
 
 ```foundation
@@ -127,9 +127,16 @@ remote transport and for forwarding resize events.
 count controls the popup height. A successful begin must be paired with `EndContextMenu` in the
 same frame. `ContextMenuItem` accepts an enabled state and reports activation.
 
+## File selection
+
+`RequestOpenFileDialog` starts one asynchronous native file picker for a window.
+`PollOpenFileDialog` reports `Pending` until the picker returns `Cancelled` or an owned
+`Selected(path)` result. The terminal result is consumed by that poll, and the next poll returns
+`Idle`. Closing the window discards the pending result without leaving callback storage dangling.
+
 ## Provider boundary
 
-The C header `foundation/ui.h` defines UI ABI 1.4. The provider reports the major in the upper 32
+The C header `foundation/ui.h` defines UI ABI 1.5. The provider reports the major in the upper 32
 bits and the minor in the lower 32 bits. Clients accept the required major and a minor at least as
 new as the contract they use. Existing functions and layouts remain stable under the Foundation
 compatibility contract; compatible releases may append functions or provider capabilities. The

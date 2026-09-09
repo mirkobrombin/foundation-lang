@@ -1,6 +1,6 @@
 format foundation.package/v1
 name foundation.ui.sdl
-version 1.4.0
+version 1.5.0
 language 1
 fcs strict
 source src
@@ -8,6 +8,7 @@ test_source tests
 native_source native/sdl_ui.c
 native_source native/sdl_layout.c
 native_source native/sdl_controls.c
+native_source native/sdl_dialog.c
 native_source native/sdl_edit.c
 native_source native/sdl_icons.c
 native_source native/sdl_surface.c
@@ -17,4 +18,4 @@ native_source native/sdl_widgets.c
 native_source native/terminal_emulator.c
 native_link SDL3
 native_link m target linux
-foreign c sdl3-nuklear 1.4.0 path native abi c/v1
+foreign c sdl3-nuklear 1.5.0 path native abi c/v1

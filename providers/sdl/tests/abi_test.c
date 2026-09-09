@@ -18,6 +18,9 @@ _Static_assert(FOUNDATION_UI_SURFACE_INPUT_CAPTURED == 0,
                "ABI 1.1 captured input must preserve the default");
 _Static_assert(FOUNDATION_UI_SURFACE_INPUT_EMBEDDED == 1,
                "ABI 1.1 embedded input must append a value");
+_Static_assert(FOUNDATION_UI_FILE_DIALOG_IDLE == 0, "ABI 1.5 dialog values must remain stable");
+_Static_assert(FOUNDATION_UI_FILE_DIALOG_SELECTED == 3,
+               "ABI 1.5 dialog values must append values");
 
 int main(void) {
     uint64_t invalid = UINT64_MAX;
@@ -84,8 +87,12 @@ int main(void) {
         return 20;
     if (foundation_ui_poll_tray_action(invalid, &kind) != FOUNDATION_UI_POLL_FAILED)
         return 21;
+    if (foundation_ui_request_open_file_dialog(invalid) != FOUNDATION_UI_INVALID)
+        return 22;
+    if (foundation_ui_poll_open_file_dialog(invalid, &kind, &text) != FOUNDATION_UI_INVALID)
+        return 23;
     foundation_ui_close(&invalid);
     if (invalid != 0)
-        return 22;
+        return 24;
     return 0;
 }

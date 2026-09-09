@@ -348,7 +348,7 @@ test "SDK package dependencies resolve and load from the SDK root" {
             "version 1.0.0\n" +
             "language 1\n" +
             "source src\n" +
-            "dependency foundation.ui.sdl 1.4.0 sdk providers/sdl\n",
+            "dependency foundation.ui.sdl 1.5.0 sdk providers/sdl\n",
             1048576
         ))
     var manifestResult = readPackageManifest(manifestPath)

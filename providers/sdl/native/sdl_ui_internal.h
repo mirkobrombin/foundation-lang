@@ -105,6 +105,14 @@ typedef struct foundation_ui_texture {
     uint64_t height;
 } foundation_ui_texture;
 
+typedef struct foundation_ui_file_dialog {
+    SDL_Mutex* mutex;
+    SDL_AtomicInt references;
+    char* path;
+    size_t path_length;
+    uint64_t state;
+} foundation_ui_file_dialog;
+
 typedef struct foundation_ui_group_state {
     struct nk_vec2 group_padding;
     struct nk_vec2 spacing;
@@ -138,6 +146,7 @@ typedef struct foundation_ui {
     struct nk_font* heading_font;
     struct nk_font* terminal_font;
     foundation_ui_texture application_image;
+    foundation_ui_file_dialog* file_dialog;
     struct nk_rect terminal_bounds;
     struct nk_rect context_target;
     foundation_ui_surface surfaces[FOUNDATION_UI_SURFACE_CAPACITY];
@@ -219,6 +228,13 @@ bool foundation_ui_button_input(nk_flags* state, struct nk_rect bounds,
                                 const struct nk_input* input);
 void foundation_ui_set_context_target(foundation_ui* ui, struct nk_rect bounds);
 void foundation_ui_register_titlebar_region(foundation_ui* ui, struct nk_rect bounds);
+foundation_ui_file_dialog* foundation_ui_file_dialog_create(void);
+void foundation_ui_file_dialog_retain(foundation_ui_file_dialog* dialog);
+void foundation_ui_file_dialog_release(foundation_ui_file_dialog* dialog);
+void foundation_ui_file_dialog_complete(foundation_ui_file_dialog* dialog,
+                                        const char* const* filelist);
+int32_t foundation_ui_file_dialog_read(foundation_ui_file_dialog* dialog, uint64_t* state,
+                                       fdn_string* path);
 SDL_HitTestResult foundation_ui_window_hit_test(const foundation_ui* ui, int width, int height,
                                                 bool maximized, const SDL_Point* area);
 

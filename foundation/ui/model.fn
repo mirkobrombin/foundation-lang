@@ -28,6 +28,18 @@ enum FrameState {
     Closing
 }
 
+// Describes the current result of a window-owned open-file dialog.
+enum FileDialog {
+    // No dialog is active and no result is waiting.
+    Idle
+    // The provider is waiting for a selection or cancellation.
+    Pending
+    // The user closed the dialog without selecting a file.
+    Cancelled
+    // Owns the selected native file path.
+    Selected(path String)
+}
+
 // Selects the semantic color of a text label.
 enum LabelTone {
     // Uses the ordinary foreground color.

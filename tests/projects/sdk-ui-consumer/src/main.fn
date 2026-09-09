@@ -7,6 +7,8 @@ fn main() i32 {
     var window = opened
     const size = window.Size() else { return 1 }
     if size.Width != 320 || size.Height != 240 { return 1 }
+    const dialog = window.PollOpenFileDialog() else { return 1 }
+    match dialog { Idle: {} _: { return 1 } }
     const frame = window.BeginFrame() else { return 1 }
     discard frame
     if window.BeginRoot() {
