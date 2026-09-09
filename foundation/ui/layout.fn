@@ -31,6 +31,11 @@ methods Window {
         beginGroupNative(self.handle, name, true)
     }
 
+    // Opens a compact scrollable group without a visible scrollbar.
+    fn BeginCompactGroup(&self, name String) bool {
+        beginCompactGroupNative(self.handle, name)
+    }
+
     // Closes the current layout group.
     fn EndGroup(&self) void {
         endGroupNative(self.handle)

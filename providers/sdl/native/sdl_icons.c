@@ -127,3 +127,62 @@ void foundation_ui_draw_icon(struct nk_command_buffer* canvas, struct nk_rect bo
         return;
     }
 }
+
+void foundation_ui_draw_compact_icon(struct nk_command_buffer* canvas, struct nk_rect bounds,
+                                     uint64_t icon, struct nk_color color) {
+    const float x = bounds.x + bounds.w * 0.5f;
+    const float y = bounds.y + bounds.h * 0.5f;
+    const float left = x - 6.0f;
+    const float right = x + 6.0f;
+    const float top = y - 6.0f;
+    const float bottom = y + 6.0f;
+    if (icon == FOUNDATION_UI_ICON_BACK || icon == FOUNDATION_UI_ICON_FORWARD) {
+        const float direction = icon == FOUNDATION_UI_ICON_BACK ? 1.0f : -1.0f;
+        nk_stroke_line(canvas, x - 5.0f * direction, y, x + 5.0f * direction, y, 1.25f,
+                       color);
+        nk_stroke_line(canvas, x - 5.0f * direction, y, x - 1.5f * direction, y - 3.5f,
+                       1.25f, color);
+        nk_stroke_line(canvas, x - 5.0f * direction, y, x - 1.5f * direction, y + 3.5f,
+                       1.25f, color);
+        return;
+    }
+    if (icon == FOUNDATION_UI_ICON_RELOAD) {
+        nk_stroke_circle(canvas, nk_rect(x - 5.0f, y - 5.0f, 10.0f, 10.0f), 1.25f, color);
+        nk_stroke_line(canvas, x + 1.0f, y - 5.0f, x + 6.0f, y - 5.0f, 1.25f, color);
+        nk_stroke_line(canvas, x + 6.0f, y - 5.0f, x + 6.0f, y, 1.25f, color);
+        return;
+    }
+    if (icon == FOUNDATION_UI_ICON_EXTERNAL) {
+        nk_stroke_rect(canvas, nk_rect(left, y - 4.0f, 9.0f, 9.0f), 1.0f, 1.25f, color);
+        nk_stroke_line(canvas, x - 1.0f, y + 1.0f, right, top, 1.25f, color);
+        nk_stroke_line(canvas, right - 4.0f, top, right, top, 1.25f, color);
+        nk_stroke_line(canvas, right, top, right, top + 4.0f, 1.25f, color);
+        return;
+    }
+    if (icon == FOUNDATION_UI_ICON_SPLIT) {
+        nk_stroke_rect(canvas, nk_rect(left, top, 12.0f, 12.0f), 1.0f, 1.25f, color);
+        nk_stroke_line(canvas, x, top, x, bottom, 1.25f, color);
+        return;
+    }
+    if (icon == FOUNDATION_UI_ICON_NOTIFICATION) {
+        const float bell[] = {left + 2.0f,  y + 3.0f, left + 3.0f,  y + 1.0f,
+                              left + 3.0f,  y - 2.0f, x,            top,
+                              right - 3.0f, y - 2.0f, right - 3.0f, y + 1.0f,
+                              right - 2.0f, y + 3.0f};
+        nk_stroke_polyline(canvas, bell, 7, 1.25f, color);
+        nk_stroke_line(canvas, left + 1.0f, y + 3.0f, right - 1.0f, y + 3.0f, 1.25f, color);
+        return;
+    }
+    if (icon == FOUNDATION_UI_ICON_DOWNLOAD || icon == FOUNDATION_UI_ICON_SHARE) {
+        const float direction = icon == FOUNDATION_UI_ICON_SHARE ? -1.0f : 1.0f;
+        nk_stroke_rect(canvas, nk_rect(left, y, 12.0f, 6.0f), 1.0f, 1.25f, color);
+        nk_stroke_line(canvas, x, y - 5.0f * direction, x, y + 2.0f * direction, 1.25f,
+                       color);
+        nk_stroke_line(canvas, x, y - 5.0f * direction, x - 3.5f, y - 1.5f * direction,
+                       1.25f, color);
+        nk_stroke_line(canvas, x, y - 5.0f * direction, x + 3.5f, y - 1.5f * direction,
+                       1.25f, color);
+        return;
+    }
+    foundation_ui_draw_icon(canvas, bounds, icon, color);
+}

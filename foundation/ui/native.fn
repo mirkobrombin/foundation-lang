@@ -18,6 +18,16 @@ extern c fn setAccentNative(
     blue u64,
     alpha u64
 ) i32 as foundation_ui_set_accent
+extern c fn setContentPaddingNative(
+    handle u64,
+    horizontal u64,
+    vertical u64
+) i32 as foundation_ui_set_content_padding
+extern c fn setContentSpacingNative(
+    handle u64,
+    horizontal u64,
+    vertical u64
+) i32 as foundation_ui_set_content_spacing
 extern c fn sizeNative(
     handle u64,
     &width u64,
@@ -69,6 +79,10 @@ extern c fn beginGroupNative(
     name String,
     scrollable bool
 ) bool as foundation_ui_begin_group
+extern c fn beginCompactGroupNative(
+    handle u64,
+    name String
+) bool as foundation_ui_begin_compact_group
 extern c fn endGroupNative(handle u64) void as foundation_ui_end_group
 extern c fn spaceNative(handle u64, height f32) void as foundation_ui_space
 extern c fn emptyNative(handle u64) void as foundation_ui_empty
@@ -92,6 +106,13 @@ extern c fn iconButtonNative(
     selected bool,
     enabled bool
 ) bool as foundation_ui_icon_button
+extern c fn compactIconButtonNative(
+    handle u64,
+    icon u64,
+    label String,
+    selected bool,
+    enabled bool
+) bool as foundation_ui_compact_icon_button
 extern c fn monogramButtonNative(
     handle u64,
     monogram String,
@@ -103,6 +124,13 @@ extern c fn monogramButtonNative(
     selected bool,
     enabled bool
 ) bool as foundation_ui_monogram_button
+extern c fn imageButtonNative(
+    handle u64,
+    surface u64,
+    label String,
+    selected bool,
+    enabled bool
+) bool as foundation_ui_image_button
 extern c fn headingNative(
     handle u64,
     value String

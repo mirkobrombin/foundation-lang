@@ -59,7 +59,7 @@ file(WRITE "${consumer}/foundation.package"
     "language 1\n"
     "fcs strict\n"
     "source src\n"
-    "dependency foundation.ui.sdl 1.2.0 sdk providers/sdl\n"
+    "dependency foundation.ui.sdl 1.3.0 sdk providers/sdl\n"
 )
 file(WRITE "${consumer}/src/main.fn"
     "package sdk.ui.consumer\n\n"

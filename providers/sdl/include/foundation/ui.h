@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #define FOUNDATION_UI_ABI_MAJOR 1
-#define FOUNDATION_UI_ABI_MINOR 2
+#define FOUNDATION_UI_ABI_MINOR 3
 #define FOUNDATION_UI_ABI_VERSION(major, minor) ((((uint64_t)(major)) << 32U) | (uint64_t)(minor))
 #define FOUNDATION_UI_ABI_CURRENT                                                                  \
     FOUNDATION_UI_ABI_VERSION(FOUNDATION_UI_ABI_MAJOR, FOUNDATION_UI_ABI_MINOR)
@@ -121,6 +121,8 @@ int32_t foundation_ui_end_frame(uint64_t handle);
 int32_t foundation_ui_set_theme(uint64_t handle, uint64_t theme);
 int32_t foundation_ui_set_accent(uint64_t handle, uint64_t red, uint64_t green, uint64_t blue,
                                  uint64_t alpha);
+int32_t foundation_ui_set_content_padding(uint64_t handle, uint64_t horizontal, uint64_t vertical);
+int32_t foundation_ui_set_content_spacing(uint64_t handle, uint64_t horizontal, uint64_t vertical);
 int32_t foundation_ui_size(uint64_t handle, uint64_t* width, uint64_t* height);
 int32_t foundation_ui_set_visible(uint64_t handle, bool visible);
 bool foundation_ui_visible(uint64_t handle);
@@ -139,6 +141,7 @@ void foundation_ui_row_begin(uint64_t handle, float height, uint64_t columns);
 void foundation_ui_row_push(uint64_t handle, float ratio);
 void foundation_ui_row_end(uint64_t handle);
 bool foundation_ui_begin_group(uint64_t handle, const fdn_string* name, bool scrollable);
+bool foundation_ui_begin_compact_group(uint64_t handle, const fdn_string* name);
 void foundation_ui_end_group(uint64_t handle);
 void foundation_ui_space(uint64_t handle, float height);
 void foundation_ui_empty(uint64_t handle);
@@ -149,9 +152,13 @@ int32_t foundation_ui_application_icon_commit(uint64_t handle);
 void foundation_ui_application_icon(uint64_t handle);
 bool foundation_ui_icon_button(uint64_t handle, uint64_t icon, const fdn_string* label,
                                bool selected, bool enabled);
+bool foundation_ui_compact_icon_button(uint64_t handle, uint64_t icon, const fdn_string* label,
+                                       bool selected, bool enabled);
 bool foundation_ui_monogram_button(uint64_t handle, const fdn_string* monogram,
                                    const fdn_string* label, uint64_t red, uint64_t green,
                                    uint64_t blue, uint64_t alpha, bool selected, bool enabled);
+bool foundation_ui_image_button(uint64_t handle, uint64_t surface, const fdn_string* label,
+                                bool selected, bool enabled);
 void foundation_ui_heading(uint64_t handle, const fdn_string* value);
 void foundation_ui_label(uint64_t handle, const fdn_string* value, uint64_t tone, bool wrap);
 uint8_t* foundation_ui_terminal_buffer(uint64_t handle, uint64_t length, uint64_t* capacity);

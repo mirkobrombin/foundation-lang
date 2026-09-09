@@ -1,9 +1,9 @@
 package foundation.ui
 
-// Opens a window through the linked ABI 1.2 UI provider.
+// Opens a window through the linked ABI 1.3 UI provider.
 fn Open(title String, width u64, height u64) Result<own Window, Error> {
     const version = providerABINative()
-    if version >> 32 != 1 || (version & 4294967295) < 2 return .Err(.Unavailable)
+    if version >> 32 != 1 || (version & 4294967295) < 3 return .Err(.Unavailable)
     var handle u64 = 0
     const value = openNative(title, width, height, &handle)
     if value != 0 return .Err(errorFor(value))
@@ -29,6 +29,24 @@ methods Window {
                 u64.From(color.Blue),
                 u64.From(color.Alpha)
             ))
+    }
+
+    // Replaces the root content inset used by later frames.
+    fn SetContentPadding(
+        &self,
+        horizontal u64,
+        vertical u64
+    ) Result<void, Error> {
+        status(setContentPaddingNative(self.handle, horizontal, vertical))
+    }
+
+    // Replaces the root row spacing used by later frames.
+    fn SetContentSpacing(
+        &self,
+        horizontal u64,
+        vertical u64
+    ) Result<void, Error> {
+        status(setContentSpacingNative(self.handle, horizontal, vertical))
     }
 
     // Starts one frame and reports whether drawing should continue.

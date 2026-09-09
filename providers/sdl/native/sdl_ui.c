@@ -671,6 +671,24 @@ int32_t foundation_ui_set_accent(uint64_t handle, uint64_t red, uint64_t green, 
     return FOUNDATION_UI_OK;
 }
 
+int32_t foundation_ui_set_content_padding(uint64_t handle, uint64_t horizontal,
+                                          uint64_t vertical) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    if (ui == NULL || horizontal > 256 || vertical > 256)
+        return FOUNDATION_UI_INVALID;
+    ui->context->style.window.padding = nk_vec2((float)horizontal, (float)vertical);
+    return FOUNDATION_UI_OK;
+}
+
+int32_t foundation_ui_set_content_spacing(uint64_t handle, uint64_t horizontal,
+                                          uint64_t vertical) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    if (ui == NULL || horizontal > 256 || vertical > 256)
+        return FOUNDATION_UI_INVALID;
+    ui->context->style.window.spacing = nk_vec2((float)horizontal, (float)vertical);
+    return FOUNDATION_UI_OK;
+}
+
 int32_t foundation_ui_size(uint64_t handle, uint64_t* width, uint64_t* height) {
     foundation_ui* ui = foundation_ui_from(handle);
     int window_width;

@@ -8,7 +8,7 @@ The SDK includes `foundation.ui.sdl`, an optional SDL3 and Nuklear provider. Imp
 adds its native sources and SDL3 link requirement through `foundation.package`.
 
 ```text
-dependency foundation.ui.sdl 1.2.0 sdk providers/sdl
+dependency foundation.ui.sdl 1.3.0 sdk providers/sdl
 ```
 
 ```foundation
@@ -61,9 +61,19 @@ The drawing API uses immediate-mode rows and groups. Widget calls apply to the c
 between `BeginRoot` and `EndRoot`. The provider supplies client-side window controls and removes
 rounded corners while maximized on platforms that support shaped windows.
 
-`IconButton` draws provider-owned interface symbols. `MonogramButton` draws a compact application
-or account mark from caller-owned text and color, so rails can identify dynamic entries without
-adding product symbols to the provider ABI.
+`SetContentPadding` selects the horizontal and vertical inset used by later root regions.
+`SetContentSpacing` controls the gap between root rows and columns. A shell can set both pairs to
+zero and place its own padded groups beside edge-to-edge surfaces. Groups retain their normal
+internal spacing.
+
+`BeginCompactGroup` uses four horizontal logical pixels with no vertical inset and keeps
+mouse-wheel scrolling without drawing a scrollbar.
+
+`IconButton` draws provider-owned interface symbols. `CompactIconButton` uses titlebar-scale
+geometry for dense action strips. `MonogramButton` draws a compact application or account mark
+from caller-owned text and color, so rails can identify dynamic entries without adding product
+symbols to the provider ABI. `ImageButton` uses a loaded surface as the mark while the provider
+retains selection, hover, activation, and tooltip behavior.
 
 `SetVisible` keeps window state alive while removing it from the desktop. `Raise` restores and
 focuses it. A window can also own one system tray icon, append actions to its menu, and poll their
@@ -113,7 +123,7 @@ remote transport and for forwarding resize events.
 
 ## Provider boundary
 
-The C header `foundation/ui.h` defines UI ABI 1.2. The provider reports the major in the upper 32
+The C header `foundation/ui.h` defines UI ABI 1.3. The provider reports the major in the upper 32
 bits and the minor in the lower 32 bits. Clients accept the required major and a minor at least as
 new as the contract they use. Existing functions and layouts remain stable under the Foundation
 compatibility contract; compatible releases may append functions or provider capabilities. The

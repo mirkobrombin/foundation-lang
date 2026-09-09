@@ -1,6 +1,6 @@
 #include "sdl_ui_internal.h"
 
-static foundation_ui_surface* foundation_ui_surface_for(foundation_ui* ui, uint64_t id) {
+foundation_ui_surface* foundation_ui_surface_for(foundation_ui* ui, uint64_t id) {
     uint64_t index;
     for (index = 0; index < FOUNDATION_UI_SURFACE_CAPACITY; index++) {
         if (ui->surfaces[index].used && ui->surfaces[index].id == id)

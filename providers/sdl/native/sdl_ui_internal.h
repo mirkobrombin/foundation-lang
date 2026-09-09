@@ -107,6 +107,7 @@ typedef struct foundation_ui_texture {
 
 typedef struct foundation_ui_group_state {
     struct nk_vec2 spacing;
+    struct nk_vec2 scrollbar_size;
     bool compact;
 } foundation_ui_group_state;
 
@@ -193,6 +194,7 @@ typedef struct foundation_ui {
 } foundation_ui;
 
 foundation_ui* foundation_ui_from(uint64_t handle);
+foundation_ui_surface* foundation_ui_surface_for(foundation_ui* ui, uint64_t id);
 bool foundation_ui_string_valid(const fdn_string* value);
 const char* foundation_ui_string_data(const fdn_string* value);
 char* foundation_ui_text(const fdn_string* value);
@@ -207,6 +209,8 @@ uint8_t* foundation_ui_reserve_image(foundation_ui* ui, foundation_ui_texture* i
 int32_t foundation_ui_commit_image(foundation_ui_texture* image);
 void foundation_ui_draw_icon(struct nk_command_buffer* canvas, struct nk_rect bounds, uint64_t icon,
                              struct nk_color color);
+void foundation_ui_draw_compact_icon(struct nk_command_buffer* canvas, struct nk_rect bounds,
+                                     uint64_t icon, struct nk_color color);
 bool foundation_ui_button_input(nk_flags* state, struct nk_rect bounds,
                                 const struct nk_input* input);
 void foundation_ui_register_titlebar_region(foundation_ui* ui, struct nk_rect bounds);

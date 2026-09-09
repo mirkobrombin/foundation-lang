@@ -55,6 +55,23 @@ methods Window {
         iconButtonNative(self.handle, iconValue(icon), label, selected, enabled)
     }
 
+    // Draws a titlebar-sized icon action and reports activation.
+    fn CompactIconButton(
+        &self,
+        icon Icon,
+        label String,
+        selected bool,
+        enabled bool
+    ) bool {
+        compactIconButtonNative(
+            self.handle,
+            iconValue(icon),
+            label,
+            selected,
+            enabled
+        )
+    }
+
     // Draws a compact colored monogram action and reports activation.
     fn MonogramButton(
         &self,
@@ -75,6 +92,18 @@ methods Window {
             selected,
             enabled
         )
+    }
+
+    // Draws a surface-backed image action and reports activation.
+    fn ImageButton(
+        &self,
+        surface Surface,
+        label String,
+        selected bool,
+        enabled bool
+    ) bool {
+        if surface.window != self.handle return false
+        imageButtonNative(self.handle, surface.id, label, selected, enabled)
     }
 
     // Draws a heading with the active application palette.

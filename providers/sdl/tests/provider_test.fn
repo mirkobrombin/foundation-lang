@@ -13,6 +13,13 @@ fn surfaceSizeFailed(window ui.Window, surface ui.Surface) bool {
     }
 }
 
+fn drawCompactGroup(&window ui.Window) void {
+    if !window.BeginCompactGroup("compact") return
+    window.Row(24.0, 1)
+    window.Label("Compact", .Primary, false)
+    window.EndGroup()
+}
+
 test "provider opens a native window" {
     const opened = Open("Foundation UI", 720, 480) else {
         fail("provider did not open a window")
@@ -46,6 +53,30 @@ test "provider opens a native window" {
     }
     if !window.Visible() {
         fail("provider did not show the raised window")
+    }
+    pass()
+}
+
+test "provider configures content geometry" {
+    const opened = Open("Foundation UI", 720, 480) else {
+        fail("provider did not open a window")
+    }
+    var window = opened
+    window.SetContentPadding(0, 0) else {
+        fail("provider did not apply content padding")
+    }
+    window.SetContentSpacing(0, 0) else {
+        fail("provider did not apply content spacing")
+    }
+    const rejected = match window.SetContentPadding(257, 0) {
+        Ok: false
+        Err(error): match error {
+            Invalid: true
+            _: false
+        }
+    }
+    if !rejected {
+        fail("provider accepted content padding outside the supported range")
     }
     pass()
 }
@@ -209,6 +240,12 @@ test "provider draws standard widgets" {
         fail("provider did not open a window")
     }
     var window = opened
+    const surface = window.CreateSurface() else {
+        fail("provider did not create an image surface")
+    }
+    window.UpdateSurface(surface, 1, 1, bytes.FromText("RGBA")) else {
+        fail("provider did not load an image surface")
+    }
     window.SetApplicationIcon(1, 1, bytes.FromText("RGBA")) else {
         fail("provider did not set the application icon")
     }
@@ -217,6 +254,7 @@ test "provider draws standard widgets" {
     }
     discard frame
     if window.BeginRoot() {
+        drawCompactGroup(&window)
         window.Titlebar("Foundation UI", "widgets")
         window.Row(48.0, 16)
         window.ApplicationIcon()
@@ -226,7 +264,9 @@ test "provider draws standard widgets" {
             Blue = 167
             Alpha = 255
         }, false, true)
+        discard window.ImageButton(surface, "Image", false, true)
         discard window.IconButton(.Theme, "Theme", false, true)
+        discard window.CompactIconButton(.Back, "Compact back", false, true)
         discard window.IconButton(.Home, "Home", false, true)
         discard window.IconButton(.Add, "Add", false, true)
         discard window.IconButton(.Workspace, "Workspace", false, true)
