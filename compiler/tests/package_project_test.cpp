@@ -92,7 +92,7 @@ void lockedProjectsLoadVerifiedSources() {
 void lockedProjectsLoadSdkSources() {
     Fixture fixture;
     Fixture::package(fixture.app, "sample.app", "1.0.0",
-                     "dependency foundation.ui.sdl 1.3.0 sdk providers/sdl\n");
+                     "dependency foundation.ui.sdl 1.4.0 sdk providers/sdl\n");
     const auto resolution = fixture.resolve();
     const auto written =
         foundation::writePackageLockAtomically(fixture.app / "foundation.lock", resolution.lock);

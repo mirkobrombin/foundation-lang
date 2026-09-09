@@ -20,6 +20,39 @@ fn drawCompactGroup(&window ui.Window) void {
     window.EndGroup()
 }
 
+fn drawContextMenu(&window ui.Window) void {
+    if !window.BeginContextMenu(180.0, 2) return
+    discard window.ContextMenuItem("Action", true)
+    discard window.ContextMenuItem("Unavailable", false)
+    window.EndContextMenu()
+}
+
+fn drawTextFields(&window ui.Window) void {
+    const edited = window.Edit("field", "value", 32) else {
+        fail("provider did not draw a text field")
+    }
+    if edited.Value != "value" {
+        fail("provider changed an idle text field")
+    }
+    const fieldNames = [
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine"
+    ]
+    for name in fieldNames {
+        const repeated = window.Edit(name, "", 8) else {
+            fail("provider exhausted text field state")
+        }
+        discard repeated
+    }
+}
+
 test "provider opens a native window" {
     const opened = Open("Foundation UI", 720, 480) else {
         fail("provider did not open a window")
@@ -284,30 +317,9 @@ test "provider draws standard widgets" {
         window.Heading("Heading")
         window.Label("Label", .Accent, false)
         discard window.Button("Button", false, true)
+        drawContextMenu(&window)
         discard window.FileEntry("src", "directory", true)
-        const edited = window.Edit("field", "value", 32) else {
-            fail("provider did not draw a text field")
-        }
-        if edited.Value != "value" {
-            fail("provider changed an idle text field")
-        }
-        const fieldNames = [
-            "one",
-            "two",
-            "three",
-            "four",
-            "five",
-            "six",
-            "seven",
-            "eight",
-            "nine"
-        ]
-        for name in fieldNames {
-            const repeated = window.Edit(name, "", 8) else {
-                fail("provider exhausted text field state")
-            }
-            discard repeated
-        }
+        drawTextFields(&window)
         window.Row(80.0, 1)
         if window.BeginScrollable("outer") {
             window.Row(36.0, 1)

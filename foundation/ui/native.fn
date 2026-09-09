@@ -170,6 +170,17 @@ extern c fn fileEntryNative(
     details String,
     directory bool
 ) bool as foundation_ui_file_entry
+extern c fn beginContextMenuNative(
+    handle u64,
+    width f32,
+    items u64
+) bool as foundation_ui_begin_context_menu
+extern c fn contextMenuItemNative(
+    handle u64,
+    label String,
+    enabled bool
+) bool as foundation_ui_context_menu_item
+extern c fn endContextMenuNative(handle u64) void as foundation_ui_end_context_menu
 extern c fn editNative(
     handle u64,
     name String,

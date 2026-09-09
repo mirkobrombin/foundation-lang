@@ -1,9 +1,9 @@
 package foundation.ui
 
-// Opens a window through the linked ABI 1.3 UI provider.
+// Opens a window through the linked ABI 1.4 UI provider.
 fn Open(title String, width u64, height u64) Result<own Window, Error> {
     const version = providerABINative()
-    if version >> 32 != 1 || (version & 4294967295) < 3 return .Err(.Unavailable)
+    if version >> 32 != 1 || (version & 4294967295) < 4 return .Err(.Unavailable)
     var handle u64 = 0
     const value = openNative(title, width, height, &handle)
     if value != 0 return .Err(errorFor(value))

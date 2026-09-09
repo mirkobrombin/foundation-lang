@@ -748,6 +748,8 @@ bool foundation_ui_begin_root(uint64_t handle) {
     }
     ui->surface_draw_sequence = 0;
     ui->terminal_bounds_valid = false;
+    ui->context_target_valid = false;
+    ui->context_menu_active = false;
     ui->titlebar_region_count = 0;
     ui->titlebar_region_overflow = false;
     return nk_begin(ui->context, "foundation-ui", nk_rect(0.0f, 0.0f, (float)width, (float)height),

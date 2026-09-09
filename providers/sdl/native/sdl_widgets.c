@@ -37,6 +37,15 @@ bool foundation_ui_button_input(nk_flags* state, struct nk_rect bounds,
     return pressed;
 }
 
+void foundation_ui_set_context_target(foundation_ui* ui, struct nk_rect bounds) {
+    if (ui == NULL || !isfinite(bounds.x) || !isfinite(bounds.y) || !isfinite(bounds.w) ||
+        !isfinite(bounds.h) || bounds.w <= 0.0f || bounds.h <= 0.0f) {
+        return;
+    }
+    ui->context_target = bounds;
+    ui->context_target_valid = true;
+}
+
 uint8_t* foundation_ui_reserve_image(foundation_ui* ui, foundation_ui_texture* image,
                                      uint64_t width, uint64_t height, uint64_t* capacity) {
     SDL_Texture* texture;
@@ -123,6 +132,7 @@ void foundation_ui_application_icon(uint64_t handle) {
         return;
     if (nk_widget(&bounds, ui->context) == NK_WIDGET_INVALID)
         return;
+    foundation_ui_set_context_target(ui, bounds);
     canvas = nk_window_get_canvas(ui->context);
     image = nk_image_ptr(ui->application_image.texture);
     bounds.x += (bounds.w - 40.0f) * 0.5f;
@@ -135,8 +145,11 @@ void foundation_ui_application_icon(uint64_t handle) {
 void foundation_ui_heading(uint64_t handle, const fdn_string* value) {
     foundation_ui* ui = foundation_ui_from(handle);
     const struct nk_user_font* previous;
+    struct nk_rect bounds;
     if (ui == NULL || !foundation_ui_string_valid(value) || value->length > INT32_MAX)
         return;
+    bounds = nk_widget_bounds(ui->context);
+    foundation_ui_set_context_target(ui, bounds);
     previous = ui->context->style.font;
     nk_style_set_font(ui->context, &ui->heading_font->handle);
     nk_text(ui->context, foundation_ui_string_data(value), (int)value->length, NK_TEXT_LEFT);
@@ -145,10 +158,13 @@ void foundation_ui_heading(uint64_t handle, const fdn_string* value) {
 
 void foundation_ui_label(uint64_t handle, const fdn_string* value, uint64_t tone, bool wrap) {
     foundation_ui* ui = foundation_ui_from(handle);
+    struct nk_rect bounds;
     struct nk_color previous;
     struct nk_color selected;
     if (ui == NULL || !foundation_ui_string_valid(value) || value->length > INT32_MAX)
         return;
+    bounds = nk_widget_bounds(ui->context);
+    foundation_ui_set_context_target(ui, bounds);
     previous = ui->context->style.text.color;
     selected = previous;
     if (tone == FOUNDATION_UI_LABEL_MUTED)
@@ -168,10 +184,13 @@ void foundation_ui_label(uint64_t handle, const fdn_string* value, uint64_t tone
 
 bool foundation_ui_button(uint64_t handle, const fdn_string* value, bool selected, bool primary) {
     foundation_ui* ui = foundation_ui_from(handle);
+    struct nk_rect bounds;
     struct nk_style_button previous;
     bool pressed;
     if (ui == NULL || !foundation_ui_string_valid(value) || value->length > INT32_MAX)
         return false;
+    bounds = nk_widget_bounds(ui->context);
+    foundation_ui_set_context_target(ui, bounds);
     previous = ui->context->style.button;
     if (primary || selected) {
         ui->context->style.button.normal = nk_style_item_color(ui->accent);
@@ -205,6 +224,7 @@ bool foundation_ui_file_entry(uint64_t handle, const fdn_string* name, const fdn
     }
     if (nk_widget(&bounds, ui->context) == NK_WIDGET_INVALID)
         return false;
+    foundation_ui_set_context_target(ui, bounds);
     pressed = foundation_ui_button_input(&state, bounds, &ui->context->input);
     canvas = nk_window_get_canvas(ui->context);
     if ((state & NK_WIDGET_STATE_HOVER) != 0) {
@@ -246,4 +266,47 @@ bool foundation_ui_file_entry(uint64_t handle, const fdn_string* name, const fdn
     nk_draw_text(canvas, details_bounds, foundation_ui_string_data(details), (int)details->length,
                  ui->context->style.font, nk_rgba(0, 0, 0, 0), ui->muted);
     return pressed;
+}
+
+bool foundation_ui_begin_context_menu(uint64_t handle, float width, uint64_t items) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    float height;
+    if (ui == NULL || !ui->context_target_valid || ui->context_menu_active || !isfinite(width) ||
+        width <= 0.0f || items == 0 || items > INT32_MAX) {
+        return false;
+    }
+    height = 24.0f + 32.0f * (float)items;
+    if (!isfinite(height) ||
+        !nk_contextual_begin(ui->context, 0, nk_vec2(width, height), ui->context_target)) {
+        return false;
+    }
+    ui->context_menu_active = true;
+    nk_layout_row_dynamic(ui->context, 32.0f, 1);
+    return true;
+}
+
+bool foundation_ui_context_menu_item(uint64_t handle, const fdn_string* label, bool enabled) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    bool selected;
+    if (ui == NULL || !ui->context_menu_active || !foundation_ui_string_valid(label) ||
+        label->length > INT32_MAX) {
+        return false;
+    }
+    if (!enabled) {
+        nk_widget_disable_begin(ui->context);
+        ui->context->style.contextual_button.color_factor_background = 1.0f;
+    }
+    selected = nk_contextual_item_text(ui->context, foundation_ui_string_data(label),
+                                       (int)label->length, NK_TEXT_LEFT);
+    if (!enabled)
+        nk_widget_disable_end(ui->context);
+    return enabled && selected;
+}
+
+void foundation_ui_end_context_menu(uint64_t handle) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    if (ui == NULL || !ui->context_menu_active)
+        return;
+    nk_contextual_end(ui->context);
+    ui->context_menu_active = false;
 }

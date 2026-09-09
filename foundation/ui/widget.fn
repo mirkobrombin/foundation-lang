@@ -126,6 +126,21 @@ methods Window {
         fileEntryNative(self.handle, name, details, directory)
     }
 
+    // Opens a context menu for the preceding ordinary widget.
+    fn BeginContextMenu(&self, width f32, items u64) bool {
+        beginContextMenuNative(self.handle, width, items)
+    }
+
+    // Draws one context-menu action and reports activation.
+    fn ContextMenuItem(&self, label String, enabled bool) bool {
+        contextMenuItemNative(self.handle, label, enabled)
+    }
+
+    // Closes a context menu opened during the current frame.
+    fn EndContextMenu(&self) void {
+        endContextMenuNative(self.handle)
+    }
+
     // Edits a named text value within a bounded UTF-8 buffer.
     fn Edit(
         &self,

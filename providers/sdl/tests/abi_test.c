@@ -73,14 +73,19 @@ int main(void) {
         return 15;
     if (foundation_ui_begin_compact_group(invalid, &label))
         return 16;
-    if (foundation_ui_create_tray(invalid, &label) != FOUNDATION_UI_INVALID)
+    if (foundation_ui_begin_context_menu(invalid, 180.0f, 2))
         return 17;
-    if (foundation_ui_add_tray_action(invalid, &label, &kind) != FOUNDATION_UI_INVALID)
+    if (foundation_ui_context_menu_item(invalid, &label, true))
         return 18;
-    if (foundation_ui_poll_tray_action(invalid, &kind) != FOUNDATION_UI_POLL_FAILED)
+    foundation_ui_end_context_menu(invalid);
+    if (foundation_ui_create_tray(invalid, &label) != FOUNDATION_UI_INVALID)
         return 19;
+    if (foundation_ui_add_tray_action(invalid, &label, &kind) != FOUNDATION_UI_INVALID)
+        return 20;
+    if (foundation_ui_poll_tray_action(invalid, &kind) != FOUNDATION_UI_POLL_FAILED)
+        return 21;
     foundation_ui_close(&invalid);
     if (invalid != 0)
-        return 20;
+        return 22;
     return 0;
 }

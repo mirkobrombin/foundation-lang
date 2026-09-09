@@ -139,6 +139,7 @@ typedef struct foundation_ui {
     struct nk_font* terminal_font;
     foundation_ui_texture application_image;
     struct nk_rect terminal_bounds;
+    struct nk_rect context_target;
     foundation_ui_surface surfaces[FOUNDATION_UI_SURFACE_CAPACITY];
     foundation_ui_surface* captured_surface;
     foundation_ui_surface* focused_surface;
@@ -172,6 +173,8 @@ typedef struct foundation_ui {
     int shape_width;
     int shape_height;
     bool terminal_bounds_valid;
+    bool context_target_valid;
+    bool context_menu_active;
     bool terminal_focus;
     bool terminal_auto_focus;
     bool shape_disabled;
@@ -214,6 +217,7 @@ void foundation_ui_draw_compact_icon(struct nk_command_buffer* canvas, struct nk
                                      uint64_t icon, struct nk_color color);
 bool foundation_ui_button_input(nk_flags* state, struct nk_rect bounds,
                                 const struct nk_input* input);
+void foundation_ui_set_context_target(foundation_ui* ui, struct nk_rect bounds);
 void foundation_ui_register_titlebar_region(foundation_ui* ui, struct nk_rect bounds);
 SDL_HitTestResult foundation_ui_window_hit_test(const foundation_ui* ui, int width, int height,
                                                 bool maximized, const SDL_Point* area);

@@ -7,5 +7,17 @@ fn main() i32 {
     var window = opened
     const size = window.Size() else { return 1 }
     if size.Width != 320 || size.Height != 240 { return 1 }
+    const frame = window.BeginFrame() else { return 1 }
+    discard frame
+    if window.BeginRoot() {
+        window.Row(32.0, 1)
+        discard window.Button("Action", false, false)
+        if window.BeginContextMenu(160.0, 1) {
+            discard window.ContextMenuItem("Open", true)
+            window.EndContextMenu()
+        }
+        window.EndRoot()
+    }
+    window.EndFrame() else { return 1 }
     0
 }

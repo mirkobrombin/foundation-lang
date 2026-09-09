@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #define FOUNDATION_UI_ABI_MAJOR 1
-#define FOUNDATION_UI_ABI_MINOR 3
+#define FOUNDATION_UI_ABI_MINOR 4
 #define FOUNDATION_UI_ABI_VERSION(major, minor) ((((uint64_t)(major)) << 32U) | (uint64_t)(minor))
 #define FOUNDATION_UI_ABI_CURRENT                                                                  \
     FOUNDATION_UI_ABI_VERSION(FOUNDATION_UI_ABI_MAJOR, FOUNDATION_UI_ABI_MINOR)
@@ -95,7 +95,8 @@ extern "C" {
  * false for both no activation and invalid input. Void drawing functions ignore invalid input.
  * Layout and drawing functions are valid only inside a successful begin-root/end-root pair. Row
  * heights and column ratios must be finite and positive. A successful begin-group must be paired
- * with end-group.
+ * with end-group. A successful begin-context-menu must be paired with end-context-menu. Context
+ * menus attach to the most recently drawn ordinary widget.
  *
  * Captured surfaces own pointer and keyboard input until release. Embedded surfaces retain keyboard
  * focus after a click but return pointer input outside their latest bounds to ordinary widgets.
@@ -168,6 +169,9 @@ int32_t foundation_ui_terminal(uint64_t handle, float height, fdn_string* input,
 bool foundation_ui_button(uint64_t handle, const fdn_string* value, bool selected, bool primary);
 bool foundation_ui_file_entry(uint64_t handle, const fdn_string* name, const fdn_string* details,
                               bool directory);
+bool foundation_ui_begin_context_menu(uint64_t handle, float width, uint64_t items);
+bool foundation_ui_context_menu_item(uint64_t handle, const fdn_string* label, bool enabled);
+void foundation_ui_end_context_menu(uint64_t handle);
 int32_t foundation_ui_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,
                            uint64_t capacity, fdn_string* result, bool* changed, bool* committed);
 int32_t foundation_ui_secret_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,
