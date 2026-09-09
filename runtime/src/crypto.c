@@ -1167,6 +1167,55 @@ int32_t foundation_runtime_hmac_sha256(uint64_t key_handle, uint64_t value_handl
     return 0;
 }
 
+int32_t foundation_runtime_pbkdf2_sha256(uint64_t password_handle, uint64_t salt_handle,
+                                        uint64_t iterations, uint64_t *result) {
+    const fdn_bytes *password = fdn_bytes_value(password_handle);
+    const fdn_bytes *salt = fdn_bytes_value(salt_handle);
+    uint8_t *initial;
+    uint8_t digest[32];
+    uint8_t next[32];
+    uint8_t derived[32];
+    uint64_t round;
+    size_t index;
+
+    if (result == NULL) {
+        return 1;
+    }
+    *result = 0;
+    if (password == NULL || salt == NULL) {
+        return 1;
+    }
+    if (iterations == 0 || iterations > UINT64_C(10000000) ||
+        salt->length > SIZE_MAX - 4U) {
+        return 2;
+    }
+    initial = fdn_alloc(salt->length + 4U);
+    if (salt->length != 0) {
+        (void)memcpy(initial, salt->data, salt->length);
+    }
+    initial[salt->length] = 0;
+    initial[salt->length + 1U] = 0;
+    initial[salt->length + 2U] = 0;
+    initial[salt->length + 3U] = 1;
+    fdn_hmac_sha256(password->data, password->length, initial, salt->length + 4U,
+                    digest);
+    (void)memcpy(derived, digest, sizeof(derived));
+    for (round = 1; round < iterations; ++round) {
+        fdn_hmac_sha256(password->data, password->length, digest, sizeof(digest), next);
+        for (index = 0; index < sizeof(derived); ++index) {
+            derived[index] ^= next[index];
+        }
+        (void)memcpy(digest, next, sizeof(digest));
+    }
+    fdn_secure_zero(initial, salt->length + 4U);
+    fdn_dealloc(initial);
+    *result = fdn_bytes_create(derived, sizeof(derived));
+    fdn_secure_zero(digest, sizeof(digest));
+    fdn_secure_zero(next, sizeof(next));
+    fdn_secure_zero(derived, sizeof(derived));
+    return 0;
+}
+
 uint64_t foundation_runtime_sha256_open(void) {
     fdn_sha256 *context = fdn_alloc(sizeof(*context));
     fdn_sha256_init(context);

@@ -132,6 +132,12 @@ extern c fn hmacSha256Native(
     value u64,
     &result u64
 ) i32 as foundation_runtime_hmac_sha256
+extern c fn pbkdf2Sha256Native(
+    password u64,
+    salt u64,
+    iterations u64,
+    &result u64
+) i32 as foundation_runtime_pbkdf2_sha256
 extern c fn openSha256Native() u64 as foundation_runtime_sha256_open
 extern c fn updateSha256TextNative(
     handle u64,
@@ -563,6 +569,24 @@ fn HmacSha256(key Bytes, value Bytes) Result<own Bytes, Error> {
         return .Err(.Closed)
     }
     .Ok(own Bytes { handle = result })
+}
+
+// Derives a 32-byte key with PBKDF2-HMAC-SHA256.
+fn Pbkdf2Sha256(
+    password Bytes,
+    salt Bytes,
+    iterations u64
+) Result<own Bytes, Error> {
+    var result u64 = 0
+    const status = pbkdf2Sha256Native(
+        password.handle,
+        salt.handle,
+        iterations,
+        &result
+    )
+    if status == 0 return .Ok(own Bytes { handle = result })
+    if status == 2 return .Err(.OutOfBounds)
+    .Err(.Closed)
 }
 
 // Encrypts bytes with AES-256-GCM and binds the result to associated text.

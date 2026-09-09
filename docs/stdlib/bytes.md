@@ -31,7 +31,8 @@ Closing or dropping an unfinished builder clears its allocated capacity.
 Base64URL uses the canonical unpadded RFC 4648 alphabet. Decoding rejects padding, invalid
 characters, impossible lengths, and nonzero unused tail bits. `HmacSha256` returns an owned
 32-byte digest. `ConstantTimeEqual` compares equal-length values without a data-dependent early
-exit and is the required comparison for authentication tags.
+exit and is the required comparison for authentication tags. `Pbkdf2Sha256` derives a 32-byte key
+with a caller-selected iteration count between 1 and 10,000,000.
 
 `EncodeBase64` and `DecodeBase64` provide canonical padded standard Base64 for protocols that
 require it. `EncryptAES256GCM` and `DecryptAES256GCM` require a 32-byte key and use the supplied

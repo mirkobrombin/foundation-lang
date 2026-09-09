@@ -186,6 +186,13 @@ int main(void) {
     assert(foundation_runtime_hmac_sha256(long_key, long_message, &long_digest) == 0);
     assert(foundation_runtime_bytes_constant_time_equal(long_digest, long_expected_digest));
 
+    assert(foundation_runtime_pbkdf2_sha256(key, message, 1, &stored) == 0);
+    assert(foundation_runtime_bytes_length(stored, &length) == 0);
+    assert(length == 32);
+    foundation_runtime_bytes_close(&stored);
+    assert(foundation_runtime_pbkdf2_sha256(key, message, 0, &stored) == 2);
+    assert(stored == 0);
+
     sha256 = foundation_runtime_sha256_open();
     assert(sha256 != 0);
     assert(foundation_runtime_sha256_update_text(sha256, &sha256_prefix) == 0);

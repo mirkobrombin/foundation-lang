@@ -97,6 +97,18 @@ fn main() i32 {
     }
     if !text.Equal(digestText, "Tx82HG20ntCsQ5iRYF8plw1MY6ebaFsPRORaQYxBWTc") return 26
 
+    const password = bytes.FromText("password")
+    const salt = bytes.FromText("salt")
+    const derived = bytes.Pbkdf2Sha256(password, salt, 1) else error {
+        discard error
+        return 27
+    }
+    const derivedText = bytes.EncodeBase64(derived) else error {
+        discard error
+        return 28
+    }
+    if !text.Equal(derivedText, "Eg+2z/z4syxD5yJSVsT4N6hlSMkszDVICAWYfLcL4Xs=") return 29
+
     print("bytes crypto ok")
     0
 }

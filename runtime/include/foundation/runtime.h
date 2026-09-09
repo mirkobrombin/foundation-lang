@@ -286,6 +286,8 @@ int32_t foundation_runtime_base64_encode(uint64_t handle, fdn_string *result);
 int32_t foundation_runtime_base64_decode(const fdn_string *value, uint64_t *result);
 int32_t foundation_runtime_hmac_sha256(uint64_t key_handle, uint64_t value_handle,
                                        uint64_t *result);
+int32_t foundation_runtime_pbkdf2_sha256(uint64_t password_handle, uint64_t salt_handle,
+                                        uint64_t iterations, uint64_t *result);
 uint64_t foundation_runtime_sha256_open(void);
 int32_t foundation_runtime_sha256_update_text(uint64_t handle,
                                               const fdn_string *value);
