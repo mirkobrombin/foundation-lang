@@ -122,6 +122,7 @@ bool foundation_ui_image_button(uint64_t handle, uint64_t surface_id, const fdn_
     foundation_ui* ui = foundation_ui_from(handle);
     foundation_ui_surface* surface;
     struct nk_rect bounds;
+    struct nk_rect button_bounds;
     struct nk_rect image_bounds;
     struct nk_command_buffer* canvas;
     struct nk_image image;
@@ -139,20 +140,25 @@ bool foundation_ui_image_button(uint64_t handle, uint64_t surface_id, const fdn_
     if (enabled)
         pressed = foundation_ui_button_input(&state, bounds, &ui->context->input);
     canvas = nk_window_get_canvas(ui->context);
+    button_bounds = bounds;
+    button_bounds.w = bounds.w < bounds.h ? bounds.w : bounds.h;
+    button_bounds.h = button_bounds.w;
+    button_bounds.x = bounds.x + (bounds.w - button_bounds.w) * 0.5f;
+    button_bounds.y = bounds.y + (bounds.h - button_bounds.h) * 0.5f;
     if (selected)
-        nk_fill_rect(canvas, bounds, 8.0f, ui->accent);
+        nk_fill_rect(canvas, button_bounds, 8.0f, ui->accent);
     else if ((state & NK_WIDGET_STATE_HOVER) != 0)
-        nk_fill_rect(canvas, bounds, 8.0f, ui->raised);
-    image_bounds = bounds;
-    image_bounds.w = bounds.w < 28.0f ? bounds.w : 28.0f;
-    image_bounds.h = bounds.h < 28.0f ? bounds.h : 28.0f;
+        nk_fill_rect(canvas, button_bounds, 8.0f, ui->raised);
+    image_bounds = button_bounds;
+    image_bounds.w = button_bounds.w < 24.0f ? button_bounds.w : 24.0f;
+    image_bounds.h = button_bounds.h < 24.0f ? button_bounds.h : 24.0f;
     source_ratio = (float)surface->image.width / (float)surface->image.height;
     if (image_bounds.w / image_bounds.h > source_ratio)
         image_bounds.w = image_bounds.h * source_ratio;
     else
         image_bounds.h = image_bounds.w / source_ratio;
-    image_bounds.x = bounds.x + (bounds.w - image_bounds.w) * 0.5f;
-    image_bounds.y = bounds.y + (bounds.h - image_bounds.h) * 0.5f;
+    image_bounds.x = button_bounds.x + (button_bounds.w - image_bounds.w) * 0.5f;
+    image_bounds.y = button_bounds.y + (button_bounds.h - image_bounds.h) * 0.5f;
     image = nk_image_ptr(surface->image.texture);
     nk_draw_image(canvas, image_bounds, &image,
                   enabled ? nk_rgb(255, 255, 255) : nk_rgba(255, 255, 255, 110));
