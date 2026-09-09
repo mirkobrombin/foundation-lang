@@ -162,6 +162,7 @@ static int child_main(int argc, char **argv) {
             return 5;
         }
         (void)fprintf(stdout, "stream:%s", input);
+        (void)fputs("stream-second\n", stdout);
         (void)fputs("stream-error\n", stderr);
         (void)fflush(stdout);
         (void)fflush(stderr);
@@ -280,16 +281,21 @@ static int run_stream(const char *program) {
     }
     foundation_runtime_process_stream_close(input);
     input = 0;
-    if (foundation_runtime_process_stream_read(output, 4096, &output_bytes) != 0 ||
-        foundation_runtime_process_stream_read(error, 4096, &error_bytes) != 0 ||
-        !bytes_are(output_bytes, "stream:MARKER-OK\n") ||
-        !bytes_are(error_bytes, "stream-error\n") ||
+    if (foundation_runtime_process_stream_read_line(output, 4, &output_bytes) != 6 ||
+        output_bytes != 0 ||
+        foundation_runtime_process_stream_read_line(error, 4096, &error_bytes) != 0 ||
+        !bytes_are(error_bytes, "stream-error") ||
         foundation_runtime_process_stream_wait(waiter, &exit_code) != 0 ||
         exit_code != 7) {
         goto cleanup;
     }
     foundation_runtime_bytes_close(&output_bytes);
-    if (foundation_runtime_process_stream_read(output, 4096, &output_bytes) != 11 ||
+    if (foundation_runtime_process_stream_read(output, 4096, &output_bytes) != 0 ||
+        !bytes_are(output_bytes, "stream-second\n")) {
+        goto cleanup;
+    }
+    foundation_runtime_bytes_close(&output_bytes);
+    if (foundation_runtime_process_stream_read_line(output, 4096, &output_bytes) != 11 ||
         output_bytes != 0) {
         goto cleanup;
     }

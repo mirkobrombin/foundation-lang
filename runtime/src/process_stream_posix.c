@@ -14,11 +14,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 enum {
     FDN_STREAM_NOT_FOUND = 1,
     FDN_STREAM_PERMISSION = 2,
     FDN_STREAM_INVALID_ARGUMENT = 3,
+    FDN_STREAM_OUTPUT_LIMIT = 6,
     FDN_STREAM_RESOURCE_LIMIT = 7,
     FDN_STREAM_IO = 8,
     FDN_STREAM_CLOSED = 9,
@@ -57,6 +59,9 @@ typedef struct fdn_stream_process {
 typedef struct fdn_stream_handle {
     fdn_stream_process* process;
     uint8_t kind;
+    uint8_t buffer[8192];
+    size_t buffer_offset;
+    size_t buffer_length;
 } fdn_stream_handle;
 
 static atomic_uint_fast64_t fdn_live_stream_count;
@@ -177,6 +182,8 @@ static uint64_t fdn_stream_new_handle(fdn_stream_process* process, uint8_t kind)
     fdn_stream_handle* handle = fdn_alloc(sizeof(*handle));
     handle->process = process;
     handle->kind = kind;
+    handle->buffer_offset = 0;
+    handle->buffer_length = 0;
     return (uint64_t)(uintptr_t)handle;
 }
 
@@ -371,12 +378,27 @@ int32_t foundation_runtime_process_stream_read(uint64_t value, uint64_t limit, u
     if (limit == 0 || limit > 16777216 || limit > (uint64_t)SIZE_MAX) {
         return FDN_STREAM_INVALID_ARGUMENT;
     }
-    descriptor =
-        handle->kind == FDN_STREAM_OUTPUT ? handle->process->output : handle->process->error;
+    descriptor = handle->kind == FDN_STREAM_OUTPUT ? handle->process->output
+                                                    : handle->process->error;
     if (descriptor < 0) {
         return FDN_STREAM_CLOSED;
     }
     data = fdn_alloc((size_t)limit);
+    if (handle->buffer_offset < handle->buffer_length) {
+        const size_t available = handle->buffer_length - handle->buffer_offset;
+        const size_t selected = available < (size_t)limit ? available : (size_t)limit;
+        (void)memcpy(data, handle->buffer + handle->buffer_offset, selected);
+        handle->buffer_offset += selected;
+        if (handle->buffer_offset == handle->buffer_length) {
+            handle->buffer_offset = 0;
+            handle->buffer_length = 0;
+        }
+        if (fdn_bytes_adopt(data, selected, (size_t)limit, result) != 0) {
+            fdn_dealloc(data);
+            return FDN_STREAM_IO;
+        }
+        return 0;
+    }
     do {
         count = read(descriptor, data, (size_t)limit);
     } while (count < 0 && errno == EINTR);
@@ -390,6 +412,81 @@ int32_t foundation_runtime_process_stream_read(uint64_t value, uint64_t limit, u
         return native_error == EBADF ? FDN_STREAM_CLOSED : FDN_STREAM_IO;
     }
     if (fdn_bytes_adopt(data, (size_t)count, (size_t)limit, result) != 0) {
+        fdn_dealloc(data);
+        return FDN_STREAM_IO;
+    }
+    return 0;
+}
+
+int32_t foundation_runtime_process_stream_read_line(uint64_t value, uint64_t limit,
+                                                    uint64_t* result) {
+    fdn_stream_handle* handle = (fdn_stream_handle*)(uintptr_t)value;
+    int descriptor;
+    uint8_t* data;
+    size_t length = 0;
+    bool overflow = false;
+    bool eof = false;
+    if (result == NULL) {
+        fdn_panic_cstr("process stream line output is null");
+    }
+    *result = 0;
+    if (handle == NULL || (handle->kind != FDN_STREAM_OUTPUT &&
+                           handle->kind != FDN_STREAM_ERROR)) {
+        return FDN_STREAM_CLOSED;
+    }
+    if (limit == 0 || limit > 16777216 || limit > (uint64_t)SIZE_MAX) {
+        return FDN_STREAM_INVALID_ARGUMENT;
+    }
+    descriptor = handle->kind == FDN_STREAM_OUTPUT ? handle->process->output
+                                                    : handle->process->error;
+    if (descriptor < 0) {
+        return FDN_STREAM_CLOSED;
+    }
+    data = fdn_alloc((size_t)limit);
+    while (!eof) {
+        if (handle->buffer_offset == handle->buffer_length) {
+            ssize_t count;
+            do {
+                count = read(descriptor, handle->buffer, sizeof(handle->buffer));
+            } while (count < 0 && errno == EINTR);
+            if (count < 0) {
+                const int native_error = errno;
+                fdn_dealloc(data);
+                return native_error == EBADF ? FDN_STREAM_CLOSED : FDN_STREAM_IO;
+            }
+            handle->buffer_offset = 0;
+            handle->buffer_length = count > 0 ? (size_t)count : 0;
+            eof = count == 0;
+        }
+        while (handle->buffer_offset < handle->buffer_length) {
+            const uint8_t byte = handle->buffer[handle->buffer_offset++];
+            if (byte == '\n') {
+                if (overflow) {
+                    fdn_dealloc(data);
+                    return FDN_STREAM_OUTPUT_LIMIT;
+                }
+                if (fdn_bytes_adopt(data, length, (size_t)limit, result) != 0) {
+                    fdn_dealloc(data);
+                    return FDN_STREAM_IO;
+                }
+                return 0;
+            }
+            if (length < (size_t)limit) {
+                data[length++] = byte;
+            } else {
+                overflow = true;
+            }
+        }
+    }
+    if (overflow) {
+        fdn_dealloc(data);
+        return FDN_STREAM_OUTPUT_LIMIT;
+    }
+    if (length == 0) {
+        fdn_dealloc(data);
+        return FDN_STREAM_EOF;
+    }
+    if (fdn_bytes_adopt(data, length, (size_t)limit, result) != 0) {
         fdn_dealloc(data);
         return FDN_STREAM_IO;
     }

@@ -18,8 +18,12 @@ writes the complete owned byte value. Both operations restore their stream owner
 `Writer.Close` closes stdin without terminating the child. `Wait` consumes the waiter and returns
 the exit code. `Controller.Abort` terminates the child.
 
-The runtime caps one read at 16 MiB. It does not decode text, frame messages, combine output, or
-invoke a shell.
+`ReadLine` preserves bytes between native reads, removes LF, validates UTF-8, and consumes an
+oversized line before returning `OutputLimit`. It keeps line protocols independent from pipe chunk
+boundaries without moving buffering into each application.
+
+The runtime caps one read or line at 16 MiB. `Read` does not decode text. `ReadLine` validates UTF-8
+after the runtime isolates one line. Neither operation combines output or invokes a shell.
 
 ## Compatibility
 
@@ -39,10 +43,10 @@ Foundation wrappers retain one native child until the final owner is dropped.
 
 ## Tests
 
-Runtime tests write stdin, read stdout and stderr separately, observe EOF, wait for the exit code,
-and prove that all native handles are released. Language fixtures run the same exchange through
-the LLVM and C backends, then abort a second child and observe EOF from its output pipe. CI builds
-the runtime on Linux, macOS, and Windows.
+Runtime tests write stdin, read stdout and stderr as lines, observe EOF, wait for the exit code, and
+prove that all native handles are released. Language fixtures run the same exchange through the
+LLVM and C backends, then abort a second child and observe EOF from its output pipe. CI builds the
+runtime on Linux, macOS, and Windows.
 
 ## Alternatives
 

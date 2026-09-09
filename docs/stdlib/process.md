@@ -17,6 +17,7 @@ fn Run(
 ) Result<own Output, Error>
 task Start($command own Command) Result<own Child, Error>
 task Read($reader own Reader, limit u64) ReadOutcome
+task ReadLine($reader own Reader, limit u64) ReadLineOutcome
 task Write($writer own Writer, $value own bytes.Bytes) WriteOutcome
 task Wait($waiter own Waiter) Result<i32, Error>
 fn Writer.Close(&self) bool
@@ -55,6 +56,10 @@ writes the complete byte value. Closing the writer closes the child's stdin pipe
 `Wait` returns a normal exit code or `128 + signal` on POSIX. `Abort` terminates the child and wakes
 pending stream operations. Dropping the final child owner terminates and reaps a child that has not
 exited.
+
+`ReadLine` buffers across native reads, removes LF, validates UTF-8, and returns `None` only when
+EOF arrives before another byte. The caller's limit bounds the returned line. An oversized line is
+consumed through its LF and returns `OutputLimit`, leaving the reader ready for the next line.
 
 `OpenPTY` prepares an interactive process. An empty command uses `SHELL` on POSIX and `COMSPEC` on
 Windows, with a platform fallback when the variable is absent. The default working directory is

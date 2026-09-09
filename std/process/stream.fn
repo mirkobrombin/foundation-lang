@@ -80,6 +80,11 @@ struct ReadOutcome {
     Value Result<Option<own bytes.Bytes>, Error>
 }
 
+struct ReadLineOutcome {
+    Reader own Reader
+    Value Result<Option<String>, Error>
+}
+
 struct WriteOutcome {
     Writer own Writer
     Value Result<void, Error>
@@ -101,6 +106,13 @@ extern c fn readStreamNative(
     limit u64,
     &value u64
 ) i32 as foundation_runtime_process_stream_read
+
+@blocking
+extern c fn readLineStreamNative(
+    reader u64,
+    limit u64,
+    &value u64
+) i32 as foundation_runtime_process_stream_read_line
 
 @blocking
 extern c fn writeStreamNative(
@@ -163,6 +175,35 @@ task Read($reader own Reader, limit u64) ReadOutcome {
         return ReadOutcome { Reader = reader Value = .Err(.Io) }
     }
     ReadOutcome { Reader = reader Value = .Ok(.Some(claimed)) }
+}
+
+// Reads one UTF-8 line without its newline and returns the reader owner.
+task ReadLine($reader own Reader, limit u64) ReadLineOutcome {
+    var value u64 = 0
+    const status = readLineStreamNative(reader.handle, limit, &value)
+    if status == 11 {
+        return ReadLineOutcome { Reader = reader Value = .Ok(.None) }
+    }
+    if status != 0 {
+        return ReadLineOutcome {
+            Reader = reader
+            Value = .Err(errorFor(status))
+        }
+    }
+    const claimed = bytes.ClaimRuntimeHandle(value) else error {
+        discard error
+        return ReadLineOutcome { Reader = reader Value = .Err(.Io) }
+    }
+    const line = claimed.Text() else error {
+        discard error
+        discard claimed
+        return ReadLineOutcome {
+            Reader = reader
+            Value = .Err(.InvalidArgument)
+        }
+    }
+    discard claimed
+    ReadLineOutcome { Reader = reader Value = .Ok(.Some(line)) }
 }
 
 // Writes one complete byte value and returns the writer owner.

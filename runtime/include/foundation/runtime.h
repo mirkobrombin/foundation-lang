@@ -524,6 +524,9 @@ int32_t foundation_runtime_process_stream_start(uint64_t process_handle,
                                                 uint64_t *waiter);
 int32_t foundation_runtime_process_stream_read(uint64_t handle, uint64_t limit,
                                                uint64_t *result);
+int32_t foundation_runtime_process_stream_read_line(uint64_t handle,
+                                                    uint64_t limit,
+                                                    uint64_t *result);
 int32_t foundation_runtime_process_stream_write(uint64_t handle,
                                                 uint64_t bytes_handle);
 int32_t foundation_runtime_process_stream_wait(uint64_t handle,

@@ -122,8 +122,8 @@ fn main(args [String]) i32 {
     discard writer.Close()
 
     var stdout = Stdout
-    const readingOutput = spawn process.Read($stdout, 4096)
-    const process.ReadOutcome {
+    const readingOutput = spawn process.ReadLine($stdout, 4096)
+    const process.ReadLineOutcome {
         Reader as restoredOutput
         Value as outputResult
     } = $readingOutput.wait()
@@ -132,14 +132,14 @@ fn main(args [String]) i32 {
         discard error
         return 7
     }
-    const outputText = chunkText($output) else error {
-        discard error
-        return 8
+    const outputText = match output {
+        None: { return 8 }
+        Some(value): value
     }
 
     var stderr = Stderr
-    const readingError = spawn process.Read($stderr, 4096)
-    const process.ReadOutcome {
+    const readingError = spawn process.ReadLine($stderr, 4096)
+    const process.ReadLineOutcome {
         Reader as restoredError
         Value as errorResult
     } = $readingError.wait()
@@ -148,9 +148,9 @@ fn main(args [String]) i32 {
         discard error
         return 9
     }
-    const errorText = chunkText($errorOutput) else error {
-        discard error
-        return 10
+    const errorText = match errorOutput {
+        None: { return 10 }
+        Some(value): value
     }
 
     const waiting = spawn process.Wait($Waiter)
