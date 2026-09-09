@@ -106,6 +106,7 @@ typedef struct foundation_ui_texture {
 } foundation_ui_texture;
 
 typedef struct foundation_ui_group_state {
+    struct nk_vec2 group_padding;
     struct nk_vec2 spacing;
     struct nk_vec2 scrollbar_size;
     bool compact;

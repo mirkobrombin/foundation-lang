@@ -52,13 +52,14 @@ static bool foundation_ui_begin_group_style(uint64_t handle, const fdn_string* n
     if (compact)
         ui->context->style.window.scrollbar_size = nk_vec2(0.0f, 0.0f);
     visible = nk_group_begin(ui->context, group_name, scrollable ? 0 : NK_WINDOW_NO_SCROLLBAR);
-    ui->context->style.window.group_padding = previous_padding;
     if (!visible) {
+        ui->context->style.window.group_padding = previous_padding;
         ui->context->style.window.spacing = previous_spacing;
         ui->context->style.window.scrollbar_size = previous_scrollbar_size;
     }
     if (visible) {
         foundation_ui_group_state* state = &ui->group_states[ui->group_depth++];
+        state->group_padding = previous_padding;
         state->spacing = previous_spacing;
         state->scrollbar_size = previous_scrollbar_size;
         state->compact = compact;
@@ -82,6 +83,7 @@ void foundation_ui_end_group(uint64_t handle) {
         return;
     nk_group_end(ui->context);
     state = &ui->group_states[--ui->group_depth];
+    ui->context->style.window.group_padding = state->group_padding;
     ui->context->style.window.spacing = state->spacing;
     if (state->compact)
         ui->context->style.window.scrollbar_size = state->scrollbar_size;
