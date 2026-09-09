@@ -1,0 +1,185 @@
+package std.process
+
+import std.bytes
+import std.concurrent
+
+@concurrent.Transferable()
+struct Reader {
+    handle u64
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            closeStreamNative(handle)
+        }
+    }
+}
+
+@concurrent.Transferable()
+struct Writer {
+    handle u64
+
+    fn Close(&self) bool {
+        const handle = replace self.handle with 0
+        if handle == 0 return false
+        closeStreamNative(handle)
+        true
+    }
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            closeStreamNative(handle)
+        }
+    }
+}
+
+@concurrent.Transferable()
+struct Controller {
+    handle u64
+
+    fn Abort(&self) bool {
+        const handle = replace self.handle with 0
+        if handle == 0 return false
+        abortStreamNative(handle)
+        closeStreamNative(handle)
+        true
+    }
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            closeStreamNative(handle)
+        }
+    }
+}
+
+@concurrent.Transferable()
+struct Waiter {
+    handle u64
+
+    fn drop(&self) void {
+        const handle = replace self.handle with 0
+        if handle != 0 {
+            closeStreamNative(handle)
+        }
+    }
+}
+
+@concurrent.Transferable()
+struct Child {
+    Stdin own Writer
+    Stdout own Reader
+    Stderr own Reader
+    Controller own Controller
+    Waiter own Waiter
+}
+
+struct ReadOutcome {
+    Reader own Reader
+    Value Result<Option<own bytes.Bytes>, Error>
+}
+
+struct WriteOutcome {
+    Writer own Writer
+    Value Result<void, Error>
+}
+
+@blocking
+extern c fn startStreamNative(
+    process u64,
+    &input u64,
+    &output u64,
+    &error u64,
+    &controller u64,
+    &waiter u64
+) i32 as foundation_runtime_process_stream_start
+
+@blocking
+extern c fn readStreamNative(
+    reader u64,
+    limit u64,
+    &value u64
+) i32 as foundation_runtime_process_stream_read
+
+@blocking
+extern c fn writeStreamNative(
+    writer u64,
+    value u64
+) i32 as foundation_runtime_process_stream_write
+
+@blocking
+extern c fn waitStreamNative(
+    waiter u64,
+    &exitCode i32
+) i32 as foundation_runtime_process_stream_wait
+
+extern c fn abortStreamNative(
+    controller u64
+) void as foundation_runtime_process_stream_abort
+
+extern c fn closeStreamNative(
+    handle u64
+) void as foundation_runtime_process_stream_close
+
+// Starts a configured child with separate standard streams.
+task Start($command own Command) Result<own Child, Error> {
+    var input u64 = 0
+    var output u64 = 0
+    var error u64 = 0
+    var controller u64 = 0
+    var waiter u64 = 0
+    const status = startStreamNative(
+        command.handle,
+        &input,
+        &output,
+        &error,
+        &controller,
+        &waiter
+    )
+    discard command
+    if status != 0 return .Err(errorFor(status))
+    .Ok(own Child {
+        Stdin = own Writer { handle = input }
+        Stdout = own Reader { handle = output }
+        Stderr = own Reader { handle = error }
+        Controller = own Controller { handle = controller }
+        Waiter = own Waiter { handle = waiter }
+    })
+}
+
+// Reads one non-empty byte chunk and returns the reader owner.
+task Read($reader own Reader, limit u64) ReadOutcome {
+    var value u64 = 0
+    const status = readStreamNative(reader.handle, limit, &value)
+    if status == 11 {
+        return ReadOutcome { Reader = reader Value = .Ok(.None) }
+    }
+    if status != 0 {
+        return ReadOutcome { Reader = reader Value = .Err(errorFor(status)) }
+    }
+    const claimed = bytes.ClaimRuntimeHandle(value) else error {
+        discard error
+        return ReadOutcome { Reader = reader Value = .Err(.Io) }
+    }
+    ReadOutcome { Reader = reader Value = .Ok(.Some(claimed)) }
+}
+
+// Writes one complete byte value and returns the writer owner.
+task Write($writer own Writer, $value own bytes.Bytes) WriteOutcome {
+    const status = writeStreamNative(writer.handle, bytes.RuntimeHandle(value))
+    discard value
+    if status != 0 {
+        return WriteOutcome { Writer = writer Value = .Err(errorFor(status)) }
+    }
+    WriteOutcome { Writer = writer Value = .Ok }
+}
+
+// Waits for the child and consumes the waiter owner.
+task Wait($waiter own Waiter) Result<i32, Error> {
+    var exitCode i32 = 0
+    const status = waitStreamNative(waiter.handle, &exitCode)
+    discard waiter
+    if status == 0 return .Ok(exitCode)
+    .Err(errorFor(status))
+}

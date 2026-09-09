@@ -9,7 +9,18 @@ fn Command.AddArgument(&self, argument String) Result<void, Error>
 fn Command.AddEnvironment(&self, entry String) Result<void, Error>
 fn CurrentID() u64
 fn Executable() Result<String, Error>
-task Run($command own Command) Result<Output, Error>
+fn Run(
+    program String,
+    arguments [String],
+    environment [String],
+    $options Options
+) Result<own Output, Error>
+task Start($command own Command) Result<own Child, Error>
+task Read($reader own Reader, limit u64) ReadOutcome
+task Write($writer own Writer, $value own bytes.Bytes) WriteOutcome
+task Wait($waiter own Waiter) Result<i32, Error>
+fn Writer.Close(&self) bool
+fn Controller.Abort(&self) bool
 fn OpenPTY(
     command [String],
     environment [String],
@@ -35,6 +46,15 @@ error. Set `InheritEnvironment` to `false` to start from an empty environment.
 
 `CurrentID` returns the current process identifier. `Executable` returns the path used by the host
 system for the running executable.
+
+`Start` launches a configured command with separate pipes for stdin, stdout, and stderr. The child
+contains independent owners for each pipe, process control, and process waiting so tasks can use
+them without shared mutable Foundation state. `Read` returns one bounded binary chunk or `None` at
+EOF. `OutputLimit` applies to `Capture`; streaming callers set the bound on each `Read`. `Write`
+writes the complete byte value. Closing the writer closes the child's stdin pipe.
+`Wait` returns a normal exit code or `128 + signal` on POSIX. `Abort` terminates the child and wakes
+pending stream operations. Dropping the final child owner terminates and reaps a child that has not
+exited.
 
 `OpenPTY` prepares an interactive process. An empty command uses `SHELL` on POSIX and `COMSPEC` on
 Windows, with a platform fallback when the variable is absent. The default working directory is

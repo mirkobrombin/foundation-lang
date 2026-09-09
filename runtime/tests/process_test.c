@@ -156,6 +156,23 @@ static int child_main(int argc, char **argv) {
         (void)fflush(stdout);
         return 7;
     }
+    if (argc >= 3 && strcmp(argv[2], "stream") == 0) {
+        char input[64];
+        if (fgets(input, sizeof(input), stdin) == NULL) {
+            return 5;
+        }
+        (void)fprintf(stdout, "stream:%s", input);
+        (void)fputs("stream-error\n", stderr);
+        (void)fflush(stdout);
+        (void)fflush(stderr);
+        return 7;
+    }
+    if (argc >= 3 && strcmp(argv[2], "stream-wait") == 0) {
+        char input[64];
+        (void)fputs("stream-waiting\n", stderr);
+        (void)fflush(stderr);
+        return fgets(input, sizeof(input), stdin) == NULL ? 0 : 6;
+    }
 #if defined(_WIN32)
     if (argc >= 3 && strcmp(argv[2], "handle") == 0 && argc == 4) {
         const uintptr_t value = (uintptr_t)strtoull(argv[3], NULL, 10);
@@ -228,6 +245,68 @@ cleanup:
     foundation_runtime_process_pty_waiter_close(waiter);
     foundation_runtime_process_close(&process);
     if (status == 0 && foundation_runtime_process_pty_live_handles() != 0) {
+        return 2;
+    }
+    return status;
+}
+
+static int run_stream(const char *program) {
+    fdn_string program_value = text(program);
+    fdn_string child = text("child");
+    fdn_string mode = text("stream");
+    uint64_t process = 0;
+    uint64_t input = 0;
+    uint64_t output = 0;
+    uint64_t error = 0;
+    uint64_t controller = 0;
+    uint64_t waiter = 0;
+    uint64_t input_bytes = 0;
+    uint64_t output_bytes = 0;
+    uint64_t error_bytes = 0;
+    int32_t exit_code = 0;
+    int status = 1;
+    if (foundation_runtime_process_open(&program_value, 0, true, &process) != 0 ||
+        foundation_runtime_process_add_argument(process, &child) != 0 ||
+        foundation_runtime_process_add_argument(process, &mode) != 0 ||
+        foundation_runtime_process_stream_start(process, &input, &output, &error,
+                                                &controller, &waiter) != 0 ||
+        foundation_runtime_process_stream_live_handles() != 1) {
+        goto cleanup;
+    }
+    input_bytes = bytes_from("MARKER-OK\n");
+    if (input_bytes == 0 ||
+        foundation_runtime_process_stream_write(input, input_bytes) != 0) {
+        goto cleanup;
+    }
+    foundation_runtime_process_stream_close(input);
+    input = 0;
+    if (foundation_runtime_process_stream_read(output, 4096, &output_bytes) != 0 ||
+        foundation_runtime_process_stream_read(error, 4096, &error_bytes) != 0 ||
+        !bytes_are(output_bytes, "stream:MARKER-OK\n") ||
+        !bytes_are(error_bytes, "stream-error\n") ||
+        foundation_runtime_process_stream_wait(waiter, &exit_code) != 0 ||
+        exit_code != 7) {
+        goto cleanup;
+    }
+    foundation_runtime_bytes_close(&output_bytes);
+    if (foundation_runtime_process_stream_read(output, 4096, &output_bytes) != 11 ||
+        output_bytes != 0) {
+        goto cleanup;
+    }
+    status = 0;
+
+cleanup:
+    foundation_runtime_bytes_close(&input_bytes);
+    foundation_runtime_bytes_close(&output_bytes);
+    foundation_runtime_bytes_close(&error_bytes);
+    foundation_runtime_process_stream_abort(controller);
+    foundation_runtime_process_stream_close(input);
+    foundation_runtime_process_stream_close(output);
+    foundation_runtime_process_stream_close(error);
+    foundation_runtime_process_stream_close(controller);
+    foundation_runtime_process_stream_close(waiter);
+    foundation_runtime_process_close(&process);
+    if (status == 0 && foundation_runtime_process_stream_live_handles() != 0) {
         return 2;
     }
     return status;
@@ -421,6 +500,9 @@ int main(int argc, char **argv) {
     status = run_process(argv[0], argv[1]);
     if (status == 0) {
         status = run_pty(argv[0]);
+    }
+    if (status == 0) {
+        status = run_stream(argv[0]);
     }
     if (status != 0) {
         (void)fprintf(stderr, "runtime.process failed at check %d\n", status);

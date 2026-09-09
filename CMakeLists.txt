@@ -91,6 +91,8 @@ add_library(foundation_runtime STATIC
     runtime/src/runtime.c
     runtime/src/fs_host.c
     runtime/src/process.c
+    runtime/src/process_stream_posix.c
+    runtime/src/process_stream_windows.c
     runtime/src/pty_posix.c
     runtime/src/pty_windows.c
     runtime/src/terminal.c
@@ -335,6 +337,8 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_RUNTIME_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c"
     FOUNDATION_RUNTIME_FS_HOST_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/fs_host.c"
     FOUNDATION_RUNTIME_PROCESS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/process.c"
+    FOUNDATION_RUNTIME_PROCESS_STREAM_POSIX_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/process_stream_posix.c"
+    FOUNDATION_RUNTIME_PROCESS_STREAM_WINDOWS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/process_stream_windows.c"
     FOUNDATION_RUNTIME_PTY_POSIX_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pty_posix.c"
     FOUNDATION_RUNTIME_PTY_WINDOWS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/pty_windows.c"
     FOUNDATION_RUNTIME_TERMINAL_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/terminal.c"
@@ -2332,6 +2336,26 @@ if(BUILD_TESTING)
             -DCOMPILER=$<TARGET_FILE:foundationc>
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/process-pty.fn
             -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/process-pty.out
+            -DBACKEND=c
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_runtime_process_test>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME compiler.run.process-stream.llvm
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/process-stream.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/process-stream.out
+            -DBACKEND=llvm
+            "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_runtime_process_test>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake
+    )
+    add_test(
+        NAME compiler.run.process-stream.c
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/process-stream.fn
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/accept/process-stream.out
             -DBACKEND=c
             "-DPROGRAM_ARGS=$<TARGET_FILE:foundation_runtime_process_test>"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-run.cmake

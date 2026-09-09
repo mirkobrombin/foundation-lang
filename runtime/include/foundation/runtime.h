@@ -516,6 +516,21 @@ int32_t foundation_runtime_process_add_environment(uint64_t handle,
 int32_t foundation_runtime_process_run(uint64_t handle, int32_t *exit_code,
                                        uint64_t *stdout_handle,
                                        uint64_t *stderr_handle);
+int32_t foundation_runtime_process_stream_start(uint64_t process_handle,
+                                                uint64_t *input,
+                                                uint64_t *output,
+                                                uint64_t *error,
+                                                uint64_t *controller,
+                                                uint64_t *waiter);
+int32_t foundation_runtime_process_stream_read(uint64_t handle, uint64_t limit,
+                                               uint64_t *result);
+int32_t foundation_runtime_process_stream_write(uint64_t handle,
+                                                uint64_t bytes_handle);
+int32_t foundation_runtime_process_stream_wait(uint64_t handle,
+                                               int32_t *exit_code);
+void foundation_runtime_process_stream_abort(uint64_t handle);
+void foundation_runtime_process_stream_close(uint64_t handle);
+uint64_t foundation_runtime_process_stream_live_handles(void);
 uint64_t foundation_runtime_process_current_id(void);
 int32_t foundation_runtime_process_executable(fdn_string *result);
 void foundation_runtime_process_close(uint64_t *handle);

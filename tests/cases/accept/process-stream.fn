@@ -1,0 +1,171 @@
+import std.bytes
+import std.process
+import std.text
+
+fn chunkText($value Option<own bytes.Bytes>) Result<String, process.Error> {
+    match value {
+        None: { return .Err(.Io) }
+        Some(chunk): {
+            const content = chunk.Text() else error {
+                discard error
+                return .Err(.Io)
+            }
+            .Ok(content)
+        }
+    }
+}
+
+fn proveAbort(program String) i32 {
+    const opened = process.Open(program, $process.DefaultOptions()) else error {
+        discard error
+        return 1
+    }
+    var command = opened
+    command.AddArgument("child") else error {
+        discard error
+        return 2
+    }
+    command.AddArgument("stream-wait") else error {
+        discard error
+        return 3
+    }
+    const starting = spawn process.Start($command)
+    const child = $starting.wait() else error {
+        discard error
+        return 4
+    }
+    const process.Child { Stdin Stdout Stderr Controller Waiter } = child
+    var controller = Controller
+
+    var stderr = Stderr
+    const readingReady = spawn process.Read($stderr, 4096)
+    const process.ReadOutcome {
+        Reader as restoredError
+        Value as readyResult
+    } = $readingReady.wait()
+    stderr = restoredError
+    const ready = readyResult else error {
+        discard error
+        return 5
+    }
+    const readyText = chunkText($ready) else error {
+        discard error
+        return 6
+    }
+    if readyText != "stream-waiting\n" return 7
+
+    var stdout = Stdout
+    const readingOutput = spawn process.Read($stdout, 4096)
+    if !controller.Abort() return 8
+    const process.ReadOutcome {
+        Reader as restoredOutput
+        Value as outputResult
+    } = $readingOutput.wait()
+    stdout = restoredOutput
+    const output = outputResult else error {
+        discard error
+        return 9
+    }
+    match output {
+        None: {}
+        Some(chunk): {
+            discard chunk
+            return 10
+        }
+    }
+
+    const waiting = spawn process.Wait($Waiter)
+    const exitCode = $waiting.wait() else error {
+        discard error
+        return 11
+    }
+    discard Stdin
+    discard stdout
+    discard stderr
+    discard controller
+    if exitCode == 0 return 12
+    0
+}
+
+fn main(args [String]) i32 {
+    if len(args) != 1 return 1
+    const opened = process.Open(args[0], $process.DefaultOptions()) else error {
+        discard error
+        return 2
+    }
+    var command = opened
+    command.AddArgument("child") else error {
+        discard error
+        return 3
+    }
+    command.AddArgument("stream") else error {
+        discard error
+        return 4
+    }
+    const starting = spawn process.Start($command)
+    const child = $starting.wait() else error {
+        discard error
+        return 5
+    }
+    const process.Child { Stdin Stdout Stderr Controller Waiter } = child
+    var writer = Stdin
+    const writing = spawn process.Write($writer, $bytes.FromText("MARKER-OK\n"))
+    const process.WriteOutcome {
+        Writer as restoredWriter
+        Value as writeResult
+    } = $writing.wait()
+    writer = restoredWriter
+    writeResult else error {
+        discard error
+        return 6
+    }
+    discard writer.Close()
+
+    var stdout = Stdout
+    const readingOutput = spawn process.Read($stdout, 4096)
+    const process.ReadOutcome {
+        Reader as restoredOutput
+        Value as outputResult
+    } = $readingOutput.wait()
+    stdout = restoredOutput
+    const output = outputResult else error {
+        discard error
+        return 7
+    }
+    const outputText = chunkText($output) else error {
+        discard error
+        return 8
+    }
+
+    var stderr = Stderr
+    const readingError = spawn process.Read($stderr, 4096)
+    const process.ReadOutcome {
+        Reader as restoredError
+        Value as errorResult
+    } = $readingError.wait()
+    stderr = restoredError
+    const errorOutput = errorResult else error {
+        discard error
+        return 9
+    }
+    const errorText = chunkText($errorOutput) else error {
+        discard error
+        return 10
+    }
+
+    const waiting = spawn process.Wait($Waiter)
+    const exitCode = $waiting.wait() else error {
+        discard error
+        return 11
+    }
+    discard stdout
+    discard stderr
+    discard Controller
+    if exitCode != 7 return 12
+    if !text.Contains(outputText, "stream:MARKER-OK") return 13
+    if !text.Contains(errorText, "stream-error") return 14
+    const abortStatus = proveAbort(args[0])
+    if abortStatus != 0 return 20 + abortStatus
+    print("stream ready")
+    0
+}
