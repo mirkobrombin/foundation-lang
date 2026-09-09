@@ -121,6 +121,29 @@ methods Window {
         buttonNative(self.handle, value, selected, primary)
     }
 
+    // Draws a bounded numeric slider and reports its current value.
+    fn Slider(
+        &self,
+        value u64,
+        minimum u64,
+        maximum u64,
+        step u64
+    ) Result<SliderEdit, Error> {
+        var result u64 = value
+        var changed = false
+        const valueStatus = sliderNative(
+            self.handle,
+            value,
+            minimum,
+            maximum,
+            step,
+            &result,
+            &changed
+        )
+        if valueStatus != 0 return .Err(errorFor(valueStatus))
+        .Ok(SliderEdit { Value = result Changed = changed })
+    }
+
     // Draws one file or directory row and reports activation.
     fn FileEntry(&self, name String, details String, directory bool) bool {
         fileEntryNative(self.handle, name, details, directory)

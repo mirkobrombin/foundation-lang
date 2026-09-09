@@ -37,6 +37,7 @@ int main(void) {
     bool shift = false;
     bool alt = false;
     bool super = false;
+    bool changed = false;
     fdn_string text = {0};
     const fdn_string label = {"Action", 6, 0};
     if (foundation_ui_provider_abi() != FOUNDATION_UI_ABI_CURRENT)
@@ -91,8 +92,10 @@ int main(void) {
         return 22;
     if (foundation_ui_poll_open_file_dialog(invalid, &kind, &text) != FOUNDATION_UI_INVALID)
         return 23;
+    if (foundation_ui_slider(invalid, 5, 0, 10, 1, &width, &changed) != FOUNDATION_UI_INVALID)
+        return 24;
     foundation_ui_close(&invalid);
     if (invalid != 0)
-        return 24;
+        return 25;
     return 0;
 }

@@ -207,6 +207,24 @@ bool foundation_ui_button(uint64_t handle, const fdn_string* value, bool selecte
     return pressed;
 }
 
+int32_t foundation_ui_slider(uint64_t handle, uint64_t value, uint64_t minimum, uint64_t maximum,
+                             uint64_t step, uint64_t* result, bool* changed) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    struct nk_rect bounds;
+    int current;
+    if (ui == NULL || result == NULL || changed == NULL || minimum >= maximum || minimum > value ||
+        value > maximum ||
+        maximum > INT32_MAX || step == 0 || step > INT32_MAX) {
+        return FOUNDATION_UI_INVALID;
+    }
+    bounds = nk_widget_bounds(ui->context);
+    foundation_ui_set_context_target(ui, bounds);
+    current = (int)value;
+    *changed = nk_slider_int(ui->context, (int)minimum, &current, (int)maximum, (int)step) != 0;
+    *result = (uint64_t)current;
+    return FOUNDATION_UI_OK;
+}
+
 bool foundation_ui_file_entry(uint64_t handle, const fdn_string* name, const fdn_string* details,
                               bool directory) {
     foundation_ui* ui = foundation_ui_from(handle);

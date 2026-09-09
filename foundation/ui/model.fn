@@ -168,6 +168,14 @@ struct TextEdit {
     Committed bool
 }
 
+// Describes the result of one bounded numeric slider.
+struct SliderEdit {
+    // Stores the current slider value.
+    Value u64
+    // Reports a value change during this frame.
+    Changed bool
+}
+
 // Carries terminal input and the visible cell dimensions.
 struct TerminalFrame {
     // Owns bytes entered during this frame.

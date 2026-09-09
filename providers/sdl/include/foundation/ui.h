@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #define FOUNDATION_UI_ABI_MAJOR 1
-#define FOUNDATION_UI_ABI_MINOR 5
+#define FOUNDATION_UI_ABI_MINOR 6
 #define FOUNDATION_UI_ABI_VERSION(major, minor) ((((uint64_t)(major)) << 32U) | (uint64_t)(minor))
 #define FOUNDATION_UI_ABI_CURRENT                                                                  \
     FOUNDATION_UI_ABI_VERSION(FOUNDATION_UI_ABI_MAJOR, FOUNDATION_UI_ABI_MINOR)
@@ -115,6 +115,7 @@ extern "C" {
  * retain caller storage.
  *
  * Secret edits permit paste but suppress clipboard copies and wipe provider buffers before release.
+ * Sliders use distinct inclusive bounds, a positive step, and values no greater than INT32_MAX.
  * A window owns at most one open-file dialog. Request starts a single-file selection on the UI
  * thread. Poll returns PENDING until the provider callback completes, then reports CANCELLED,
  * SELECTED, or a failed status once before returning to IDLE. A selected path is an owned string.
@@ -180,6 +181,8 @@ int32_t foundation_ui_terminal_commit(uint64_t handle, uint64_t length);
 int32_t foundation_ui_terminal(uint64_t handle, float height, fdn_string* input, uint64_t* columns,
                                uint64_t* rows, bool* resized);
 bool foundation_ui_button(uint64_t handle, const fdn_string* value, bool selected, bool primary);
+int32_t foundation_ui_slider(uint64_t handle, uint64_t value, uint64_t minimum, uint64_t maximum,
+                             uint64_t step, uint64_t* result, bool* changed);
 bool foundation_ui_file_entry(uint64_t handle, const fdn_string* name, const fdn_string* details,
                               bool directory);
 bool foundation_ui_begin_context_menu(uint64_t handle, float width, uint64_t items);

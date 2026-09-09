@@ -53,6 +53,26 @@ fn drawTextFields(&window ui.Window) void {
     }
 }
 
+fn drawSlider(&window ui.Window) void {
+    const value = window.Slider(50, 0, 100, 1) else {
+        fail("provider did not draw a slider")
+    }
+    if value.Value != 50 || value.Changed {
+        fail("provider changed an idle slider")
+    }
+    const invalid = window.Slider(10, 10, 10, 1)
+    match invalid {
+        Ok(result): {
+            discard result
+            fail("provider accepted equal slider bounds")
+        }
+        Err(error): match error {
+            Invalid: {}
+            _: { fail("provider reported the wrong slider error") }
+        }
+    }
+}
+
 test "provider opens a native window" {
     const opened = Open("Foundation UI", 720, 480) else {
         fail("provider did not open a window")
@@ -332,6 +352,7 @@ test "provider draws standard widgets" {
         window.Heading("Heading")
         window.Label("Label", .Accent, false)
         discard window.Button("Button", false, true)
+        drawSlider(&window)
         drawContextMenu(&window)
         discard window.FileEntry("src", "directory", true)
         drawTextFields(&window)

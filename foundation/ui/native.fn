@@ -172,6 +172,15 @@ extern c fn buttonNative(
     selected bool,
     primary bool
 ) bool as foundation_ui_button
+extern c fn sliderNative(
+    handle u64,
+    value u64,
+    minimum u64,
+    maximum u64,
+    step u64,
+    &result u64,
+    &changed bool
+) i32 as foundation_ui_slider
 extern c fn fileEntryNative(
     handle u64,
     name String,

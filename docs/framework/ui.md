@@ -8,7 +8,7 @@ The SDK includes `foundation.ui.sdl`, an optional SDL3 and Nuklear provider. Imp
 adds its native sources and SDL3 link requirement through `foundation.package`.
 
 ```text
-dependency foundation.ui.sdl 1.5.0 sdk providers/sdl
+dependency foundation.ui.sdl 1.6.0 sdk providers/sdl
 ```
 
 ```foundation
@@ -83,6 +83,10 @@ desktop sessions without a notification area.
 `SecretEdit` uses the same bounded input contract as `Edit`. It masks the value and suppresses
 clipboard copies. Provider-owned secret buffers are cleared when replaced or released.
 
+`Slider` edits an unsigned value between distinct inclusive bounds. The step must be positive and
+the SDL provider accepts values through `2147483647`. Its result reports both the current value and
+whether the user changed it during the frame.
+
 ## Surfaces
 
 A surface carries RGBA8 pixels from a browser, remote desktop, game renderer, or another producer.
@@ -136,7 +140,7 @@ same frame. `ContextMenuItem` accepts an enabled state and reports activation.
 
 ## Provider boundary
 
-The C header `foundation/ui.h` defines UI ABI 1.5. The provider reports the major in the upper 32
+The C header `foundation/ui.h` defines UI ABI 1.6. The provider reports the major in the upper 32
 bits and the minor in the lower 32 bits. Clients accept the required major and a minor at least as
 new as the contract they use. Existing functions and layouts remain stable under the Foundation
 compatibility contract; compatible releases may append functions or provider capabilities. The
