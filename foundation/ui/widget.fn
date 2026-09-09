@@ -123,4 +123,31 @@ methods Window {
             Committed = committed
         })
     }
+
+    // Edits a named secret without exposing its contents on screen or through copy actions.
+    fn SecretEdit(
+        &self,
+        name String,
+        value String,
+        capacity u64
+    ) Result<TextEdit, Error> {
+        var result = ""
+        var changed = false
+        var committed = false
+        const valueStatus = secretEditNative(
+            self.handle,
+            name,
+            value,
+            capacity,
+            &result,
+            &changed,
+            &committed
+        )
+        if valueStatus != 0 return .Err(errorFor(valueStatus))
+        .Ok(TextEdit {
+            Value = result
+            Changed = changed
+            Committed = committed
+        })
+    }
 }

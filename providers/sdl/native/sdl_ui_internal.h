@@ -79,12 +79,22 @@ typedef struct foundation_ui_input {
 #define FOUNDATION_UI_TERMINAL_INPUT_CAPACITY 16384
 #define FOUNDATION_UI_TERMINAL_MAX_COLUMNS 240
 #define FOUNDATION_UI_TERMINAL_MAX_ROWS 120
+#define FOUNDATION_UI_TRAY_ACTION_CAPACITY 64
+#define FOUNDATION_UI_TRAY_EVENT_CAPACITY 64
+
+typedef struct foundation_ui_tray_action {
+    struct foundation_ui* owner;
+    SDL_TrayEntry* entry;
+    uint64_t id;
+} foundation_ui_tray_action;
 
 typedef struct foundation_ui_edit_state {
     char* name;
     size_t name_length;
     char* buffer;
+    char* mask;
     size_t capacity;
+    bool secret;
 } foundation_ui_edit_state;
 
 typedef struct foundation_ui_texture {
@@ -139,6 +149,11 @@ typedef struct foundation_ui {
     uint64_t terminal_input_length;
     size_t terminal_scroll;
     foundation_ui_edit_state* edit_states;
+    SDL_Tray* tray;
+    SDL_TrayMenu* tray_menu;
+    SDL_Surface* tray_icon;
+    foundation_ui_tray_action tray_actions[FOUNDATION_UI_TRAY_ACTION_CAPACITY];
+    uint64_t tray_events[FOUNDATION_UI_TRAY_EVENT_CAPACITY];
     foundation_ui_group_state group_states[FOUNDATION_UI_GROUP_CAPACITY];
     struct nk_rect titlebar_regions[FOUNDATION_UI_TITLEBAR_REGION_CAPACITY];
     size_t edit_count;
@@ -148,6 +163,10 @@ typedef struct foundation_ui {
     uint64_t surface_draw_sequence;
     uint64_t event_head;
     uint64_t event_count;
+    uint64_t tray_action_count;
+    uint64_t tray_event_head;
+    uint64_t tray_event_count;
+    uint64_t next_tray_action_id;
     int shape_width;
     int shape_height;
     bool terminal_bounds_valid;
@@ -169,6 +188,7 @@ typedef struct foundation_ui {
     bool closing;
     bool first_frame;
     bool event_overflow;
+    bool tray_event_overflow;
     bool titlebar_region_overflow;
 } foundation_ui;
 

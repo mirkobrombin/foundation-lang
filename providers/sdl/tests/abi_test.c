@@ -35,6 +35,7 @@ int main(void) {
     bool alt = false;
     bool super = false;
     fdn_string text = {0};
+    const fdn_string label = {"Action", 6, 0};
     if (foundation_ui_provider_abi() != FOUNDATION_UI_ABI_CURRENT)
         return 1;
     if (FOUNDATION_UI_ABI_MAJOR_OF(foundation_ui_provider_abi()) != FOUNDATION_UI_ABI_MAJOR)
@@ -56,8 +57,20 @@ int main(void) {
     }
     if (foundation_ui_surface_focused(invalid, invalid))
         return 8;
+    if (foundation_ui_set_visible(invalid, true) != FOUNDATION_UI_INVALID)
+        return 9;
+    if (foundation_ui_visible(invalid))
+        return 10;
+    if (foundation_ui_raise(invalid) != FOUNDATION_UI_INVALID)
+        return 11;
+    if (foundation_ui_create_tray(invalid, &label) != FOUNDATION_UI_INVALID)
+        return 12;
+    if (foundation_ui_add_tray_action(invalid, &label, &kind) != FOUNDATION_UI_INVALID)
+        return 13;
+    if (foundation_ui_poll_tray_action(invalid, &kind) != FOUNDATION_UI_POLL_FAILED)
+        return 14;
     foundation_ui_close(&invalid);
     if (invalid != 0)
-        return 9;
+        return 15;
     return 0;
 }

@@ -241,9 +241,11 @@ if(FOUNDATION_BUILD_SDL_PROVIDER)
         providers/sdl/native/sdl_ui.c
         providers/sdl/native/sdl_layout.c
         providers/sdl/native/sdl_controls.c
+        providers/sdl/native/sdl_edit.c
         providers/sdl/native/sdl_icons.c
         providers/sdl/native/sdl_surface.c
         providers/sdl/native/sdl_terminal.c
+        providers/sdl/native/sdl_tray.c
         providers/sdl/native/sdl_widgets.c
         providers/sdl/native/terminal_emulator.c
     )

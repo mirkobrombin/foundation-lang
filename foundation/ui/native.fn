@@ -23,6 +23,28 @@ extern c fn sizeNative(
     &width u64,
     &height u64
 ) i32 as foundation_ui_size
+extern c fn setVisibleNative(handle u64, visible bool) i32 as foundation_ui_set_visible
+extern c fn visibleNative(handle u64) bool as foundation_ui_visible
+extern c fn raiseNative(handle u64) i32 as foundation_ui_raise
+extern c fn createTrayNative(
+    handle u64,
+    tooltip String
+) i32 as foundation_ui_create_tray
+extern c fn setTrayTooltipNative(
+    handle u64,
+    tooltip String
+) i32 as foundation_ui_set_tray_tooltip
+extern c fn addTrayActionNative(
+    handle u64,
+    label String,
+    &id u64
+) i32 as foundation_ui_add_tray_action
+extern c fn addTraySeparatorNative(handle u64) i32 as foundation_ui_add_tray_separator
+extern c fn pollTrayActionNative(
+    handle u64,
+    &id u64
+) i32 as foundation_ui_poll_tray_action
+extern c fn destroyTrayNative(handle u64) void as foundation_ui_destroy_tray
 extern c fn beginRootNative(handle u64) bool as foundation_ui_begin_root
 extern c fn endRootNative(handle u64) void as foundation_ui_end_root
 extern c fn titlebarNative(
@@ -129,6 +151,15 @@ extern c fn editNative(
     &changed bool,
     &committed bool
 ) i32 as foundation_ui_edit
+extern c fn secretEditNative(
+    handle u64,
+    name String,
+    value String,
+    capacity u64,
+    &result String,
+    &changed bool,
+    &committed bool
+) i32 as foundation_ui_secret_edit
 extern c fn createSurfaceNative(
     handle u64,
     &surface u64

@@ -564,10 +564,16 @@ void foundation_ui_close(uint64_t* handle) {
         *handle = 0;
         return;
     }
+    foundation_ui_destroy_tray(ui->id);
     foundation_ui_unregister(ui);
     for (edit_index = 0; edit_index < ui->edit_count; edit_index++) {
+        if (ui->edit_states[edit_index].secret) {
+            SDL_memset(ui->edit_states[edit_index].buffer, 0, ui->edit_states[edit_index].capacity);
+            SDL_memset(ui->edit_states[edit_index].mask, 0, ui->edit_states[edit_index].capacity);
+        }
         SDL_free(ui->edit_states[edit_index].name);
         SDL_free(ui->edit_states[edit_index].buffer);
+        SDL_free(ui->edit_states[edit_index].mask);
     }
     SDL_free(ui->edit_states);
     for (index = 0; index < FOUNDATION_UI_SURFACE_CAPACITY; index++) {
@@ -595,6 +601,7 @@ int32_t foundation_ui_begin_frame(uint64_t handle) {
     bool resized = false;
     if (ui == NULL)
         return FOUNDATION_UI_INVALID;
+    SDL_UpdateTrays();
     active = ui->first_frame;
     ui->first_frame = false;
     nk_input_begin(ui->context);
@@ -618,6 +625,8 @@ int32_t foundation_ui_begin_frame(uint64_t handle) {
     }
     if (resized && !ui->shape_disabled && !foundation_ui_set_window_shape(ui))
         ui->shape_disabled = true;
+    if (ui->tray_event_count != 0)
+        active = true;
     if (ui->closing)
         return FOUNDATION_UI_FRAME_CLOSING;
     return active ? FOUNDATION_UI_FRAME_ACTIVE : FOUNDATION_UI_FRAME_IDLE;
@@ -674,6 +683,38 @@ int32_t foundation_ui_size(uint64_t handle, uint64_t* width, uint64_t* height) {
     }
     *width = (uint64_t)window_width;
     *height = (uint64_t)window_height;
+    return FOUNDATION_UI_OK;
+}
+
+int32_t foundation_ui_set_visible(uint64_t handle, bool visible) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    if (ui == NULL)
+        return FOUNDATION_UI_INVALID;
+    if (visible) {
+        if (!SDL_ShowWindow(ui->window))
+            return FOUNDATION_UI_FAILED;
+    } else {
+        if (!SDL_HideWindow(ui->window))
+            return FOUNDATION_UI_FAILED;
+        ui->closing = false;
+    }
+    return FOUNDATION_UI_OK;
+}
+
+bool foundation_ui_visible(uint64_t handle) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    if (ui == NULL)
+        return false;
+    return (SDL_GetWindowFlags(ui->window) & SDL_WINDOW_HIDDEN) == 0;
+}
+
+int32_t foundation_ui_raise(uint64_t handle) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    if (ui == NULL)
+        return FOUNDATION_UI_INVALID;
+    if (!SDL_ShowWindow(ui->window) || !SDL_RaiseWindow(ui->window))
+        return FOUNDATION_UI_FAILED;
+    ui->closing = false;
     return FOUNDATION_UI_OK;
 }
 

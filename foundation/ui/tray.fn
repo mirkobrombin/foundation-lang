@@ -1,0 +1,40 @@
+package foundation.ui
+
+methods Window {
+    // Creates the window-owned system tray icon from the current application icon.
+    fn CreateTray(&self, tooltip String) Result<void, Error> {
+        status(createTrayNative(self.handle, tooltip))
+    }
+
+    // Replaces the tray tooltip.
+    fn SetTrayTooltip(&self, tooltip String) Result<void, Error> {
+        status(setTrayTooltipNative(self.handle, tooltip))
+    }
+
+    // Adds a tray action and returns its stable identifier.
+    fn AddTrayAction(&self, label String) Result<u64, Error> {
+        var id u64 = 0
+        const value = addTrayActionNative(self.handle, label, &id)
+        if value != 0 return .Err(errorFor(value))
+        .Ok(id)
+    }
+
+    // Adds a visual separator to the tray menu.
+    fn AddTraySeparator(&self) Result<void, Error> {
+        status(addTraySeparatorNative(self.handle))
+    }
+
+    // Takes the next activated tray action.
+    fn PollTrayAction(&self) Result<Option<u64>, Error> {
+        var id u64 = 0
+        const value = pollTrayActionNative(self.handle, &id)
+        if value < 0 return .Err(errorFor(value))
+        if value == 0 return .Ok(.None)
+        .Ok(.Some(id))
+    }
+
+    // Removes the tray icon and all of its actions.
+    fn DestroyTray(&self) void {
+        destroyTrayNative(self.handle)
+    }
+}

@@ -8,7 +8,7 @@ The SDK includes `foundation.ui.sdl`, an optional SDL3 and Nuklear provider. Imp
 adds its native sources and SDL3 link requirement through `foundation.package`.
 
 ```text
-dependency foundation.ui.sdl 1.1.0 sdk providers/sdl
+dependency foundation.ui.sdl 1.2.0 sdk providers/sdl
 ```
 
 ```foundation
@@ -65,6 +65,14 @@ rounded corners while maximized on platforms that support shaped windows.
 or account mark from caller-owned text and color, so rails can identify dynamic entries without
 adding product symbols to the provider ABI.
 
+`SetVisible` keeps window state alive while removing it from the desktop. `Raise` restores and
+focuses it. A window can also own one system tray icon, append actions to its menu, and poll their
+stable identifiers during the frame loop. Tray support may return `Unavailable` on platforms or
+desktop sessions without a notification area.
+
+`SecretEdit` uses the same bounded input contract as `Edit`. It masks the value and suppresses
+clipboard copies. Provider-owned secret buffers are cleared when replaced or released.
+
 ## Surfaces
 
 A surface carries RGBA8 pixels from a browser, remote desktop, game renderer, or another producer.
@@ -105,7 +113,7 @@ remote transport and for forwarding resize events.
 
 ## Provider boundary
 
-The C header `foundation/ui.h` defines UI ABI 1.1. The provider reports the major in the upper 32
+The C header `foundation/ui.h` defines UI ABI 1.2. The provider reports the major in the upper 32
 bits and the minor in the lower 32 bits. Clients accept the required major and a minor at least as
 new as the contract they use. Existing functions and layouts remain stable under the Foundation
 compatibility contract; compatible releases may append functions or provider capabilities. The

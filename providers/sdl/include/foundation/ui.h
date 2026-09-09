@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #define FOUNDATION_UI_ABI_MAJOR 1
-#define FOUNDATION_UI_ABI_MINOR 1
+#define FOUNDATION_UI_ABI_MINOR 2
 #define FOUNDATION_UI_ABI_VERSION(major, minor) ((((uint64_t)(major)) << 32U) | (uint64_t)(minor))
 #define FOUNDATION_UI_ABI_CURRENT                                                                  \
     FOUNDATION_UI_ABI_VERSION(FOUNDATION_UI_ABI_MAJOR, FOUNDATION_UI_ABI_MINOR)
@@ -87,8 +87,8 @@ extern "C" {
 
 /*
  * Handles are opaque. Open, use, and close every live handle on one application UI thread.
- * Closing a window invalidates its handle, surfaces, strings, buffers, and queued input. A surface
- * is valid only with the window that created it and until it is destroyed.
+ * Closing a window invalidates its handle, surfaces, tray, strings, buffers, and queued input. A
+ * surface and tray are valid only with the window that created them.
  *
  * Status functions return FOUNDATION_UI_OK or a negative foundation_ui_status. Begin-frame returns
  * a nonnegative foundation_ui_frame_state or a negative status. Boolean widget functions return
@@ -106,6 +106,7 @@ extern "C" {
  * invalidated by a resizing buffer request, surface destruction, or window close. Commit does not
  * retain caller storage.
  *
+ * Secret edits permit paste but suppress clipboard copies and wipe provider buffers before release.
  * String output parameters must point to initialized fdn_string values. The function drops the
  * previous value and returns an owned string that the caller must drop. Other output pointers must
  * be non-null. Open writes zero to handle on failure; close accepts zero or stale handles.
@@ -121,6 +122,15 @@ int32_t foundation_ui_set_theme(uint64_t handle, uint64_t theme);
 int32_t foundation_ui_set_accent(uint64_t handle, uint64_t red, uint64_t green, uint64_t blue,
                                  uint64_t alpha);
 int32_t foundation_ui_size(uint64_t handle, uint64_t* width, uint64_t* height);
+int32_t foundation_ui_set_visible(uint64_t handle, bool visible);
+bool foundation_ui_visible(uint64_t handle);
+int32_t foundation_ui_raise(uint64_t handle);
+int32_t foundation_ui_create_tray(uint64_t handle, const fdn_string* tooltip);
+int32_t foundation_ui_set_tray_tooltip(uint64_t handle, const fdn_string* tooltip);
+int32_t foundation_ui_add_tray_action(uint64_t handle, const fdn_string* label, uint64_t* action);
+int32_t foundation_ui_add_tray_separator(uint64_t handle);
+int32_t foundation_ui_poll_tray_action(uint64_t handle, uint64_t* action);
+void foundation_ui_destroy_tray(uint64_t handle);
 bool foundation_ui_begin_root(uint64_t handle);
 void foundation_ui_end_root(uint64_t handle);
 void foundation_ui_titlebar(uint64_t handle, const fdn_string* title, const fdn_string* subtitle);
@@ -153,6 +163,9 @@ bool foundation_ui_file_entry(uint64_t handle, const fdn_string* name, const fdn
                               bool directory);
 int32_t foundation_ui_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,
                            uint64_t capacity, fdn_string* result, bool* changed, bool* committed);
+int32_t foundation_ui_secret_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,
+                                  uint64_t capacity, fdn_string* result, bool* changed,
+                                  bool* committed);
 int32_t foundation_ui_create_surface(uint64_t handle, uint64_t* surface);
 int32_t foundation_ui_destroy_surface(uint64_t handle, uint64_t surface);
 uint8_t* foundation_ui_image_buffer(uint64_t handle, uint64_t surface, uint64_t width,

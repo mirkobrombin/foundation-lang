@@ -35,6 +35,18 @@ test "provider opens a native window" {
     if size.Width != 720 || size.Height != 480 {
         fail("provider reported the wrong window size")
     }
+    window.SetVisible(false) else {
+        fail("provider did not hide the window")
+    }
+    if window.Visible() {
+        fail("provider reported a hidden window as visible")
+    }
+    window.Raise() else {
+        fail("provider did not raise the window")
+    }
+    if !window.Visible() {
+        fail("provider did not show the raised window")
+    }
     pass()
 }
 
@@ -264,6 +276,31 @@ test "provider draws standard widgets" {
                 window.EndGroup()
             }
             window.EndGroup()
+        }
+        window.EndRoot()
+    }
+    window.EndFrame() else {
+        fail("provider did not end a frame")
+    }
+    pass()
+}
+
+test "provider draws a secret field" {
+    const opened = Open("Foundation UI", 720, 480) else {
+        fail("provider did not open a window")
+    }
+    var window = opened
+    const frame = window.BeginFrame() else {
+        fail("provider did not begin a frame")
+    }
+    discard frame
+    if window.BeginRoot() {
+        window.Row(36.0, 1)
+        const secret = window.SecretEdit("secret", "value", 32) else {
+            fail("provider did not draw a secret field")
+        }
+        if secret.Value != "value" {
+            fail("provider changed an idle secret field")
         }
         window.EndRoot()
     }
