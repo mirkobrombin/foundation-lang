@@ -303,6 +303,29 @@ bool foundation_ui_begin_context_menu(uint64_t handle, float width, uint64_t ite
     return true;
 }
 
+bool foundation_ui_begin_popover(uint64_t handle, float width, float height) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    if (ui == NULL || !ui->context_target_valid || ui->context_menu_active ||
+        ui->popover_active || !isfinite(width) || !isfinite(height) || width <= 0.0f ||
+        height <= 0.0f) {
+        return false;
+    }
+    if (!foundation_ui_popover_begin(ui, width, height)) {
+        return false;
+    }
+    ui->popover_active = true;
+    return true;
+}
+
+void foundation_ui_end_popover(uint64_t handle) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    if (ui == NULL || !ui->popover_active) {
+        return;
+    }
+    nk_popup_end(ui->context);
+    ui->popover_active = false;
+}
+
 bool foundation_ui_context_menu_item(uint64_t handle, const fdn_string* label, bool enabled) {
     foundation_ui* ui = foundation_ui_from(handle);
     bool selected;

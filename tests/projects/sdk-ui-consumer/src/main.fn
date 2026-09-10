@@ -21,6 +21,10 @@ fn main() i32 {
             discard window.ContextMenuItem("Open", true)
             window.EndContextMenu()
         }
+        if !window.BeginPopover(160.0, 80.0) { return 1 }
+        window.Row(24.0, 1)
+        window.Label("Popover", .Primary, false)
+        window.EndPopover()
         window.EndRoot()
     }
     window.EndFrame() else { return 1 }

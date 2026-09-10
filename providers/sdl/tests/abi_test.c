@@ -82,6 +82,9 @@ int main(void) {
     if (foundation_ui_context_menu_item(invalid, &label, true))
         return 18;
     foundation_ui_end_context_menu(invalid);
+    if (foundation_ui_begin_popover(invalid, 320.0f, 240.0f))
+        return 30;
+    foundation_ui_end_popover(invalid);
     if (foundation_ui_create_tray(invalid, &label) != FOUNDATION_UI_INVALID)
         return 19;
     if (foundation_ui_add_tray_action(invalid, &label, &kind) != FOUNDATION_UI_INVALID)

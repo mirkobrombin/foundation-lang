@@ -27,6 +27,15 @@ fn drawContextMenu(&window ui.Window) void {
     window.EndContextMenu()
 }
 
+fn drawPopover(&window ui.Window) void {
+    if !window.BeginPopover(240.0, 120.0) {
+        fail("provider did not open a popover")
+    }
+    window.Row(28.0, 1)
+    window.Label("Popover", .Primary, false)
+    window.EndPopover()
+}
+
 fn drawTextFields(&window ui.Window) void {
     const edited = window.Edit("field", "value", 32) else {
         fail("provider did not draw a text field")
@@ -355,6 +364,7 @@ test "provider draws standard widgets" {
         drawSlider(&window)
         drawContextMenu(&window)
         discard window.FileEntry("src", "directory", true)
+        drawPopover(&window)
         drawTextFields(&window)
         window.Row(80.0, 1)
         if window.BeginScrollable("outer") {

@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #define FOUNDATION_UI_ABI_MAJOR 1
-#define FOUNDATION_UI_ABI_MINOR 6
+#define FOUNDATION_UI_ABI_MINOR 7
 #define FOUNDATION_UI_ABI_VERSION(major, minor) ((((uint64_t)(major)) << 32U) | (uint64_t)(minor))
 #define FOUNDATION_UI_ABI_CURRENT                                                                  \
     FOUNDATION_UI_ABI_VERSION(FOUNDATION_UI_ABI_MAJOR, FOUNDATION_UI_ABI_MINOR)
@@ -188,6 +188,8 @@ bool foundation_ui_file_entry(uint64_t handle, const fdn_string* name, const fdn
 bool foundation_ui_begin_context_menu(uint64_t handle, float width, uint64_t items);
 bool foundation_ui_context_menu_item(uint64_t handle, const fdn_string* label, bool enabled);
 void foundation_ui_end_context_menu(uint64_t handle);
+bool foundation_ui_begin_popover(uint64_t handle, float width, float height);
+void foundation_ui_end_popover(uint64_t handle);
 int32_t foundation_ui_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,
                            uint64_t capacity, fdn_string* result, bool* changed, bool* committed);
 int32_t foundation_ui_secret_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,

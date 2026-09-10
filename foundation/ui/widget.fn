@@ -164,6 +164,16 @@ methods Window {
         endContextMenuNative(self.handle)
     }
 
+    // Opens a non-blocking panel anchored below the preceding ordinary widget.
+    fn BeginPopover(&self, width f32, height f32) bool {
+        beginPopoverNative(self.handle, width, height)
+    }
+
+    // Closes a popover opened during the current frame.
+    fn EndPopover(&self) void {
+        endPopoverNative(self.handle)
+    }
+
     // Edits a named text value within a bounded UTF-8 buffer.
     fn Edit(
         &self,

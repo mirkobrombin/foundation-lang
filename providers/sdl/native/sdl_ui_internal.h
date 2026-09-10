@@ -184,6 +184,7 @@ typedef struct foundation_ui {
     bool terminal_bounds_valid;
     bool context_target_valid;
     bool context_menu_active;
+    bool popover_active;
     bool terminal_focus;
     bool terminal_auto_focus;
     bool shape_disabled;
@@ -227,6 +228,7 @@ void foundation_ui_draw_compact_icon(struct nk_command_buffer* canvas, struct nk
 bool foundation_ui_button_input(nk_flags* state, struct nk_rect bounds,
                                 const struct nk_input* input);
 void foundation_ui_set_context_target(foundation_ui* ui, struct nk_rect bounds);
+bool foundation_ui_popover_begin(foundation_ui* ui, float width, float height);
 void foundation_ui_register_titlebar_region(foundation_ui* ui, struct nk_rect bounds);
 foundation_ui_file_dialog* foundation_ui_file_dialog_create(void);
 void foundation_ui_file_dialog_retain(foundation_ui_file_dialog* dialog);

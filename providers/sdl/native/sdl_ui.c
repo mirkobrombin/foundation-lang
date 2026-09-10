@@ -754,10 +754,53 @@ bool foundation_ui_begin_root(uint64_t handle) {
     ui->terminal_bounds_valid = false;
     ui->context_target_valid = false;
     ui->context_menu_active = false;
+    ui->popover_active = false;
     ui->titlebar_region_count = 0;
     ui->titlebar_region_overflow = false;
     return nk_begin(ui->context, "foundation-ui", nk_rect(0.0f, 0.0f, (float)width, (float)height),
                     NK_WINDOW_BACKGROUND | NK_WINDOW_NO_SCROLLBAR);
+}
+
+bool foundation_ui_popover_begin(foundation_ui* ui, float width, float height) {
+    static const char name[] = "foundation-ui-popover";
+    struct nk_window* window;
+    struct nk_window* popup;
+    struct nk_rect bounds;
+    nk_hash hash;
+    int surface_width;
+    int surface_height;
+    bool open;
+    bool active;
+
+    if (ui == NULL || ui->context == NULL || ui->context->current == NULL ||
+        ui->context->current->layout == NULL || !ui->context_target_valid ||
+        !SDL_GetWindowSize(ui->window, &surface_width, &surface_height)) {
+        return false;
+    }
+    if (width > (float)surface_width || height > (float)surface_height) {
+        return false;
+    }
+    window = ui->context->current;
+    popup = window->popup.win;
+    hash = nk_murmur_hash(name, (int)(sizeof(name) - 1), NK_PANEL_MENU);
+    open = popup != NULL;
+    active = open && window->popup.name == hash && window->popup.type == NK_PANEL_MENU;
+    if (open && !active) {
+        return false;
+    }
+    bounds.w = width;
+    bounds.h = height;
+    bounds.x = ui->context_target.x + ui->context_target.w - width;
+    bounds.y = ui->context_target.y + ui->context_target.h;
+    bounds.x = NK_CLAMP(0.0f, bounds.x, (float)surface_width - width);
+    bounds.y = NK_CLAMP(0.0f, bounds.y, (float)surface_height - height);
+    if (!nk_nonblock_begin(ui->context, NK_WINDOW_NO_SCROLLBAR, bounds,
+                           ui->context_target, NK_PANEL_MENU)) {
+        return false;
+    }
+    window->popup.type = NK_PANEL_MENU;
+    window->popup.name = hash;
+    return true;
 }
 
 void foundation_ui_end_root(uint64_t handle) {

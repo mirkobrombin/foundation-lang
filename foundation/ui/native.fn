@@ -198,6 +198,12 @@ extern c fn contextMenuItemNative(
     enabled bool
 ) bool as foundation_ui_context_menu_item
 extern c fn endContextMenuNative(handle u64) void as foundation_ui_end_context_menu
+extern c fn beginPopoverNative(
+    handle u64,
+    width f32,
+    height f32
+) bool as foundation_ui_begin_popover
+extern c fn endPopoverNative(handle u64) void as foundation_ui_end_popover
 extern c fn editNative(
     handle u64,
     name String,
