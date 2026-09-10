@@ -121,6 +121,28 @@ methods Window {
         buttonNative(self.handle, value, selected, primary)
     }
 
+    // Draws a boolean switch and reports activation.
+    fn Switch(&self, value bool, enabled bool) bool {
+        switchNative(self.handle, value, enabled)
+    }
+
+    // Draws one item in a segmented control and reports activation.
+    fn Segment(
+        &self,
+        value String,
+        selected bool,
+        position SegmentPosition,
+        enabled bool
+    ) bool {
+        segmentNative(
+            self.handle,
+            value,
+            selected,
+            segmentPositionValue(position),
+            enabled
+        )
+    }
+
     // Draws a bounded numeric slider and reports its current value.
     fn Slider(
         &self,

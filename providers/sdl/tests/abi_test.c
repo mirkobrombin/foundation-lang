@@ -21,6 +21,8 @@ _Static_assert(FOUNDATION_UI_SURFACE_INPUT_EMBEDDED == 1,
 _Static_assert(FOUNDATION_UI_FILE_DIALOG_IDLE == 0, "ABI 1.5 dialog values must remain stable");
 _Static_assert(FOUNDATION_UI_FILE_DIALOG_SELECTED == 3,
                "ABI 1.5 dialog values must append values");
+_Static_assert(FOUNDATION_UI_SEGMENT_SINGLE == 0, "ABI 1.8 segment values must remain stable");
+_Static_assert(FOUNDATION_UI_SEGMENT_LAST == 3, "ABI 1.8 segment values must append values");
 
 int main(void) {
     uint64_t invalid = UINT64_MAX;
@@ -85,6 +87,10 @@ int main(void) {
     if (foundation_ui_begin_popover(invalid, 320.0f, 240.0f))
         return 30;
     foundation_ui_end_popover(invalid);
+    if (foundation_ui_switch(invalid, false, true))
+        return 31;
+    if (foundation_ui_segment(invalid, &label, false, FOUNDATION_UI_SEGMENT_SINGLE, true))
+        return 32;
     if (foundation_ui_create_tray(invalid, &label) != FOUNDATION_UI_INVALID)
         return 19;
     if (foundation_ui_add_tray_action(invalid, &label, &kind) != FOUNDATION_UI_INVALID)

@@ -207,6 +207,94 @@ bool foundation_ui_button(uint64_t handle, const fdn_string* value, bool selecte
     return pressed;
 }
 
+bool foundation_ui_switch(uint64_t handle, bool value, bool enabled) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    struct nk_rect bounds;
+    struct nk_rect track;
+    struct nk_rect knob;
+    struct nk_command_buffer* canvas;
+    struct nk_color track_color;
+    struct nk_color knob_color;
+    nk_flags state = 0;
+    bool pressed = false;
+    if (ui == NULL)
+        return false;
+    if (nk_widget(&bounds, ui->context) == NK_WIDGET_INVALID)
+        return false;
+    track = nk_rect(bounds.x, bounds.y + (bounds.h - 22.0f) * 0.5f, 40.0f, 22.0f);
+    foundation_ui_set_context_target(ui, track);
+    if (enabled)
+        pressed = foundation_ui_button_input(&state, track, &ui->context->input);
+    track_color = value ? ui->accent : ui->raised;
+    if ((state & NK_WIDGET_STATE_HOVER) != 0)
+        track_color = foundation_ui_shift_color(track_color, 16);
+    if (!enabled)
+        track_color.a = 110;
+    canvas = nk_window_get_canvas(ui->context);
+    nk_fill_rect(canvas, track, 11.0f, track_color);
+    if (!value)
+        nk_stroke_rect(canvas, track, 11.0f, 1.0f, ui->context->style.window.border_color);
+    knob = nk_rect(value ? track.x + 21.0f : track.x + 3.0f, track.y + 3.0f, 16.0f, 16.0f);
+    knob_color = value ? nk_rgb(9, 12, 18) : ui->muted;
+    if (!enabled)
+        knob_color.a = 110;
+    nk_fill_circle(canvas, knob, knob_color);
+    return pressed;
+}
+
+bool foundation_ui_segment(uint64_t handle, const fdn_string* value, bool selected,
+                           uint64_t position, bool enabled) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    const struct nk_user_font* font;
+    struct nk_rect bounds;
+    struct nk_rect background;
+    struct nk_rect label;
+    struct nk_command_buffer* canvas;
+    struct nk_color fill;
+    struct nk_color foreground;
+    nk_flags state = 0;
+    float text_width;
+    float overlap;
+    bool pressed = false;
+    if (ui == NULL || !foundation_ui_string_valid(value) || value->length > INT32_MAX ||
+        position > FOUNDATION_UI_SEGMENT_LAST) {
+        return false;
+    }
+    if (nk_widget(&bounds, ui->context) == NK_WIDGET_INVALID)
+        return false;
+    foundation_ui_set_context_target(ui, bounds);
+    if (enabled)
+        pressed = foundation_ui_button_input(&state, bounds, &ui->context->input);
+    background = bounds;
+    overlap = ui->context->style.window.spacing.x * 0.5f;
+    if (position == FOUNDATION_UI_SEGMENT_FIRST || position == FOUNDATION_UI_SEGMENT_MIDDLE)
+        background.w += overlap;
+    if (position == FOUNDATION_UI_SEGMENT_MIDDLE || position == FOUNDATION_UI_SEGMENT_LAST) {
+        background.x -= overlap;
+        background.w += overlap;
+    }
+    fill = selected ? ui->accent : ui->raised;
+    if ((state & NK_WIDGET_STATE_HOVER) != 0)
+        fill = foundation_ui_shift_color(fill, 16);
+    if (!enabled)
+        fill.a = 110;
+    foreground = selected ? nk_rgb(9, 12, 18) : ui->text;
+    if (!enabled)
+        foreground.a = 110;
+    canvas = nk_window_get_canvas(ui->context);
+    nk_fill_rect(canvas, background, 6.0f, fill);
+    nk_stroke_rect(canvas, background, 6.0f, 1.0f,
+                   selected ? ui->accent : ui->context->style.window.border_color);
+    font = ui->context->style.font;
+    text_width = font->width(font->userdata, font->height, foundation_ui_string_data(value),
+                             (int)value->length);
+    label = nk_rect(bounds.x + (bounds.w - text_width) * 0.5f,
+                    bounds.y + (bounds.h - font->height) * 0.5f, text_width, font->height);
+    nk_draw_text(canvas, label, foundation_ui_string_data(value), (int)value->length, font,
+                 nk_rgba(0, 0, 0, 0), foreground);
+    return pressed;
+}
+
 int32_t foundation_ui_slider(uint64_t handle, uint64_t value, uint64_t minimum, uint64_t maximum,
                              uint64_t step, uint64_t* result, bool* changed) {
     foundation_ui* ui = foundation_ui_from(handle);

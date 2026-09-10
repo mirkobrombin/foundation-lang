@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #define FOUNDATION_UI_ABI_MAJOR 1
-#define FOUNDATION_UI_ABI_MINOR 7
+#define FOUNDATION_UI_ABI_MINOR 8
 #define FOUNDATION_UI_ABI_VERSION(major, minor) ((((uint64_t)(major)) << 32U) | (uint64_t)(minor))
 #define FOUNDATION_UI_ABI_CURRENT                                                                  \
     FOUNDATION_UI_ABI_VERSION(FOUNDATION_UI_ABI_MAJOR, FOUNDATION_UI_ABI_MINOR)
@@ -37,6 +37,13 @@ enum foundation_ui_label_tone {
     FOUNDATION_UI_LABEL_MUTED = 1,
     FOUNDATION_UI_LABEL_ACCENT = 2,
     FOUNDATION_UI_LABEL_DANGER = 3,
+};
+
+enum foundation_ui_segment_position {
+    FOUNDATION_UI_SEGMENT_SINGLE = 0,
+    FOUNDATION_UI_SEGMENT_FIRST = 1,
+    FOUNDATION_UI_SEGMENT_MIDDLE = 2,
+    FOUNDATION_UI_SEGMENT_LAST = 3,
 };
 
 enum foundation_ui_icon {
@@ -181,6 +188,9 @@ int32_t foundation_ui_terminal_commit(uint64_t handle, uint64_t length);
 int32_t foundation_ui_terminal(uint64_t handle, float height, fdn_string* input, uint64_t* columns,
                                uint64_t* rows, bool* resized);
 bool foundation_ui_button(uint64_t handle, const fdn_string* value, bool selected, bool primary);
+bool foundation_ui_switch(uint64_t handle, bool value, bool enabled);
+bool foundation_ui_segment(uint64_t handle, const fdn_string* value, bool selected,
+                           uint64_t position, bool enabled);
 int32_t foundation_ui_slider(uint64_t handle, uint64_t value, uint64_t minimum, uint64_t maximum,
                              uint64_t step, uint64_t* result, bool* changed);
 bool foundation_ui_file_entry(uint64_t handle, const fdn_string* name, const fdn_string* details,

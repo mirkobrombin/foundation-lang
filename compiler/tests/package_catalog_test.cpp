@@ -139,7 +139,7 @@ void catalogsIgnoreIncompatibleAndInactiveDependencies() {
 void catalogsResolveSdkDependencies() {
     Fixture fixture;
     fixture.package(fixture.project, "sample.app", "1.0.0",
-                    "dependency foundation.ui.sdl 1.7.0 sdk providers/sdl\n");
+                    "dependency foundation.ui.sdl 1.8.0 sdk providers/sdl\n");
     const auto manifest = foundation::readPackageManifest(fixture.project / "foundation.package");
     const auto resolved = foundation::resolveProjectPackages(
         fixture.project / "foundation.package", *manifest.value,

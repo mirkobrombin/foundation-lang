@@ -16,6 +16,15 @@ fn labelToneValue(value LabelTone) u64 {
     }
 }
 
+fn segmentPositionValue(value SegmentPosition) u64 {
+    match value {
+        Single: 0
+        First: 1
+        Middle: 2
+        Last: 3
+    }
+}
+
 fn iconValue(value Icon) u64 {
     match value {
         Link: 0

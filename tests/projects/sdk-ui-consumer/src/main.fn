@@ -15,6 +15,14 @@ fn main() i32 {
         window.Row(32.0, 1)
         discard window.Button("Action", false, false)
         window.Row(24.0, 1)
+        discard window.Switch(false, true)
+        window.BeginRow(24.0, 2)
+        window.PushColumn(0.5)
+        discard window.Segment("One", true, .First, true)
+        window.PushColumn(0.5)
+        discard window.Segment("Two", false, .Last, true)
+        window.EndRow()
+        window.Row(24.0, 1)
         const slider = window.Slider(5, 0, 10, 1) else { return 1 }
         if slider.Value != 5 { return 1 }
         if window.BeginContextMenu(160.0, 1) {

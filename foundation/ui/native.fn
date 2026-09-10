@@ -172,6 +172,18 @@ extern c fn buttonNative(
     selected bool,
     primary bool
 ) bool as foundation_ui_button
+extern c fn switchNative(
+    handle u64,
+    value bool,
+    enabled bool
+) bool as foundation_ui_switch
+extern c fn segmentNative(
+    handle u64,
+    value String,
+    selected bool,
+    position u64,
+    enabled bool
+) bool as foundation_ui_segment
 extern c fn sliderNative(
     handle u64,
     value u64,

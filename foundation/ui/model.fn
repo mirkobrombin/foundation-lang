@@ -52,6 +52,18 @@ enum LabelTone {
     Danger
 }
 
+// Selects how one segment joins the neighboring items in its control.
+enum SegmentPosition {
+    // Draws a standalone segment.
+    Single
+    // Draws the leading segment.
+    First
+    // Draws a segment between two neighbors.
+    Middle
+    // Draws the trailing segment.
+    Last
+}
+
 // Selects one provider-independent interface symbol.
 enum Icon {
     // Draws two connected links.
