@@ -3019,7 +3019,7 @@ class LlvmEmitter {
         }
 
         auto *casesType = llvm::ArrayType::get(selectCaseType_, selection.operations.size());
-        auto *cases = builder_.CreateAlloca(casesType, nullptr, "select.cases");
+        auto *cases = createEntryAlloca(casesType, "select.cases");
         for (std::size_t index = 0; index < selection.operations.size(); ++index) {
             const auto &arm = selection.operations[index];
             auto *item = builder_.CreateInBoundsGEP(
@@ -3047,7 +3047,7 @@ class LlvmEmitter {
                 llvm::ConstantInt::get(llvm::Type::getInt32Ty(context_), arm.send ? 1 : 2),
                 builder_.CreateStructGEP(selectCaseType_, item, 2));
         }
-        auto *selected = builder_.CreateAlloca(sizeType(), nullptr, "select.selected");
+        auto *selected = createEntryAlloca(sizeType(), "select.selected");
         builder_.CreateStore(llvm::ConstantInt::getAllOnesValue(sizeType()), selected);
         auto *status = builder_.CreateCall(
             runtimeFunction("fdn_channel_poll_select", llvm::Type::getInt32Ty(context_),
@@ -3832,7 +3832,7 @@ class LlvmEmitter {
             fail({}, "LLVM backend received an invalid array literal");
             return {};
         }
-        auto *storage = builder_.CreateAlloca(arrayType, nullptr, "array.literal");
+        auto *storage = createEntryAlloca(arrayType, "array.literal");
         builder_.CreateStore(llvm::Constant::getNullValue(arrayType), storage);
         for (std::size_t index = 0; index < array.elements.size(); ++index) {
             const auto value = emitExpression(array.elements[index]);
@@ -4163,7 +4163,7 @@ class LlvmEmitter {
             fail(span, "LLVM task wait has an invalid handle");
             return {};
         }
-        auto *handle = builder_.CreateAlloca(pointerType(), nullptr, "task.wait.handle");
+        auto *handle = createEntryAlloca(pointerType(), "task.wait.handle");
         builder_.CreateStore(task.value, handle);
         if (type == voidType) {
             builder_.CreateCall(runtimeFunction("fdn_task_wait", llvm::Type::getVoidTy(context_),
@@ -4176,7 +4176,7 @@ class LlvmEmitter {
             fail(span, "LLVM task wait has an unsupported result type");
             return {};
         }
-        auto *result = builder_.CreateAlloca(layout, nullptr, "task.wait.result");
+        auto *result = createEntryAlloca(layout, "task.wait.result");
         builder_.CreateStore(llvm::Constant::getNullValue(layout), result);
         builder_.CreateCall(runtimeFunction("fdn_task_wait", llvm::Type::getVoidTy(context_),
                                             {pointerType(), pointerType()}),
@@ -4226,8 +4226,8 @@ class LlvmEmitter {
                 return {};
             }
         }
-        auto *sender = builder_.CreateAlloca(pointerType(), nullptr, "channel.sender");
-        auto *receiver = builder_.CreateAlloca(pointerType(), nullptr, "channel.receiver");
+        auto *sender = createEntryAlloca(pointerType(), "channel.sender");
+        auto *receiver = createEntryAlloca(pointerType(), "channel.receiver");
         builder_.CreateStore(llvm::ConstantPointerNull::get(pointerType()), sender);
         builder_.CreateStore(llvm::ConstantPointerNull::get(pointerType()), receiver);
         builder_.CreateCall(
@@ -4670,7 +4670,7 @@ class LlvmEmitter {
             return builder_.CreateInBoundsGEP(typeOf(type.arguments.front()), left, offset);
         }
         if (type == stringType && operation == FirBinaryOperator::Add) {
-            auto *result = builder_.CreateAlloca(stringType_, nullptr, "string.concat.result");
+            auto *result = createEntryAlloca(stringType_, "string.concat.result");
             builder_.CreateCall(
                 runtimeFunction("fdn_abi_string_concat", llvm::Type::getVoidTy(context_),
                                 {pointerType(), pointerType(), pointerType()}),
@@ -4981,7 +4981,7 @@ class LlvmEmitter {
                 return {llvm::PoisonValue::get(llvm::Type::getInt8Ty(context_)), true};
             }
             if (usesExternalResultPointer(program_.functions[call.function])) {
-                auto *storage = builder_.CreateAlloca(typeOf(type), nullptr, "external.result");
+                auto *storage = createEntryAlloca(typeOf(type), "external.result");
                 auto invocationValues = values;
                 invocationValues.insert(invocationValues.begin(), storage);
                 auto *invocation = builder_.CreateCall(functions_[call.function], invocationValues);
@@ -5592,8 +5592,8 @@ class LlvmEmitter {
         if (value == nullptr || layout == nullptr || layout->isVoidTy()) {
             return nullptr;
         }
-        auto *storage =
-            builder_.CreateAlloca(layout, nullptr, llvm::StringRef(name.data(), name.size()));
+        auto *storage = createEntryAlloca(
+            layout, llvm::StringRef(name.data(), name.size()));
         builder_.CreateStore(value, storage);
         return storage;
     }
@@ -5883,7 +5883,7 @@ class LlvmEmitter {
     }
 
     llvm::Value *stringAddress(llvm::Value *value) {
-        auto *storage = builder_.CreateAlloca(stringType_, nullptr, "string.abi");
+        auto *storage = createEntryAlloca(stringType_, "string.abi");
         builder_.CreateStore(value, storage);
         return storage;
     }

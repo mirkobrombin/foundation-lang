@@ -292,6 +292,65 @@ fn main() i32 {
            "LLVM i32 addition does not call the checked runtime helper");
 }
 
+void llvmLoopTemporariesUseEntryAllocas() {
+    constexpr std::string_view source = R"(
+enum Pulse {
+    Idle
+    Ready
+}
+
+fn poll() Pulse {
+    .Idle
+}
+
+fn main() i32 {
+    var running = true
+    while running {
+        match poll() {
+            Idle: {}
+            Ready: {}
+        }
+        const label = "tick" + ""
+        discard label
+        running = false
+    }
+    0
+}
+)";
+    auto checked = check(source);
+    expect(!checked.diagnostics.hasErrors(), "LLVM loop fixture has no diagnostics");
+    expect(checked.fir.has_value(), "LLVM loop fixture lowers to FIR");
+    if (!checked.fir.has_value()) {
+        return;
+    }
+
+    const auto generated = foundation::emitLlvmIr(
+        *checked.fir, "loop-temporaries.fn",
+        foundation::LlvmCodegenOptions{
+            .targetTriple = foundation::defaultLlvmTargetTriple(),
+            .optimize = false,
+            .verifyAllocations = false,
+            .debugInfo = false,
+            .sourcePaths = {"loop-temporaries.fn"},
+            .entry = std::nullopt,
+            .libraryPackage = std::nullopt,
+        },
+        checked.diagnostics);
+    expect(generated.has_value(), "LLVM loop fixture emits IR");
+    if (!generated.has_value()) {
+        return;
+    }
+    const auto mainStart = generated->find("@fdn_program_main(");
+    const auto loopStart = generated->find("while.body:", mainStart);
+    const auto mainEnd = generated->find("\n}", loopStart);
+    const auto loopAlloca = generated->find(" alloca ", loopStart);
+    expect(mainStart != std::string::npos && loopStart != std::string::npos &&
+               mainEnd != std::string::npos,
+           "LLVM loop fixture has a main loop");
+    expect(loopAlloca == std::string::npos || loopAlloca > mainEnd,
+           "LLVM loop temporaries allocate in the entry block");
+}
+
 void immutableBindingsAndCommentsLexDeterministically() {
     constexpr std::string_view source = R"(
 // Public entry point.
@@ -3198,6 +3257,7 @@ int main() {
     typedAttributesEmitMetadataWithoutRuntimeCode();
     typedProgramLowersToDeterministicC();
     llvmIntegerArithmeticUsesOverflowIntrinsics();
+    llvmLoopTemporariesUseEntryAllocas();
     immutableBindingsAndCommentsLexDeterministically();
     tasksLowerToOwnedRuntimeHandles();
     taskWaitsLowerToStacklessStates();
