@@ -373,7 +373,7 @@ jobs:
         run: |
           xvfb-run -a ./build/providers/foundationc test providers/sdl --backend llvm
           xvfb-run -a ./build/providers/foundationc test providers/sdl --backend c
-          ctest --test-dir build/providers --output-on-failure --parallel 4
+          xvfb-run -a ctest --test-dir build/providers --output-on-failure --parallel 4
 
       - name: Configure WAMR ASan and UBSan
         env:

@@ -313,7 +313,7 @@ test "parser reports delegate mismatch and duplicate delegation" {
     expectDiagnostic($duplicate, "FDN1172")
 }
 
-test "parser enforces frontend resource limits" {
+test "parser rejects block nesting past the frontend limit" {
     var blockSource = "package limits\nfn blocks() void {\n"
     var blockIndex u64 = 0
     while blockIndex < 129 {
@@ -323,17 +323,23 @@ test "parser enforces frontend resource limits" {
     blockSource = blockSource + repeatText("}\n", 130)
     var blockParsed = parseSource($blockSource, 48)
     expectDiagnostic($blockParsed, "FDN1030")
+}
 
+test "parser rejects type nesting past the frontend limit" {
     const nestedType = repeatText("Box<", 130) + "i32" + repeatText(">", 130)
     var typeParsed = parseSource(
         "package limits\nfn types(value " + nestedType + ") void {}\n", 49)
     expectDiagnostic($typeParsed, "FDN1065")
+}
 
+test "parser rejects expression nesting past the frontend limit" {
     const nestedExpression = repeatText("(", 260) + "1" + repeatText(")", 260)
     var expressionParsed = parseSource(
         "package limits\nfn expression() i32 { " + nestedExpression + " }\n", 50)
     expectDiagnostic($expressionParsed, "FDN1029")
+}
 
+test "parser rejects expression nodes past the frontend limit" {
     var nodes = "1"
     var nodeIndex u64 = 0
     while nodeIndex < 520 {
