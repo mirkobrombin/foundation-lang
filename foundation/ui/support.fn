@@ -25,6 +25,14 @@ fn segmentPositionValue(value SegmentPosition) u64 {
     }
 }
 
+fn actionStyleValue(value ActionStyle) u64 {
+    match value {
+        Secondary: 0
+        Primary: 1
+        Destructive: 2
+    }
+}
+
 fn iconValue(value Icon) u64 {
     match value {
         Link: 0
@@ -46,6 +54,11 @@ fn iconValue(value Icon) u64 {
         Notification: 16
         Download: 17
         Web: 18
+        Shield: 19
+        Extension: 20
+        Information: 21
+        Storage: 22
+        Accessibility: 23
     }
 }
 

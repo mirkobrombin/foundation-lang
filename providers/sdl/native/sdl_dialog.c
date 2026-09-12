@@ -65,15 +65,14 @@ int32_t foundation_ui_file_dialog_read(foundation_ui_file_dialog* dialog, uint64
     SDL_LockMutex(dialog->mutex);
     *state = dialog->state;
     if (dialog->state == FOUNDATION_UI_FILE_DIALOG_SELECTED) {
-        *path = foundation_runtime_string_copy(
-            &(fdn_string){dialog->path, dialog->path_length, 0});
+        *path = foundation_runtime_string_copy(&(fdn_string){dialog->path, dialog->path_length, 0});
     }
     SDL_UnlockMutex(dialog->mutex);
     return *state == UINT64_MAX ? FOUNDATION_UI_FAILED : FOUNDATION_UI_OK;
 }
 
-static void SDLCALL foundation_ui_file_dialog_callback(void* userdata,
-                                                       const char* const* filelist, int filter) {
+static void SDLCALL foundation_ui_file_dialog_callback(void* userdata, const char* const* filelist,
+                                                       int filter) {
     foundation_ui_file_dialog* dialog = userdata;
     (void)filter;
     foundation_ui_file_dialog_complete(dialog, filelist);
@@ -94,6 +93,22 @@ int32_t foundation_ui_request_open_file_dialog(uint64_t handle) {
     foundation_ui_file_dialog_retain(dialog);
     SDL_ShowOpenFileDialog(foundation_ui_file_dialog_callback, dialog, ui->window, NULL, 0, NULL,
                            false);
+    return FOUNDATION_UI_OK;
+}
+
+int32_t foundation_ui_request_open_folder_dialog(uint64_t handle) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    foundation_ui_file_dialog* dialog;
+    if (ui == NULL)
+        return FOUNDATION_UI_INVALID;
+    if (ui->file_dialog != NULL)
+        return FOUNDATION_UI_INVALID;
+    dialog = foundation_ui_file_dialog_create();
+    if (dialog == NULL)
+        return FOUNDATION_UI_FAILED;
+    ui->file_dialog = dialog;
+    foundation_ui_file_dialog_retain(dialog);
+    SDL_ShowOpenFolderDialog(foundation_ui_file_dialog_callback, dialog, ui->window, NULL, false);
     return FOUNDATION_UI_OK;
 }
 

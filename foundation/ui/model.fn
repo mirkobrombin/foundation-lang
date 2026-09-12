@@ -40,6 +40,18 @@ enum FileDialog {
     Selected(path String)
 }
 
+// Describes the current result of a window-owned folder dialog.
+enum FolderDialog {
+    // No dialog is active and no result is waiting.
+    Idle
+    // The provider is waiting for a selection or cancellation.
+    Pending
+    // The user closed the dialog without selecting a folder.
+    Cancelled
+    // Owns the selected native folder path.
+    Selected(path String)
+}
+
 // Selects the semantic color of a text label.
 enum LabelTone {
     // Uses the ordinary foreground color.
@@ -62,6 +74,16 @@ enum SegmentPosition {
     Middle
     // Draws the trailing segment.
     Last
+}
+
+// Selects the visual role of an application action.
+enum ActionStyle {
+    // Draws an ordinary secondary action.
+    Secondary
+    // Draws the preferred action in its local group.
+    Primary
+    // Draws an action that removes or invalidates data.
+    Destructive
 }
 
 // Selects one provider-independent interface symbol.
@@ -104,6 +126,16 @@ enum Icon {
     Download
     // Draws a web service.
     Web
+    // Draws a security shield.
+    Shield
+    // Draws an extension piece.
+    Extension
+    // Draws an information symbol.
+    Information
+    // Draws a storage device.
+    Storage
+    // Draws an accessibility person.
+    Accessibility
 }
 
 // Stores one RGBA color with eight-bit channels.
@@ -178,6 +210,14 @@ struct TextEdit {
     Changed bool
     // Reports that the user committed the field.
     Committed bool
+}
+
+// Describes a text field with one adjacent action.
+struct TextActionEdit {
+    // Stores the adjacent text field result.
+    Edit TextEdit
+    // Reports that the adjacent action was activated.
+    Activated bool
 }
 
 // Describes the result of one bounded numeric slider.

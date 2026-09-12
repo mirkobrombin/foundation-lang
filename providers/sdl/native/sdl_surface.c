@@ -541,7 +541,7 @@ int32_t foundation_ui_image_commit(uint64_t handle, uint64_t surface_id) {
     return foundation_ui_commit_image(&surface->image);
 }
 
-int32_t foundation_ui_image(uint64_t handle, uint64_t surface_id) {
+static int32_t foundation_ui_draw_image(uint64_t handle, uint64_t surface_id, bool fill) {
     foundation_ui* ui = foundation_ui_from(handle);
     foundation_ui_surface* surface;
     struct nk_rect bounds;
@@ -560,14 +560,16 @@ int32_t foundation_ui_image(uint64_t handle, uint64_t surface_id) {
     if (!isfinite(bounds.w) || !isfinite(bounds.h) || bounds.w <= 0.0f || bounds.h <= 0.0f)
         return FOUNDATION_UI_FAILED;
     target = bounds;
-    source_ratio = (float)surface->image.width / (float)surface->image.height;
-    target_ratio = bounds.w / bounds.h;
-    if (target_ratio > source_ratio) {
-        target.w = bounds.h * source_ratio;
-        target.x += (bounds.w - target.w) * 0.5f;
-    } else {
-        target.h = bounds.w / source_ratio;
-        target.y += (bounds.h - target.h) * 0.5f;
+    if (!fill) {
+        source_ratio = (float)surface->image.width / (float)surface->image.height;
+        target_ratio = bounds.w / bounds.h;
+        if (target_ratio > source_ratio) {
+            target.w = bounds.h * source_ratio;
+            target.x += (bounds.w - target.w) * 0.5f;
+        } else {
+            target.h = bounds.w / source_ratio;
+            target.y += (bounds.h - target.h) * 0.5f;
+        }
     }
     canvas = nk_window_get_canvas(ui->context);
     image = nk_image_ptr(surface->image.texture);
@@ -578,6 +580,14 @@ int32_t foundation_ui_image(uint64_t handle, uint64_t surface_id) {
     ui->surface_draw_sequence++;
     surface->draw_order = ui->surface_draw_sequence;
     return FOUNDATION_UI_OK;
+}
+
+int32_t foundation_ui_image(uint64_t handle, uint64_t surface_id) {
+    return foundation_ui_draw_image(handle, surface_id, false);
+}
+
+int32_t foundation_ui_image_fill(uint64_t handle, uint64_t surface_id) {
+    return foundation_ui_draw_image(handle, surface_id, true);
 }
 
 int32_t foundation_ui_surface_size(uint64_t handle, uint64_t surface_id, uint64_t* width,

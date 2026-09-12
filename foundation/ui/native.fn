@@ -10,6 +10,10 @@ extern c fn openNative(
 extern c fn closeNative(&handle u64) void as foundation_ui_close
 extern c fn beginFrameNative(handle u64) i32 as foundation_ui_begin_frame
 extern c fn endFrameNative(handle u64) i32 as foundation_ui_end_frame
+extern c fn waitNative(
+    handle u64,
+    timeoutMilliseconds u64
+) i32 as foundation_ui_wait
 extern c fn setThemeNative(handle u64, theme u64) i32 as foundation_ui_set_theme
 extern c fn setAccentNative(
     handle u64,
@@ -39,6 +43,9 @@ extern c fn raiseNative(handle u64) i32 as foundation_ui_raise
 extern c fn requestOpenFileDialogNative(
     handle u64
 ) i32 as foundation_ui_request_open_file_dialog
+extern c fn requestOpenFolderDialogNative(
+    handle u64
+) i32 as foundation_ui_request_open_folder_dialog
 extern c fn pollOpenFileDialogNative(
     handle u64,
     &state u64,
@@ -91,6 +98,10 @@ extern c fn beginCompactGroupNative(
     handle u64,
     name String
 ) bool as foundation_ui_begin_compact_group
+extern c fn beginSurfaceGroupNative(
+    handle u64,
+    name String
+) bool as foundation_ui_begin_surface_group
 extern c fn endGroupNative(handle u64) void as foundation_ui_end_group
 extern c fn spaceNative(handle u64, height f32) void as foundation_ui_space
 extern c fn emptyNative(handle u64) void as foundation_ui_empty
@@ -172,11 +183,70 @@ extern c fn buttonNative(
     selected bool,
     primary bool
 ) bool as foundation_ui_button
+extern c fn actionButtonNative(
+    handle u64,
+    value String,
+    style u64,
+    enabled bool
+) bool as foundation_ui_action_button
 extern c fn switchNative(
     handle u64,
     value bool,
     enabled bool
 ) bool as foundation_ui_switch
+extern c fn toggleItemNative(
+    handle u64,
+    title String,
+    detail String,
+    value bool,
+    enabled bool
+) bool as foundation_ui_toggle_item
+extern c fn checkItemNative(
+    handle u64,
+    title String,
+    detail String,
+    value bool,
+    enabled bool
+) bool as foundation_ui_check_item
+extern c fn radioItemNative(
+    handle u64,
+    title String,
+    detail String,
+    selected bool,
+    enabled bool
+) bool as foundation_ui_radio_item
+extern c fn actionItemNative(
+    handle u64,
+    title String,
+    detail String,
+    actionLabel String,
+    style u64,
+    enabled bool
+) bool as foundation_ui_action_item
+extern c fn choiceItemNative(
+    handle u64,
+    title String,
+    detail String,
+    value String,
+    enabled bool
+) bool as foundation_ui_choice_item
+extern c fn propertyItemNative(
+    handle u64,
+    title String,
+    value String
+) void as foundation_ui_property_item
+extern c fn emptyStateNative(
+    handle u64,
+    icon u64,
+    title String,
+    detail String
+) void as foundation_ui_empty_state
+extern c fn noticeNative(
+    handle u64,
+    title String,
+    detail String,
+    tone u64
+) void as foundation_ui_notice
 extern c fn segmentNative(
     handle u64,
     value String,
@@ -199,6 +269,49 @@ extern c fn fileEntryNative(
     details String,
     directory bool
 ) bool as foundation_ui_file_entry
+extern c fn navigationItemNative(
+    handle u64,
+    value String,
+    selected bool,
+    enabled bool
+) bool as foundation_ui_navigation_item
+extern c fn sidebarItemNative(
+    handle u64,
+    icon u64,
+    value String,
+    selected bool,
+    enabled bool
+) bool as foundation_ui_sidebar_item
+extern c fn listItemNative(
+    handle u64,
+    title String,
+    detail String,
+    selected bool,
+    enabled bool
+) bool as foundation_ui_list_item
+extern c fn beginPickerNative(
+    handle u64,
+    value String,
+    height f32
+) bool as foundation_ui_begin_picker
+extern c fn beginNamedPickerNative(
+    handle u64,
+    name String,
+    value String,
+    height f32
+) bool as foundation_ui_begin_named_picker
+extern c fn pickerItemNative(
+    handle u64,
+    value String,
+    selected bool,
+    enabled bool
+) bool as foundation_ui_picker_item
+extern c fn endPickerNative(handle u64) void as foundation_ui_end_picker
+extern c fn progressNative(
+    handle u64,
+    value u64,
+    maximum u64
+) i32 as foundation_ui_progress
 extern c fn beginContextMenuNative(
     handle u64,
     width f32,
@@ -215,6 +328,22 @@ extern c fn beginPopoverNative(
     width f32,
     height f32
 ) bool as foundation_ui_begin_popover
+extern c fn beginNamedPopoverNative(
+    handle u64,
+    name String,
+    width f32,
+    height f32
+) bool as foundation_ui_begin_named_popover
+extern c fn beginToolbarPopoverNative(
+    handle u64,
+    name String,
+    icon u64,
+    label String,
+    width f32,
+    height f32,
+    enabled bool
+) bool as foundation_ui_begin_toolbar_popover
+extern c fn closePopoverNative(handle u64) void as foundation_ui_close_popover
 extern c fn endPopoverNative(handle u64) void as foundation_ui_end_popover
 extern c fn editNative(
     handle u64,
@@ -225,6 +354,30 @@ extern c fn editNative(
     &changed bool,
     &committed bool
 ) i32 as foundation_ui_edit
+extern c fn editHintNative(
+    handle u64,
+    name String,
+    value String,
+    hint String,
+    capacity u64,
+    &result String,
+    &changed bool,
+    &committed bool
+) i32 as foundation_ui_edit_hint
+extern c fn actionEditNative(
+    handle u64,
+    name String,
+    value String,
+    hint String,
+    actionLabel String,
+    style u64,
+    capacity u64,
+    enabled bool,
+    &result String,
+    &changed bool,
+    &committed bool,
+    &activated bool
+) i32 as foundation_ui_action_edit
 extern c fn secretEditNative(
     handle u64,
     name String,
@@ -254,6 +407,7 @@ extern c fn imageCommitNative(
     surface u64
 ) i32 as foundation_ui_image_commit
 extern c fn imageNative(handle u64, surface u64) i32 as foundation_ui_image
+extern c fn imageFillNative(handle u64, surface u64) i32 as foundation_ui_image_fill
 extern c fn surfaceSizeNative(
     handle u64,
     surface u64,

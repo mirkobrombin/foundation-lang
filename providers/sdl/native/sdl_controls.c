@@ -20,7 +20,7 @@ bool foundation_ui_icon_button(uint64_t handle, uint64_t icon, const fdn_string*
     nk_flags state = 0;
     struct nk_color foreground;
     bool pressed = false;
-    if (ui == NULL || !foundation_ui_string_valid(label) || icon > FOUNDATION_UI_ICON_WEB)
+    if (ui == NULL || !foundation_ui_string_valid(label) || icon > FOUNDATION_UI_ICON_ACCESSIBILITY)
         return false;
     if (nk_widget(&bounds, ui->context) == NK_WIDGET_INVALID)
         return false;
@@ -51,7 +51,7 @@ bool foundation_ui_compact_icon_button(uint64_t handle, uint64_t icon, const fdn
     nk_flags state = 0;
     struct nk_color foreground;
     bool pressed = false;
-    if (ui == NULL || !foundation_ui_string_valid(label) || icon > FOUNDATION_UI_ICON_WEB)
+    if (ui == NULL || !foundation_ui_string_valid(label) || icon > FOUNDATION_UI_ICON_ACCESSIBILITY)
         return false;
     if (nk_widget(&bounds, ui->context) == NK_WIDGET_INVALID)
         return false;

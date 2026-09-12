@@ -197,10 +197,36 @@ static void foundation_ui_draw_secret(foundation_ui* ui, foundation_ui_edit_stat
     nk_push_scissor(canvas, clip);
 }
 
-static int32_t foundation_ui_edit_value(uint64_t handle, const fdn_string* name,
-                                        const fdn_string* value, uint64_t capacity,
-                                        fdn_string* result, bool* changed, bool* committed,
-                                        bool secret) {
+static void foundation_ui_draw_edit_hint(foundation_ui* ui, const fdn_string* hint,
+                                         struct nk_rect bounds, struct nk_rect clip) {
+    struct nk_command_buffer* canvas = nk_window_get_canvas(ui->context);
+    const struct nk_style_edit* style = &ui->context->style.edit;
+    struct nk_rect visible;
+    const struct nk_rect area = nk_rect(
+        bounds.x + style->padding.x + style->border,
+        bounds.y + (bounds.h - ui->context->style.font->height) * 0.5f,
+        bounds.w - 2.0f * (style->padding.x + style->border), ui->context->style.font->height);
+    visible.x = NK_MAX(clip.x, bounds.x);
+    visible.y = NK_MAX(clip.y, bounds.y);
+    visible.w = NK_MAX(0.0f, NK_MIN(clip.x + clip.w, bounds.x + bounds.w) - visible.x);
+    visible.h = NK_MAX(0.0f, NK_MIN(clip.y + clip.h, bounds.y + bounds.h) - visible.y);
+    nk_push_scissor(canvas, visible);
+    nk_draw_text(canvas, area, foundation_ui_string_data(hint), (int)hint->length,
+                 ui->context->style.font, nk_rgba(0, 0, 0, 0), ui->muted);
+    nk_push_scissor(canvas, clip);
+}
+
+static bool foundation_ui_edit_click(const struct nk_input* input, enum nk_buttons button,
+                                     struct nk_rect bounds) {
+    return input->mouse.buttons[button].clicked != 0 &&
+           nk_input_has_mouse_click_in_rect(input, button, bounds);
+}
+
+static int32_t foundation_ui_edit_value_at(uint64_t handle, const fdn_string* name,
+                                           const fdn_string* value, const fdn_string* hint,
+                                           uint64_t capacity, fdn_string* result, bool* changed,
+                                           bool* committed, bool secret,
+                                           const struct nk_rect* supplied_bounds) {
     foundation_ui* ui = foundation_ui_from(handle);
     foundation_ui_edit_state* state;
     uint64_t length;
@@ -211,7 +237,12 @@ static int32_t foundation_ui_edit_value(uint64_t handle, const fdn_string* name,
     struct nk_style_edit saved_style;
     const struct nk_user_font* saved_font;
     nk_plugin_copy saved_copy;
+    size_t widget_index;
+    bool was_focused;
+    bool clicked;
+    bool clicked_inside;
     if (ui == NULL || !foundation_ui_string_valid(name) || !foundation_ui_string_valid(value) ||
+        (hint != NULL && (!foundation_ui_string_valid(hint) || hint->length > INT32_MAX)) ||
         result == NULL || changed == NULL || committed == NULL || name->length == 0 ||
         name->length == SIZE_MAX || memchr(name->data, '\0', name->length) != NULL ||
         (value->length != 0 && memchr(value->data, '\0', value->length) != NULL) || capacity == 0 ||
@@ -231,12 +262,22 @@ static int32_t foundation_ui_edit_value(uint64_t handle, const fdn_string* name,
         state->buffer[value->length] = '\0';
     }
     flags = (nk_flags)NK_EDIT_FIELD | (nk_flags)NK_EDIT_CLIPBOARD | (nk_flags)NK_EDIT_SIG_ENTER;
-    bounds = nk_widget_bounds(ui->context);
+    bounds = supplied_bounds == NULL ? nk_widget_bounds(ui->context) : *supplied_bounds;
     window = ui->context->current;
     clip = window->buffer.clip;
-    if (nk_input_is_mouse_click_in_rect(&ui->context->input, NK_BUTTON_LEFT, bounds) ||
-        nk_input_is_mouse_click_in_rect(&ui->context->input, NK_BUTTON_RIGHT, bounds)) {
+    widget_index = ui->edit_widget_count++;
+    was_focused = window->edit.active && window->edit.name == window->edit.seq;
+    clicked = ui->context->input.mouse.buttons[NK_BUTTON_LEFT].clicked != 0 ||
+              ui->context->input.mouse.buttons[NK_BUTTON_RIGHT].clicked != 0;
+    clicked_inside = foundation_ui_edit_click(&ui->context->input, NK_BUTTON_LEFT, bounds) ||
+                     foundation_ui_edit_click(&ui->context->input, NK_BUTTON_RIGHT, bounds);
+    if (clicked)
+        ui->edit_focus_requested = false;
+    if (clicked_inside || (ui->edit_focus_requested && ui->edit_focus_target == widget_index)) {
         nk_edit_focus(ui->context, flags);
+        ui->edit_focus_requested = false;
+    } else if (clicked && was_focused) {
+        nk_edit_unfocus(ui->context);
     }
     saved_style = ui->context->style.edit;
     saved_font = ui->context->style.font;
@@ -253,13 +294,30 @@ static int32_t foundation_ui_edit_value(uint64_t handle, const fdn_string* name,
         ui->context->style.edit.cursor_text_hover = hidden;
         ui->context->clip.copy = NULL;
     }
-    flags = nk_edit_string_zero_terminated(ui->context, flags, state->buffer, (int)state->capacity,
-                                           nk_filter_default);
+    flags = supplied_bounds == NULL
+                ? nk_edit_string_zero_terminated(ui->context, flags, state->buffer,
+                                                 (int)state->capacity, nk_filter_default)
+                : foundation_ui_edit_string_bounds(ui->context, bounds, flags, state->buffer,
+                                                   (int)state->capacity);
+    if (was_focused && nk_input_is_key_pressed(&ui->context->input, NK_KEY_TAB)) {
+        const bool backward = ui->context->input.keyboard.keys[NK_KEY_SHIFT].down != 0;
+        const size_t count = ui->previous_edit_widget_count;
+        if (backward) {
+            ui->edit_focus_target =
+                widget_index == 0 ? (count == 0 ? 0 : count - 1) : widget_index - 1;
+        } else {
+            ui->edit_focus_target = count != 0 && widget_index + 1 >= count ? 0 : widget_index + 1;
+        }
+        ui->edit_focus_requested = true;
+        nk_edit_unfocus(ui->context);
+    }
     if (secret) {
         ui->context->style.edit = saved_style;
         ui->context->style.font = saved_font;
         ui->context->clip.copy = saved_copy;
         foundation_ui_draw_secret(ui, state, bounds, clip);
+    } else if (state->buffer[0] == '\0' && hint != NULL && hint->length != 0) {
+        foundation_ui_draw_edit_hint(ui, hint, bounds, clip);
     }
     foundation_ui_edit_menu(ui, window, bounds, state->buffer, state->capacity, secret);
     fdn_string_drop(result);
@@ -273,13 +331,98 @@ static int32_t foundation_ui_edit_value(uint64_t handle, const fdn_string* name,
 
 int32_t foundation_ui_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,
                            uint64_t capacity, fdn_string* result, bool* changed, bool* committed) {
-    return foundation_ui_edit_value(handle, name, value, capacity, result, changed, committed,
-                                    false);
+    return foundation_ui_edit_value_at(handle, name, value, NULL, capacity, result, changed,
+                                       committed, false, NULL);
+}
+
+int32_t foundation_ui_edit_hint(uint64_t handle, const fdn_string* name, const fdn_string* value,
+                                const fdn_string* hint, uint64_t capacity, fdn_string* result,
+                                bool* changed, bool* committed) {
+    return foundation_ui_edit_value_at(handle, name, value, hint, capacity, result, changed,
+                                       committed, false, NULL);
+}
+
+int32_t foundation_ui_action_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,
+                                  const fdn_string* hint, const fdn_string* action, uint64_t style,
+                                  uint64_t capacity, bool enabled, fdn_string* result,
+                                  bool* changed, bool* committed, bool* activated) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    const struct nk_user_font* font;
+    struct nk_command_buffer* canvas;
+    struct nk_style_edit saved_style;
+    struct nk_rect bounds;
+    struct nk_rect edit_bounds;
+    struct nk_rect action_bounds;
+    struct nk_rect action_paint;
+    struct nk_rect clip;
+    struct nk_color transparent = nk_rgba(0, 0, 0, 0);
+    nk_flags action_state = 0;
+    float action_width;
+    int32_t status;
+    if (ui == NULL || result == NULL || changed == NULL || committed == NULL || activated == NULL ||
+        !foundation_ui_string_valid(name) || !foundation_ui_string_valid(value) ||
+        !foundation_ui_string_valid(hint) || !foundation_ui_string_valid(action) ||
+        name->length == 0 || name->length == SIZE_MAX || name->length > INT32_MAX ||
+        value->length > INT32_MAX || hint->length > INT32_MAX || action->length > INT32_MAX ||
+        capacity == 0 || capacity > INT32_MAX || value->length >= capacity ||
+        style > FOUNDATION_UI_ACTION_DESTRUCTIVE ||
+        memchr(name->data, '\0', name->length) != NULL ||
+        (value->length != 0 && memchr(value->data, '\0', value->length) != NULL)) {
+        return FOUNDATION_UI_INVALID;
+    }
+    if (nk_widget(&bounds, ui->context) == NK_WIDGET_INVALID) {
+        fdn_string_drop(result);
+        *result = foundation_runtime_string_copy(value);
+        *changed = false;
+        *committed = false;
+        *activated = false;
+        return FOUNDATION_UI_OK;
+    }
+    font = ui->context->style.font;
+    action_width = font->width(font->userdata, font->height, foundation_ui_string_data(action),
+                               (int)action->length) +
+                   32.0f;
+    if (action_width < 112.0f)
+        action_width = 112.0f;
+    if (action_width > bounds.w * 0.40f)
+        action_width = bounds.w * 0.40f;
+    if (action_width < 1.0f || bounds.w - action_width < 1.0f)
+        return FOUNDATION_UI_FAILED;
+    edit_bounds = nk_rect(bounds.x, bounds.y, bounds.w - action_width, bounds.h);
+    action_bounds = nk_rect(edit_bounds.x + edit_bounds.w, bounds.y, action_width, bounds.h);
+    foundation_ui_set_context_target(ui, bounds);
+    *activated =
+        enabled && foundation_ui_button_input(&action_state, action_bounds, &ui->context->input);
+    canvas = nk_window_get_canvas(ui->context);
+    nk_fill_rect(canvas, bounds, 6.0f, ui->panel);
+    nk_stroke_rect(canvas, bounds, 6.0f, 1.0f, ui->context->style.window.border_color);
+    saved_style = ui->context->style.edit;
+    ui->context->style.edit.normal = nk_style_item_color(transparent);
+    ui->context->style.edit.hover = nk_style_item_color(transparent);
+    ui->context->style.edit.active = nk_style_item_color(transparent);
+    ui->context->style.edit.border = 0.0f;
+    ui->context->style.edit.rounding = 0.0f;
+    status = foundation_ui_edit_value_at(handle, name, value, hint, capacity, result, changed,
+                                         committed, false, &edit_bounds);
+    ui->context->style.edit = saved_style;
+    if (status != FOUNDATION_UI_OK)
+        return status;
+    clip = canvas->clip;
+    nk_push_scissor(canvas, action_bounds);
+    action_paint =
+        nk_rect(action_bounds.x - 6.0f, action_bounds.y, action_bounds.w + 6.0f, action_bounds.h);
+    foundation_ui_draw_action(ui, action_paint, action, style, enabled, action_state);
+    nk_push_scissor(canvas, clip);
+    nk_stroke_line(canvas, action_bounds.x, action_bounds.y + 1.0f, action_bounds.x,
+                   action_bounds.y + action_bounds.h - 1.0f, 1.0f,
+                   ui->context->style.window.border_color);
+    foundation_ui_set_context_target(ui, bounds);
+    return FOUNDATION_UI_OK;
 }
 
 int32_t foundation_ui_secret_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,
                                   uint64_t capacity, fdn_string* result, bool* changed,
                                   bool* committed) {
-    return foundation_ui_edit_value(handle, name, value, capacity, result, changed, committed,
-                                    true);
+    return foundation_ui_edit_value_at(handle, name, value, NULL, capacity, result, changed,
+                                       committed, true, NULL);
 }

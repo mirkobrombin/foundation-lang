@@ -20,6 +20,13 @@ fn drawCompactGroup(&window ui.Window) void {
     window.EndGroup()
 }
 
+fn drawSurfaceGroup(&window ui.Window) void {
+    if !window.BeginSurfaceGroup("surface") return
+    window.Row(24.0, 1)
+    window.Label("Surface", .Primary, false)
+    window.EndGroup()
+}
+
 fn drawContextMenu(&window ui.Window) void {
     if !window.BeginContextMenu(180.0, 2) return
     discard window.ContextMenuItem("Action", true)
@@ -28,9 +35,7 @@ fn drawContextMenu(&window ui.Window) void {
 }
 
 fn drawPopover(&window ui.Window) void {
-    if !window.BeginPopover(240.0, 120.0) {
-        fail("provider did not open a popover")
-    }
+    if !window.BeginNamedPopover("provider-popover", 240.0, 120.0) return
     window.Row(28.0, 1)
     window.Label("Popover", .Primary, false)
     window.EndPopover()
@@ -42,6 +47,50 @@ fn drawTextFields(&window ui.Window) void {
     }
     if edited.Value != "value" {
         fail("provider changed an idle text field")
+    }
+    const hinted = window.EditHint("hinted", "", "Search", 32) else {
+        fail("provider did not draw a hinted text field")
+    }
+    if hinted.Value != "" {
+        fail("provider changed an idle hinted text field")
+    }
+    const formText = window.FormTextField(
+        "Account",
+        "form-text",
+        "",
+        "Email or account name",
+        64
+    ) else {
+        fail("provider did not draw a form text field")
+    }
+    if formText.Value != "" {
+        fail("provider changed an idle form text field")
+    }
+    const formAction = window.FormActionField(
+        "Folder",
+        "form-action",
+        "",
+        "Choose a folder",
+        "Choose...",
+        .Secondary,
+        128,
+        true
+    ) else {
+        fail("provider did not draw a form action field")
+    }
+    if formAction.Edit.Value != "" || formAction.Activated {
+        fail("provider changed an idle form action field")
+    }
+    const formSecret = window.FormSecretField(
+        "Passphrase",
+        "form-secret",
+        "secret",
+        64
+    ) else {
+        fail("provider did not draw a form secret field")
+    }
+    if formSecret.Value != "secret" {
+        fail("provider changed an idle form secret field")
     }
     const fieldNames = [
         "one",
@@ -79,6 +128,105 @@ fn drawSlider(&window ui.Window) void {
             Invalid: {}
             _: { fail("provider reported the wrong slider error") }
         }
+    }
+}
+
+fn configureContentGeometry(&window ui.Window) void {
+    window.Wait(1) else {
+        fail("provider did not accept a bounded event wait")
+    }
+    window.SetContentPadding(0, 0) else {
+        fail("provider did not apply content padding")
+    }
+    window.SetContentSpacing(0, 0) else {
+        fail("provider did not apply content spacing")
+    }
+    const rejected = match window.SetContentPadding(257, 0) {
+        Ok: false
+        Err(error): match error {
+            Invalid: true
+            _: false
+        }
+    }
+    if !rejected {
+        fail("provider accepted content padding outside the supported range")
+    }
+    window.SetTheme(.Light) else {
+        fail("provider did not apply the light theme")
+    }
+}
+
+fn drawContentGeometry(&window ui.Window, surface ui.Surface) void {
+    const frame = window.BeginFrame() else {
+        fail("provider did not begin the geometry frame")
+    }
+    discard frame
+    if window.BeginRoot() {
+        window.Row(100.0, 1)
+        window.DrawSurfaceFill(surface) else {
+            fail("provider did not draw the geometry surface")
+        }
+        const size = window.SurfaceSize(surface) else {
+            fail("provider did not report the geometry surface")
+        }
+        if size.Width != 720 || size.Height != 100 {
+            fail("theme reset the configured content geometry")
+        }
+        window.EndRoot()
+    }
+    window.EndFrame() else {
+        fail("provider did not end the geometry frame")
+    }
+}
+
+fn drawSelectionWidgets(&window ui.Window) void {
+    discard window.ActionButton("Primary", .Primary, true)
+    discard window.ActionButton("Disabled", .Secondary, false)
+    discard window.ActionButton("Remove", .Destructive, true)
+    window.Row(20.0, 1)
+    window.Progress(1, 2) else {
+        fail("provider did not draw progress")
+    }
+    window.Row(36.0, 1)
+    discard window.NavigationItem("Navigation", true, true)
+    window.Row(40.0, 1)
+    discard window.SidebarItem(.Shield, "Sidebar", true, true)
+    window.Row(48.0, 1)
+    discard window.ListItem("List item", "Supporting text", true, true)
+    window.Row(48.0, 1)
+    discard window.ToggleItem("Toggle", "Supporting text", true, true)
+    window.Row(48.0, 1)
+    discard window.CheckItem("Check", "Supporting text", true, true)
+    window.Row(48.0, 1)
+    discard window.RadioItem("Radio", "Supporting text", true, true)
+    window.Row(48.0, 1)
+    discard window.ActionItem(
+        "Action",
+        "Supporting text",
+        "Open",
+        .Secondary,
+        true
+    )
+    window.Row(48.0, 1)
+    discard window.ChoiceItem(
+        "Choice",
+        "Supporting text",
+        "Selected value",
+        true
+    )
+    window.Row(96.0, 1)
+    window.EmptyState(.Download, "Nothing here", "Supporting text")
+    window.Row(54.0, 1)
+    window.Notice("Notice", "Supporting text", .Accent)
+    const segment = window.Segmented(["First", "Second"], 0, true)
+    if segment != 0 {
+        fail("provider changed an idle segmented selection")
+    }
+    window.Row(36.0, 1)
+    if window.BeginNamedPicker("provider-picker", "Selected", 120.0) {
+        discard window.PickerItem("Selected", true, true)
+        discard window.PickerItem("Unavailable", false, false)
+        window.EndPicker()
     }
 }
 
@@ -124,22 +272,14 @@ test "provider configures content geometry" {
         fail("provider did not open a window")
     }
     var window = opened
-    window.SetContentPadding(0, 0) else {
-        fail("provider did not apply content padding")
+    configureContentGeometry(&window)
+    const surface = window.CreateSurface() else {
+        fail("provider did not create a geometry surface")
     }
-    window.SetContentSpacing(0, 0) else {
-        fail("provider did not apply content spacing")
+    window.UpdateSurface(surface, 1, 1, bytes.FromText("RGBA")) else {
+        fail("provider did not update the geometry surface")
     }
-    const rejected = match window.SetContentPadding(257, 0) {
-        Ok: false
-        Err(error): match error {
-            Invalid: true
-            _: false
-        }
-    }
-    if !rejected {
-        fail("provider accepted content padding outside the supported range")
-    }
+    drawContentGeometry(&window, surface)
     pass()
 }
 
@@ -154,6 +294,21 @@ test "provider reports an idle file dialog" {
     match dialog {
         Idle: {}
         _: { fail("provider reported an active file dialog") }
+    }
+    pass()
+}
+
+test "provider reports an idle folder dialog" {
+    const opened = Open("Foundation UI", 720, 480) else {
+        fail("provider did not open a window")
+    }
+    var window = opened
+    const dialog = window.PollOpenFolderDialog() else {
+        fail("provider did not report folder dialog state")
+    }
+    match dialog {
+        Idle: {}
+        _: { fail("provider reported an active folder dialog") }
     }
     pass()
 }
@@ -254,7 +409,7 @@ test "provider reports a surface layout size" {
     discard frame
     if window.BeginRoot() {
         window.Row(80.0, 1)
-        window.DrawSurface(surface) else {
+        window.DrawSurfaceFill(surface) else {
             fail("provider did not draw the surface")
         }
         const surfaceSize = window.SurfaceSize(surface) else {
@@ -332,6 +487,7 @@ test "provider draws standard widgets" {
     discard frame
     if window.BeginRoot() {
         drawCompactGroup(&window)
+        drawSurfaceGroup(&window)
         window.Titlebar("Foundation UI", "widgets")
         window.Row(48.0, 16)
         window.ApplicationIcon()
@@ -361,6 +517,7 @@ test "provider draws standard widgets" {
         window.Heading("Heading")
         window.Label("Label", .Accent, false)
         discard window.Button("Button", false, true)
+        drawSelectionWidgets(&window)
         window.Row(28.0, 1)
         discard window.Switch(true, true)
         window.BeginRow(30.0, 2)

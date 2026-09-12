@@ -1,6 +1,6 @@
 format foundation.package/v1
 name foundation.ui.sdl
-version 1.8.0
+version 1.15.0
 language 1
 fcs strict
 source src
@@ -18,4 +18,4 @@ native_source native/sdl_widgets.c
 native_source native/terminal_emulator.c
 native_link SDL3
 native_link m target linux
-foreign c sdl3-nuklear 1.8.0 path native abi c/v1
+foreign c sdl3-nuklear 1.15.0 path native abi c/v1

@@ -27,7 +27,7 @@ void foundation_ui_row_end(uint64_t handle) {
 }
 
 static bool foundation_ui_begin_group_style(uint64_t handle, const fdn_string* name,
-                                            bool scrollable, bool compact) {
+                                            bool scrollable, bool compact, bool surface) {
     foundation_ui* ui = foundation_ui_from(handle);
     char* group_name;
     struct nk_vec2 previous_padding;
@@ -42,14 +42,17 @@ static bool foundation_ui_begin_group_style(uint64_t handle, const fdn_string* n
     previous_padding = ui->context->style.window.group_padding;
     previous_spacing = ui->context->style.window.spacing;
     previous_scrollbar_size = ui->context->style.window.scrollbar_size;
-    if (compact) {
+    if (surface) {
+        ui->context->style.window.group_padding = nk_vec2(0.0f, 0.0f);
+        ui->context->style.window.spacing = nk_vec2(0.0f, 0.0f);
+    } else if (compact) {
         ui->context->style.window.group_padding = nk_vec2(4.0f, 0.0f);
         ui->context->style.window.spacing = nk_vec2(0.0f, 2.0f);
     } else if (scrollable) {
         ui->context->style.window.group_padding = nk_vec2(8.0f, 4.0f);
         ui->context->style.window.spacing = nk_vec2(8.0f, 2.0f);
     }
-    if (compact)
+    if (compact || surface)
         ui->context->style.window.scrollbar_size = nk_vec2(0.0f, 0.0f);
     visible = nk_group_begin(ui->context, group_name, scrollable ? 0 : NK_WINDOW_NO_SCROLLBAR);
     if (!visible) {
@@ -62,18 +65,21 @@ static bool foundation_ui_begin_group_style(uint64_t handle, const fdn_string* n
         state->group_padding = previous_padding;
         state->spacing = previous_spacing;
         state->scrollbar_size = previous_scrollbar_size;
-        state->compact = compact;
     }
     SDL_free(group_name);
     return visible;
 }
 
 bool foundation_ui_begin_group(uint64_t handle, const fdn_string* name, bool scrollable) {
-    return foundation_ui_begin_group_style(handle, name, scrollable, false);
+    return foundation_ui_begin_group_style(handle, name, scrollable, false, false);
 }
 
 bool foundation_ui_begin_compact_group(uint64_t handle, const fdn_string* name) {
-    return foundation_ui_begin_group_style(handle, name, true, true);
+    return foundation_ui_begin_group_style(handle, name, true, true, false);
+}
+
+bool foundation_ui_begin_surface_group(uint64_t handle, const fdn_string* name) {
+    return foundation_ui_begin_group_style(handle, name, false, false, true);
 }
 
 void foundation_ui_end_group(uint64_t handle) {
@@ -85,8 +91,7 @@ void foundation_ui_end_group(uint64_t handle) {
     state = &ui->group_states[--ui->group_depth];
     ui->context->style.window.group_padding = state->group_padding;
     ui->context->style.window.spacing = state->spacing;
-    if (state->compact)
-        ui->context->style.window.scrollbar_size = state->scrollbar_size;
+    ui->context->style.window.scrollbar_size = state->scrollbar_size;
 }
 
 void foundation_ui_space(uint64_t handle, float height) {

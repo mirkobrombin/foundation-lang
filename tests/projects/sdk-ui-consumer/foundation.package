@@ -4,4 +4,4 @@ version 1.0.0
 language 1
 fcs strict
 source src
-dependency foundation.ui.sdl 1.8.0 sdk providers/sdl
+dependency foundation.ui.sdl 1.15.0 sdk providers/sdl

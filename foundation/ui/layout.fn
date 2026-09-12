@@ -36,6 +36,11 @@ methods Window {
         beginCompactGroupNative(self.handle, name)
     }
 
+    // Opens a clipped zero-inset group for embedded surfaces and split panes.
+    fn BeginSurfaceGroup(&self, name String) bool {
+        beginSurfaceGroupNative(self.handle, name)
+    }
+
     // Closes the current layout group.
     fn EndGroup(&self) void {
         endGroupNative(self.handle)

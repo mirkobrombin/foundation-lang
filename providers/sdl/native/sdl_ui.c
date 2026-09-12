@@ -34,6 +34,58 @@ static char* foundation_ui_dtoa(char* destination, double value) {
 #include "vendor/inter_regular.inc"
 #include "vendor/inter_semibold.inc"
 
+nk_flags foundation_ui_edit_string_bounds(struct nk_context* context, struct nk_rect bounds,
+                                          nk_flags flags, char* buffer, int capacity) {
+    struct nk_window* window = context->current;
+    struct nk_text_edit* edit = &context->text_edit;
+    struct nk_input* input;
+    nk_plugin_filter filter = nk_filter_default;
+    nk_hash hash = window->edit.seq++;
+    nk_flags result;
+    int length = nk_strlen(buffer);
+    unsigned char previous_active;
+    nk_textedit_clear_state(edit, NK_TEXT_EDIT_SINGLE_LINE, filter);
+    if (window->edit.active && hash == window->edit.name) {
+        edit->cursor = window->edit.cursor;
+        edit->select_start = window->edit.sel_start;
+        edit->select_end = window->edit.sel_end;
+        edit->mode = window->edit.mode;
+        edit->scrollbar.x = (float)window->edit.scrollbar.x;
+        edit->scrollbar.y = (float)window->edit.scrollbar.y;
+        edit->active = nk_true;
+    } else {
+        edit->active = nk_false;
+    }
+    previous_active = edit->active;
+    length = NK_MIN(length, capacity - 1);
+    nk_str_init_fixed(&edit->string, buffer, (nk_size)capacity);
+    edit->string.buffer.allocated = (nk_size)length;
+    edit->string.len = nk_utf_len(buffer, length);
+    if ((flags & NK_EDIT_CLIPBOARD) != 0)
+        edit->clip = context->clip;
+    input = (window->layout->flags & NK_WINDOW_ROM) != 0 ? NULL : &context->input;
+    result = nk_do_edit(&context->last_widget_state, &window->buffer, bounds, flags, filter, edit,
+                        &context->style.edit, input, context->style.font);
+    if ((context->last_widget_state & NK_WIDGET_STATE_HOVER) != 0)
+        context->style.cursor_active = context->style.cursors[NK_CURSOR_TEXT];
+    if (edit->active && previous_active != edit->active) {
+        window->edit.active = nk_true;
+        window->edit.name = hash;
+    } else if (previous_active && !edit->active) {
+        window->edit.active = nk_false;
+    }
+    if (edit->active) {
+        window->edit.cursor = edit->cursor;
+        window->edit.sel_start = edit->select_start;
+        window->edit.sel_end = edit->select_end;
+        window->edit.mode = edit->mode;
+        window->edit.scrollbar.x = (nk_uint)edit->scrollbar.x;
+        window->edit.scrollbar.y = (nk_uint)edit->scrollbar.y;
+    }
+    buffer[NK_MIN((int)edit->string.buffer.allocated, capacity - 1)] = '\0';
+    return result;
+}
+
 static const nk_rune foundation_ui_terminal_glyph_ranges[] = {
     0x0020, 0x024f, 0x0370, 0x052f, 0x2000, 0x206f, 0x2190,
     0x21ff, 0x2500, 0x27bf, 0x2b00, 0x2bff, 0,
@@ -171,6 +223,22 @@ static void foundation_ui_route_event(foundation_ui* current, const SDL_Event* e
     SDL_UnlockSpinlock(&foundation_ui_registry_lock);
 }
 
+static bool foundation_ui_queue_event(foundation_ui* ui, const SDL_Event* event) {
+    uint64_t position;
+    bool queued = false;
+    SDL_LockSpinlock(&foundation_ui_registry_lock);
+    if (ui->event_count != FOUNDATION_UI_EVENT_CAPACITY) {
+        position = (ui->event_head + ui->event_count) % FOUNDATION_UI_EVENT_CAPACITY;
+        ui->event_queue[position] = *event;
+        ui->event_count++;
+        queued = true;
+    } else {
+        ui->event_overflow = true;
+    }
+    SDL_UnlockSpinlock(&foundation_ui_registry_lock);
+    return queued;
+}
+
 static bool foundation_ui_take_event(foundation_ui* ui, SDL_Event* event) {
     bool available = false;
     SDL_LockSpinlock(&foundation_ui_registry_lock);
@@ -210,6 +278,12 @@ static void foundation_ui_process_event(foundation_ui* ui, SDL_Event* event, boo
         foundation_ui_release_surface_input(ui, ui->focused_surface);
         foundation_ui_leave_surface(ui, ui->hovered_surface);
         ui->terminal_focus = false;
+    }
+    if (ui->popover_visible &&
+        (event->type == SDL_EVENT_MOUSE_MOTION || event->type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+         event->type == SDL_EVENT_MOUSE_BUTTON_UP || event->type == SDL_EVENT_MOUSE_WHEEL)) {
+        (void)nk_sdl_handle_event(ui->context, event);
+        return;
     }
     if (!foundation_ui_handle_terminal_event(ui, event) &&
         !foundation_ui_handle_surface_event(ui, event)) {
@@ -261,8 +335,8 @@ static void foundation_ui_apply_theme(foundation_ui* ui, bool light) {
     table[NK_COLOR_KNOB_CURSOR_ACTIVE] = accent;
     nk_style_from_table(ui->context, table);
 
-    ui->context->style.window.padding = nk_vec2(24.0f, 0.0f);
-    ui->context->style.window.spacing = nk_vec2(8.0f, 8.0f);
+    ui->context->style.window.padding = ui->content_padding;
+    ui->context->style.window.spacing = ui->content_spacing;
     ui->context->style.window.border = 0.0f;
     ui->context->style.window.rounding = 8.0f;
     ui->context->style.window.group_padding = nk_vec2(16.0f, 16.0f);
@@ -271,6 +345,30 @@ static void foundation_ui_apply_theme(foundation_ui* ui, bool light) {
     ui->context->style.window.contextual_padding = nk_vec2(6.0f, 6.0f);
     ui->context->style.button.rounding = 6.0f;
     ui->context->style.button.padding = nk_vec2(12.0f, 8.0f);
+    ui->context->style.combo.normal = nk_style_item_color(panel);
+    ui->context->style.combo.hover = nk_style_item_color(raised);
+    ui->context->style.combo.active = nk_style_item_color(raised);
+    ui->context->style.combo.border_color = border;
+    ui->context->style.combo.label_normal = text;
+    ui->context->style.combo.label_hover = text;
+    ui->context->style.combo.label_active = text;
+    ui->context->style.combo.symbol_normal = muted;
+    ui->context->style.combo.symbol_hover = text;
+    ui->context->style.combo.symbol_active = text;
+    ui->context->style.combo.border = 1.0f;
+    ui->context->style.combo.rounding = 6.0f;
+    ui->context->style.combo.content_padding = nk_vec2(12.0f, 8.0f);
+    ui->context->style.combo.button_padding = nk_vec2(6.0f, 6.0f);
+    ui->context->style.combo.spacing = nk_vec2(6.0f, 0.0f);
+    ui->context->style.combo.button.normal = nk_style_item_color(panel);
+    ui->context->style.combo.button.hover = nk_style_item_color(raised);
+    ui->context->style.combo.button.active = nk_style_item_color(raised);
+    ui->context->style.combo.button.text_normal = muted;
+    ui->context->style.combo.button.text_hover = text;
+    ui->context->style.combo.button.text_active = text;
+    ui->context->style.combo.button.border = 0.0f;
+    ui->context->style.combo.button.rounding = 4.0f;
+    ui->context->style.combo.button.padding = nk_vec2(7.0f, 7.0f);
     ui->context->style.contextual_button.normal = nk_style_item_color(background);
     ui->context->style.contextual_button.hover = nk_style_item_color(raised);
     ui->context->style.contextual_button.active = nk_style_item_color(accent);
@@ -539,6 +637,8 @@ int32_t foundation_ui_open(const fdn_string* title, uint64_t width, uint64_t hei
     }
     ui->terminal_auto_focus = true;
     ui->first_frame = true;
+    ui->content_padding = nk_vec2(24.0f, 0.0f);
+    ui->content_spacing = nk_vec2(8.0f, 8.0f);
     foundation_ui_apply_theme(ui, false);
     if (!foundation_ui_register(ui)) {
         foundation_terminal_destroy(ui->terminal);
@@ -601,6 +701,7 @@ void foundation_ui_close(uint64_t* handle) {
 int32_t foundation_ui_begin_frame(uint64_t handle) {
     foundation_ui* ui = foundation_ui_from(handle);
     SDL_Event event;
+    struct nk_window* root;
     bool active;
     bool resized = false;
     if (ui == NULL)
@@ -622,6 +723,13 @@ int32_t foundation_ui_begin_frame(uint64_t handle) {
         foundation_ui_process_event(ui, &event, &active, &resized);
     }
     nk_input_end(ui->context);
+    root = nk_window_find(ui->context, "foundation-ui");
+    if (root != NULL && root->edit.active &&
+        (ui->context->input.mouse.buttons[NK_BUTTON_LEFT].clicked != 0 ||
+         ui->context->input.mouse.buttons[NK_BUTTON_RIGHT].clicked != 0)) {
+        root->edit.active = false;
+        root->edit.name = 0;
+    }
     ui->tooltip_length = 0;
     if (ui->event_overflow) {
         ui->event_overflow = false;
@@ -654,6 +762,25 @@ int32_t foundation_ui_end_frame(uint64_t handle) {
     return FOUNDATION_UI_OK;
 }
 
+int32_t foundation_ui_wait(uint64_t handle, uint64_t timeout_milliseconds) {
+    foundation_ui* ui = foundation_ui_from(handle);
+    SDL_Event event;
+    SDL_Window* window;
+    if (ui == NULL || timeout_milliseconds > 1000)
+        return FOUNDATION_UI_INVALID;
+    if (ui->event_count != 0)
+        return FOUNDATION_UI_OK;
+    SDL_ClearError();
+    if (!SDL_WaitEventTimeout(&event, (Sint32)timeout_milliseconds))
+        return SDL_GetError()[0] == '\0' ? FOUNDATION_UI_OK : FOUNDATION_UI_FAILED;
+    window = SDL_GetWindowFromEvent(&event);
+    if (event.type != SDL_EVENT_QUIT && window != NULL && window != ui->window) {
+        foundation_ui_route_event(ui, &event);
+        return FOUNDATION_UI_OK;
+    }
+    return foundation_ui_queue_event(ui, &event) ? FOUNDATION_UI_OK : FOUNDATION_UI_FAILED;
+}
+
 int32_t foundation_ui_set_theme(uint64_t handle, uint64_t theme) {
     foundation_ui* ui = foundation_ui_from(handle);
     if (ui == NULL || theme > FOUNDATION_UI_THEME_LIGHT)
@@ -675,21 +802,21 @@ int32_t foundation_ui_set_accent(uint64_t handle, uint64_t red, uint64_t green, 
     return FOUNDATION_UI_OK;
 }
 
-int32_t foundation_ui_set_content_padding(uint64_t handle, uint64_t horizontal,
-                                          uint64_t vertical) {
+int32_t foundation_ui_set_content_padding(uint64_t handle, uint64_t horizontal, uint64_t vertical) {
     foundation_ui* ui = foundation_ui_from(handle);
     if (ui == NULL || horizontal > 256 || vertical > 256)
         return FOUNDATION_UI_INVALID;
-    ui->context->style.window.padding = nk_vec2((float)horizontal, (float)vertical);
+    ui->content_padding = nk_vec2((float)horizontal, (float)vertical);
+    ui->context->style.window.padding = ui->content_padding;
     return FOUNDATION_UI_OK;
 }
 
-int32_t foundation_ui_set_content_spacing(uint64_t handle, uint64_t horizontal,
-                                          uint64_t vertical) {
+int32_t foundation_ui_set_content_spacing(uint64_t handle, uint64_t horizontal, uint64_t vertical) {
     foundation_ui* ui = foundation_ui_from(handle);
     if (ui == NULL || horizontal > 256 || vertical > 256)
         return FOUNDATION_UI_INVALID;
-    ui->context->style.window.spacing = nk_vec2((float)horizontal, (float)vertical);
+    ui->content_spacing = nk_vec2((float)horizontal, (float)vertical);
+    ui->context->style.window.spacing = ui->content_spacing;
     return FOUNDATION_UI_OK;
 }
 
@@ -742,6 +869,7 @@ int32_t foundation_ui_raise(uint64_t handle) {
 
 bool foundation_ui_begin_root(uint64_t handle) {
     foundation_ui* ui = foundation_ui_from(handle);
+    bool visible;
     uint64_t index;
     int width;
     int height;
@@ -755,14 +883,19 @@ bool foundation_ui_begin_root(uint64_t handle) {
     ui->context_target_valid = false;
     ui->context_menu_active = false;
     ui->popover_active = false;
+    ui->popover_rendered = false;
+    ui->edit_widget_count = 0;
     ui->titlebar_region_count = 0;
     ui->titlebar_region_overflow = false;
-    return nk_begin(ui->context, "foundation-ui", nk_rect(0.0f, 0.0f, (float)width, (float)height),
-                    NK_WINDOW_BACKGROUND | NK_WINDOW_NO_SCROLLBAR);
+    visible =
+        nk_begin(ui->context, "foundation-ui", nk_rect(0.0f, 0.0f, (float)width, (float)height),
+                 NK_WINDOW_BACKGROUND | NK_WINDOW_NO_SCROLLBAR);
+    nk_window_set_scroll(ui->context, 0, 0);
+    return visible;
 }
 
-bool foundation_ui_popover_begin(foundation_ui* ui, float width, float height) {
-    static const char name[] = "foundation-ui-popover";
+bool foundation_ui_popover_begin(foundation_ui* ui, const char* name, int name_length, float width,
+                                 float height, bool clicked) {
     struct nk_window* window;
     struct nk_window* popup;
     struct nk_rect bounds;
@@ -772,8 +905,9 @@ bool foundation_ui_popover_begin(foundation_ui* ui, float width, float height) {
     bool open;
     bool active;
 
-    if (ui == NULL || ui->context == NULL || ui->context->current == NULL ||
-        ui->context->current->layout == NULL || !ui->context_target_valid ||
+    if (ui == NULL || name == NULL || name_length <= 0 || ui->context == NULL ||
+        ui->context->current == NULL || ui->context->current->layout == NULL ||
+        !ui->context_target_valid ||
         !SDL_GetWindowSize(ui->window, &surface_width, &surface_height)) {
         return false;
     }
@@ -782,10 +916,10 @@ bool foundation_ui_popover_begin(foundation_ui* ui, float width, float height) {
     }
     window = ui->context->current;
     popup = window->popup.win;
-    hash = nk_murmur_hash(name, (int)(sizeof(name) - 1), NK_PANEL_MENU);
-    open = popup != NULL;
+    hash = nk_murmur_hash(name, name_length, NK_PANEL_MENU);
+    open = popup != NULL && window->popup.active != 0;
     active = open && window->popup.name == hash && window->popup.type == NK_PANEL_MENU;
-    if (open && !active) {
+    if ((clicked && open && !active) || (open && !active) || (!open && !active && !clicked)) {
         return false;
     }
     bounds.w = width;
@@ -794,19 +928,30 @@ bool foundation_ui_popover_begin(foundation_ui* ui, float width, float height) {
     bounds.y = ui->context_target.y + ui->context_target.h;
     bounds.x = NK_CLAMP(0.0f, bounds.x, (float)surface_width - width);
     bounds.y = NK_CLAMP(0.0f, bounds.y, (float)surface_height - height);
-    if (!nk_nonblock_begin(ui->context, NK_WINDOW_NO_SCROLLBAR, bounds,
-                           ui->context_target, NK_PANEL_MENU)) {
+    if (!nk_nonblock_begin(ui->context, NK_WINDOW_NO_SCROLLBAR, bounds, ui->context_target,
+                           NK_PANEL_MENU)) {
         return false;
     }
     window->popup.type = NK_PANEL_MENU;
     window->popup.name = hash;
+    ui->popover_rendered = true;
+    ui->popover_visible = true;
     return true;
 }
 
 void foundation_ui_end_root(uint64_t handle) {
     foundation_ui* ui = foundation_ui_from(handle);
-    if (ui != NULL)
+    if (ui != NULL) {
+        if (ui->edit_focus_requested && ui->edit_widget_count == 0) {
+            ui->edit_focus_requested = false;
+        } else if (ui->edit_focus_requested && ui->edit_focus_target >= ui->edit_widget_count) {
+            ui->edit_focus_target = 0;
+        }
+        ui->previous_edit_widget_count = ui->edit_widget_count;
         nk_end(ui->context);
+        if (!ui->popover_rendered)
+            ui->popover_visible = false;
+    }
 }
 
 static bool foundation_ui_window_button(foundation_ui* ui, struct nk_command_buffer* canvas,
@@ -890,15 +1035,23 @@ void foundation_ui_titlebar(uint64_t handle, const fdn_string* title, const fdn_
         nk_stroke_rect(canvas, nk_rect(0.5f, 0.5f, (float)width - 1.0f, (float)height - 1.0f),
                        10.0f, 1.0f, ui->context->style.window.border_color);
     }
-    if (ui->tooltip_length != 0) {
+    if (ui->tooltip_length != 0 && !ui->popover_active && !ui->context_menu_active) {
         const struct nk_user_font* tooltip_font = ui->context->style.font;
         const float measured = tooltip_font->width(tooltip_font->userdata, tooltip_font->height,
                                                    ui->tooltip, (int)ui->tooltip_length);
-        struct nk_rect bounds = nk_rect(
-            ui->tooltip_anchor.x + ui->tooltip_anchor.w + 8.0f,
-            ui->tooltip_anchor.y + (ui->tooltip_anchor.h - 26.0f) * 0.5f, measured + 16.0f, 26.0f);
-        if (bounds.x + bounds.w > (float)width - 8.0f) {
-            bounds.x = ui->tooltip_anchor.x - bounds.w - 8.0f;
+        struct nk_rect bounds;
+        bounds.w = measured + 16.0f;
+        bounds.h = 26.0f;
+        if (ui->tooltip_anchor.y < 40.0f) {
+            bounds.x = ui->tooltip_anchor.x + (ui->tooltip_anchor.w - bounds.w) * 0.5f;
+            bounds.y = ui->tooltip_anchor.y + ui->tooltip_anchor.h + 6.0f;
+            bounds.x = NK_CLAMP(8.0f, bounds.x, (float)width - bounds.w - 8.0f);
+        } else {
+            bounds.x = ui->tooltip_anchor.x + ui->tooltip_anchor.w + 8.0f;
+            bounds.y = ui->tooltip_anchor.y + (ui->tooltip_anchor.h - bounds.h) * 0.5f;
+            if (bounds.x + bounds.w > (float)width - 8.0f) {
+                bounds.x = ui->tooltip_anchor.x - bounds.w - 8.0f;
+            }
         }
         nk_fill_rect(canvas, bounds, 5.0f, ui->raised);
         nk_draw_text(canvas, nk_rect(bounds.x + 8.0f, bounds.y + 4.0f, measured, 18.0f),

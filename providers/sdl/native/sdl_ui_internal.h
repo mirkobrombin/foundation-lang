@@ -117,7 +117,6 @@ typedef struct foundation_ui_group_state {
     struct nk_vec2 group_padding;
     struct nk_vec2 spacing;
     struct nk_vec2 scrollbar_size;
-    bool compact;
 } foundation_ui_group_state;
 
 typedef struct foundation_ui_surface {
@@ -170,6 +169,9 @@ typedef struct foundation_ui {
     struct nk_rect titlebar_regions[FOUNDATION_UI_TITLEBAR_REGION_CAPACITY];
     size_t edit_count;
     size_t edit_capacity;
+    size_t edit_widget_count;
+    size_t previous_edit_widget_count;
+    size_t edit_focus_target;
     size_t titlebar_region_count;
     uint64_t group_depth;
     uint64_t surface_draw_sequence;
@@ -182,9 +184,13 @@ typedef struct foundation_ui {
     int shape_width;
     int shape_height;
     bool terminal_bounds_valid;
+    bool edit_focus_requested;
     bool context_target_valid;
     bool context_menu_active;
     bool popover_active;
+    bool popover_rendered;
+    bool popover_visible;
+    bool picker_active;
     bool terminal_focus;
     bool terminal_auto_focus;
     bool shape_disabled;
@@ -198,6 +204,8 @@ typedef struct foundation_ui {
     struct nk_color text;
     struct nk_color muted;
     struct nk_color accent;
+    struct nk_vec2 content_padding;
+    struct nk_vec2 content_spacing;
     bool custom_accent;
     bool light_theme;
     bool closing;
@@ -227,8 +235,13 @@ void foundation_ui_draw_compact_icon(struct nk_command_buffer* canvas, struct nk
                                      uint64_t icon, struct nk_color color);
 bool foundation_ui_button_input(nk_flags* state, struct nk_rect bounds,
                                 const struct nk_input* input);
+void foundation_ui_draw_action(foundation_ui* ui, struct nk_rect bounds, const fdn_string* value,
+                               uint64_t style, bool enabled, nk_flags state);
+nk_flags foundation_ui_edit_string_bounds(struct nk_context* context, struct nk_rect bounds,
+                                          nk_flags flags, char* buffer, int capacity);
 void foundation_ui_set_context_target(foundation_ui* ui, struct nk_rect bounds);
-bool foundation_ui_popover_begin(foundation_ui* ui, float width, float height);
+bool foundation_ui_popover_begin(foundation_ui* ui, const char* name, int name_length, float width,
+                                 float height, bool clicked);
 void foundation_ui_register_titlebar_region(foundation_ui* ui, struct nk_rect bounds);
 foundation_ui_file_dialog* foundation_ui_file_dialog_create(void);
 void foundation_ui_file_dialog_retain(foundation_ui_file_dialog* dialog);

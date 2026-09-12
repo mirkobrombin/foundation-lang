@@ -121,9 +121,133 @@ methods Window {
         buttonNative(self.handle, value, selected, primary)
     }
 
+    // Draws an enabled or disabled application action with an explicit role.
+    fn ActionButton(
+        &self,
+        value String,
+        style ActionStyle,
+        enabled bool
+    ) bool {
+        actionButtonNative(self.handle, value, actionStyleValue(style), enabled)
+    }
+
     // Draws a boolean switch and reports activation.
     fn Switch(&self, value bool, enabled bool) bool {
         switchNative(self.handle, value, enabled)
+    }
+
+    // Draws a setting row with supporting text and a boolean switch.
+    fn ToggleItem(
+        &self,
+        title String,
+        detail String,
+        value bool,
+        enabled bool
+    ) bool {
+        toggleItemNative(self.handle, title, detail, value, enabled)
+    }
+
+    // Draws a setting row with supporting text and a checkbox.
+    fn CheckItem(
+        &self,
+        title String,
+        detail String,
+        value bool,
+        enabled bool
+    ) bool {
+        checkItemNative(self.handle, title, detail, value, enabled)
+    }
+
+    // Draws one exclusive option with supporting text and a radio mark.
+    fn RadioItem(
+        &self,
+        title String,
+        detail String,
+        selected bool,
+        enabled bool
+    ) bool {
+        radioItemNative(self.handle, title, detail, selected, enabled)
+    }
+
+    // Draws a setting row with supporting text and a trailing action.
+    fn ActionItem(
+        &self,
+        title String,
+        detail String,
+        actionLabel String,
+        style ActionStyle,
+        enabled bool
+    ) bool {
+        actionItemNative(
+            self.handle,
+            title,
+            detail,
+            actionLabel,
+            actionStyleValue(style),
+            enabled
+        )
+    }
+
+    // Draws a setting row with supporting text and a trailing selected value.
+    fn ChoiceItem(
+        &self,
+        title String,
+        detail String,
+        value String,
+        enabled bool
+    ) bool {
+        choiceItemNative(self.handle, title, detail, value, enabled)
+    }
+
+    // Draws one read-only name and value row.
+    fn PropertyItem(&self, title String, value String) void {
+        propertyItemNative(self.handle, title, value)
+    }
+
+    // Opens a named choice panel from one compact settings row.
+    fn BeginChoicePopover(
+        &self,
+        name String,
+        title String,
+        detail String,
+        value String,
+        width f32,
+        height f32,
+        enabled bool
+    ) bool {
+        discard self.ChoiceItem(title, detail, value, enabled)
+        if !enabled return false
+        self.BeginNamedPopover(name, width, height)
+    }
+
+    // Closes a choice panel opened during the current frame.
+    fn EndChoicePopover(&self) void {
+        endPopoverNative(self.handle)
+    }
+
+    // Draws a settings section heading with supporting text and standard spacing.
+    fn SectionHeading(&self, title String, detail String) void {
+        self.Space(14.0)
+        self.Row(30.0, 1)
+        self.Heading(title)
+        self.Row(24.0, 1)
+        self.Label(detail, .Muted, true)
+        self.Space(12.0)
+    }
+
+    // Draws a centered empty state in the active cell.
+    fn EmptyState(&self, icon Icon, title String, detail String) void {
+        emptyStateNative(self.handle, iconValue(icon), title, detail)
+    }
+
+    // Draws a compact semantic message with supporting text.
+    fn Notice(
+        &self,
+        title String,
+        detail String,
+        tone LabelTone
+    ) void {
+        noticeNative(self.handle, title, detail, labelToneValue(tone))
     }
 
     // Draws one item in a segmented control and reports activation.
@@ -141,6 +265,26 @@ methods Window {
             segmentPositionValue(position),
             enabled
         )
+    }
+
+    // Draws one complete equal-width segmented control and returns its selected index.
+    fn Segmented(
+        &self,
+        values [String],
+        selected usize,
+        enabled bool
+    ) usize {
+        const count = len(values)
+        if count == 0 return selected
+        var result = selected
+        self.Row(34.0, u64.From(count))
+        for index, value in values {
+            const position = segmentPosition(index, count)
+            if self.Segment(value, index == selected, position, enabled) {
+                result = index
+            }
+        }
+        result
     }
 
     // Draws a bounded numeric slider and reports its current value.
@@ -171,6 +315,69 @@ methods Window {
         fileEntryNative(self.handle, name, details, directory)
     }
 
+    // Draws one compact navigation destination and reports activation.
+    fn NavigationItem(
+        &self,
+        value String,
+        selected bool,
+        enabled bool
+    ) bool {
+        navigationItemNative(self.handle, value, selected, enabled)
+    }
+
+    // Draws one icon-labeled sidebar destination and reports activation.
+    fn SidebarItem(
+        &self,
+        icon Icon,
+        value String,
+        selected bool,
+        enabled bool
+    ) bool {
+        sidebarItemNative(
+            self.handle,
+            iconValue(icon),
+            value,
+            selected,
+            enabled
+        )
+    }
+
+    // Draws one selectable list row with supporting text.
+    fn ListItem(
+        &self,
+        title String,
+        detail String,
+        selected bool,
+        enabled bool
+    ) bool {
+        listItemNative(self.handle, title, detail, selected, enabled)
+    }
+
+    // Opens a native picker using the active cell and current value.
+    fn BeginPicker(&self, value String, height f32) bool {
+        beginPickerNative(self.handle, value, height)
+    }
+
+    // Opens a native picker whose state follows a stable application name.
+    fn BeginNamedPicker(&self, name String, value String, height f32) bool {
+        beginNamedPickerNative(self.handle, name, value, height)
+    }
+
+    // Draws one option inside the active picker and reports selection.
+    fn PickerItem(&self, value String, selected bool, enabled bool) bool {
+        pickerItemNative(self.handle, value, selected, enabled)
+    }
+
+    // Closes a picker opened during the current frame.
+    fn EndPicker(&self) void {
+        endPickerNative(self.handle)
+    }
+
+    // Draws a read-only bounded progress indicator.
+    fn Progress(&self, value u64, maximum u64) Result<void, Error> {
+        status(progressNative(self.handle, value, maximum))
+    }
+
     // Opens a context menu for the preceding ordinary widget.
     fn BeginContextMenu(&self, width f32, items u64) bool {
         beginContextMenuNative(self.handle, width, items)
@@ -189,6 +396,42 @@ methods Window {
     // Opens a non-blocking panel anchored below the preceding ordinary widget.
     fn BeginPopover(&self, width f32, height f32) bool {
         beginPopoverNative(self.handle, width, height)
+    }
+
+    // Opens an anchored panel whose state follows a stable application name.
+    fn BeginNamedPopover(
+        &self,
+        name String,
+        width f32,
+        height f32
+    ) bool {
+        beginNamedPopoverNative(self.handle, name, width, height)
+    }
+
+    // Opens a named popover from one compact toolbar icon.
+    fn BeginToolbarPopover(
+        &self,
+        name String,
+        icon Icon,
+        label String,
+        width f32,
+        height f32,
+        enabled bool
+    ) bool {
+        beginToolbarPopoverNative(
+            self.handle,
+            name,
+            iconValue(icon),
+            label,
+            width,
+            height,
+            enabled
+        )
+    }
+
+    // Requests that the active anchored panel close after the current frame.
+    fn ClosePopover(&self) void {
+        closePopoverNative(self.handle)
     }
 
     // Closes a popover opened during the current frame.
@@ -223,6 +466,131 @@ methods Window {
         })
     }
 
+    // Edits a named text value and shows guidance while the field is empty.
+    fn EditHint(
+        &self,
+        name String,
+        value String,
+        hint String,
+        capacity u64
+    ) Result<TextEdit, Error> {
+        var result = ""
+        var changed = false
+        var committed = false
+        const valueStatus = editHintNative(
+            self.handle,
+            name,
+            value,
+            hint,
+            capacity,
+            &result,
+            &changed,
+            &committed
+        )
+        if valueStatus != 0 return .Err(errorFor(valueStatus))
+        .Ok(TextEdit {
+            Value = result
+            Changed = changed
+            Committed = committed
+        })
+    }
+
+    // Draws one text field with a joined action segment.
+    fn ActionEdit(
+        &self,
+        name String,
+        value String,
+        hint String,
+        actionLabel String,
+        style ActionStyle,
+        capacity u64,
+        enabled bool
+    ) Result<TextActionEdit, Error> {
+        var result = ""
+        var changed = false
+        var committed = false
+        var activated = false
+        const valueStatus = actionEditNative(
+            self.handle,
+            name,
+            value,
+            hint,
+            actionLabel,
+            actionStyleValue(style),
+            capacity,
+            enabled,
+            &result,
+            &changed,
+            &committed,
+            &activated
+        )
+        if valueStatus != 0 return .Err(errorFor(valueStatus))
+        .Ok(TextActionEdit {
+            Edit = TextEdit {
+                Value = result
+                Changed = changed
+                Committed = committed
+            }
+            Activated = activated
+        })
+    }
+
+    // Draws a labeled text field using the standard form alignment.
+    fn FormTextField(
+        &self,
+        label String,
+        name String,
+        value String,
+        hint String,
+        capacity u64
+    ) Result<TextEdit, Error> {
+        self.BeginRow(36.0, 3)
+        self.PushColumn(0.24)
+        self.Label(label, .Muted, false)
+        self.PushColumn(0.60)
+        const edited = self.EditHint(name, value, hint, capacity)
+        self.PushColumn(0.16)
+        self.Empty()
+        self.EndRow()
+        edited
+    }
+
+    // Draws a labeled text field with one adjacent application action.
+    fn FormActionField(
+        &self,
+        label String,
+        name String,
+        value String,
+        hint String,
+        actionLabel String,
+        style ActionStyle,
+        capacity u64,
+        enabled bool
+    ) Result<TextActionEdit, Error> {
+        self.BeginRow(36.0, 3)
+        self.PushColumn(0.24)
+        self.Label(label, .Muted, false)
+        self.PushColumn(0.70)
+        const edited = self.ActionEdit(
+            name,
+            value,
+            hint,
+            actionLabel,
+            style,
+            capacity,
+            enabled
+        ) else error {
+            self.PushColumn(0.06)
+            self.Empty()
+            self.EndRow()
+            return .Err(error)
+        }
+        self.PushColumn(0.06)
+        self.Empty()
+        self.EndRow()
+        .Ok(edited)
+    }
+
     // Edits a named secret without exposing its contents on screen or through copy actions.
     fn SecretEdit(
         &self,
@@ -249,4 +617,30 @@ methods Window {
             Committed = committed
         })
     }
+
+    // Draws a labeled secret field using the standard form alignment.
+    fn FormSecretField(
+        &self,
+        label String,
+        name String,
+        value String,
+        capacity u64
+    ) Result<TextEdit, Error> {
+        self.BeginRow(36.0, 3)
+        self.PushColumn(0.24)
+        self.Label(label, .Muted, false)
+        self.PushColumn(0.60)
+        const edited = self.SecretEdit(name, value, capacity)
+        self.PushColumn(0.16)
+        self.Empty()
+        self.EndRow()
+        edited
+    }
+}
+
+fn segmentPosition(index usize, count usize) SegmentPosition {
+    if count == 1 return .Single
+    if index == 0 return .First
+    if index + 1 == count return .Last
+    .Middle
 }

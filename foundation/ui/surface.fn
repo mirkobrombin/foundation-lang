@@ -65,6 +65,12 @@ methods Window {
         status(imageNative(self.handle, surface.id))
     }
 
+    // Draws a surface across the complete active cell.
+    fn DrawSurfaceFill(&self, surface Surface) Result<void, Error> {
+        if surface.window != self.handle return .Err(.Invalid)
+        status(imageFillNative(self.handle, surface.id))
+    }
+
     // Reports the logical cell size assigned by the latest draw.
     fn SurfaceSize(self, surface Surface) Result<Size, Error> {
         if surface.window != self.handle return .Err(.Invalid)

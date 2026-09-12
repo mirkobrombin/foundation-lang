@@ -851,6 +851,9 @@ if(BUILD_TESTING)
         add_executable(foundation_sdl_abi_test providers/sdl/tests/abi_test.c)
         add_executable(foundation_sdl_header_test providers/sdl/tests/header_test.cpp)
         add_executable(foundation_sdl_dialog_test providers/sdl/tests/dialog_test.c)
+        add_executable(foundation_sdl_edit_test providers/sdl/tests/edit_test.c)
+        add_executable(foundation_sdl_overlay_identity_test
+            providers/sdl/tests/overlay_identity_test.c)
         add_executable(foundation_sdl_hit_test_test providers/sdl/tests/hit_test_test.c)
         add_executable(foundation_sdl_terminal_test
             providers/sdl/tests/terminal_emulator_test.c
@@ -862,11 +865,15 @@ if(BUILD_TESTING)
         target_link_libraries(foundation_sdl_abi_test PRIVATE foundation_sdl_provider)
         target_link_libraries(foundation_sdl_header_test PRIVATE foundation_sdl_provider)
         target_link_libraries(foundation_sdl_dialog_test PRIVATE foundation_sdl_provider)
+        target_link_libraries(foundation_sdl_edit_test PRIVATE foundation_sdl_provider)
+        target_link_libraries(foundation_sdl_overlay_identity_test PRIVATE foundation_sdl_provider)
         target_link_libraries(foundation_sdl_hit_test_test PRIVATE foundation_sdl_provider)
         foreach(sdl_test_target IN ITEMS
                 foundation_sdl_abi_test
                 foundation_sdl_header_test
                 foundation_sdl_dialog_test
+                foundation_sdl_edit_test
+                foundation_sdl_overlay_identity_test
                 foundation_sdl_hit_test_test
                 foundation_sdl_terminal_test)
             if(MSVC)
@@ -884,6 +891,8 @@ if(BUILD_TESTING)
         add_test(NAME providers.sdl.abi-c COMMAND foundation_sdl_abi_test)
         add_test(NAME providers.sdl.abi-cpp COMMAND foundation_sdl_header_test)
         add_test(NAME providers.sdl.dialog COMMAND foundation_sdl_dialog_test)
+        add_test(NAME providers.sdl.edit COMMAND foundation_sdl_edit_test)
+        add_test(NAME providers.sdl.overlay-identity COMMAND foundation_sdl_overlay_identity_test)
         add_test(NAME providers.sdl.hit-test COMMAND foundation_sdl_hit_test_test)
         add_test(NAME providers.sdl.terminal COMMAND foundation_sdl_terminal_test)
         add_test(

@@ -8,7 +8,7 @@ The SDK includes `foundation.ui.sdl`, an optional SDL3 and Nuklear provider. Imp
 adds its native sources and SDL3 link requirement through `foundation.package`.
 
 ```text
-dependency foundation.ui.sdl 1.8.0 sdk providers/sdl
+dependency foundation.ui.sdl 1.15.0 sdk providers/sdl
 ```
 
 ```foundation
@@ -52,7 +52,8 @@ fn main() i32 {
 `Window` owns the native window, renderer, fonts, terminal state, edit buffers, textures, and input
 queues. Dropping it releases those resources. `BeginFrame` returns `Active`, `Idle`, or `Closing`;
 an idle result permits the application to avoid work until its own tasks or the platform produce
-another event.
+another event. `Wait` sleeps until native input arrives or a bounded polling interval expires, so
+applications with external event sources do not need a busy loop.
 
 All live windows are opened, driven, and dropped on one application UI thread. The SDL provider
 routes events between windows on that thread; concurrent window calls are unsupported.
@@ -82,6 +83,11 @@ desktop sessions without a notification area.
 
 `SecretEdit` uses the same bounded input contract as `Edit`. It masks the value and suppresses
 clipboard copies. Provider-owned secret buffers are cleared when replaced or released.
+`EditHint` keeps the same ownership and commit result while drawing guidance only when the field
+is empty. `FormTextField` and `FormSecretField` place a label, input, and trailing gutter on the
+shared form grid so settings and account screens do not reproduce alignment ratios.
+`FormActionField` adds one adjacent semantic action to that grid and returns the edit and action
+state together.
 
 `Slider` edits an unsigned value between distinct inclusive bounds. The step must be positive and
 the SDL provider accepts values through `2147483647`. Its result reports both the current value and
@@ -134,14 +140,42 @@ same frame. `ContextMenuItem` accepts an enabled state and reports activation.
 `BeginPopover` opens a non-blocking panel below the preceding ordinary widget. Clicking the
 anchor again or clicking outside the panel closes it. A successful begin must be paired with
 `EndPopover` in the same frame. The application controls whether it requests the popover on later
-frames.
+frames. `BeginNamedPopover` gives the panel a stable application identity so an open panel cannot
+move to another anchor when the surrounding view changes.
+`ClosePopover` closes the active panel after a selection or completed action.
 
 ## Selection controls
 
 `Switch` draws a boolean control without inventing text labels or mutating application state.
+`ToggleItem` combines a title, supporting text, and switch into one compact selectable settings
+row. The full row activates the control, while the application retains ownership of its value.
+`CheckItem` represents independent membership or inclusion. `RadioItem` represents one exclusive
+option in a group. Both keep the full row clickable and expose selected and enabled states.
+`ActionItem` uses the same row treatment for a trailing secondary, primary, or destructive action.
+`ChoiceItem` presents a current value on the same compact row and acts as an anchor for a picker or
+popover. `BeginChoicePopover` combines that row with a named anchored panel, keeps its open state in
+the provider, and removes application-owned toggle state. `SectionHeading` applies the shared
+heading, supporting-text, and spacing treatment used by settings pages.
+`EmptyState` centers an interface symbol, title, and supporting text in the active cell for views
+without content.
+`Notice` presents short status or error feedback without turning it into another action.
 `Segment` draws one item in a connected selection group. Adjacent segments declare `First`,
-`Middle`, and `Last` positions; a standalone item uses `Single`. Both controls accept an enabled
-state and report activation to the application.
+`Middle`, and `Last` positions; a standalone item uses `Single`. `Segmented` builds an equal-width
+group from a borrowed string sequence and returns the selected index. These controls accept an
+enabled state and report activation to the application.
+
+`BeginPicker` opens a compact native choice list in the active cell. Each `PickerItem` reports
+selection and accepts selected and enabled states. A successful begin must be paired with
+`EndPicker` in the same frame. `BeginNamedPicker` preserves the same identity when other controls
+are inserted, removed, or reordered and prevents an open choice list from transferring to another
+view.
+
+`NavigationItem` draws a compact destination for a sidebar or section list. `SidebarItem` adds a
+semantic icon to the same destination pattern. `ListItem` draws a selectable title and supporting
+detail without assigning file semantics. These controls expose selected and enabled states.
+`ActionButton` separates visual role from enabled state through `Secondary`, `Primary`, and
+`Destructive` styles. `Progress` draws a read-only bounded indicator. `BeginToolbarPopover`
+combines a compact icon action and stable named popover for titlebar tools.
 
 ## File selection
 
@@ -149,10 +183,12 @@ state and report activation to the application.
 `PollOpenFileDialog` reports `Pending` until the picker returns `Cancelled` or an owned
 `Selected(path)` result. The terminal result is consumed by that poll, and the next poll returns
 `Idle`. Closing the window discards the pending result without leaving callback storage dangling.
+`RequestOpenFolderDialog` and `PollOpenFolderDialog` provide the same lifecycle for a native folder
+selection. A window owns at most one active file or folder dialog.
 
 ## Provider boundary
 
-The C header `foundation/ui.h` defines UI ABI 1.8. The provider reports the major in the upper 32
+The C header `foundation/ui.h` defines UI ABI 1.15. The provider reports the major in the upper 32
 bits and the minor in the lower 32 bits. Clients accept the required major and a minor at least as
 new as the contract they use. Existing functions and layouts remain stable under the Foundation
 compatibility contract; compatible releases may append functions or provider capabilities. The

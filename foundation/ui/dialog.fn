@@ -18,4 +18,22 @@ methods Window {
         if state == 3 return .Ok(FileDialog.Selected(path = path))
         .Err(.Failed)
     }
+
+    // Starts one provider-owned native folder selection.
+    fn RequestOpenFolderDialog(&self) Result<void, Error> {
+        status(requestOpenFolderDialogNative(self.handle))
+    }
+
+    // Polls the active folder selection and consumes its terminal result.
+    fn PollOpenFolderDialog(&self) Result<FolderDialog, Error> {
+        var state u64 = 0
+        var path = ""
+        const value = pollOpenFileDialogNative(self.handle, &state, &path)
+        if value != 0 return .Err(errorFor(value))
+        if state == 0 return .Ok(FolderDialog.Idle)
+        if state == 1 return .Ok(FolderDialog.Pending)
+        if state == 2 return .Ok(FolderDialog.Cancelled)
+        if state == 3 return .Ok(FolderDialog.Selected(path = path))
+        .Err(.Failed)
+    }
 }

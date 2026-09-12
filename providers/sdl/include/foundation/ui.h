@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #define FOUNDATION_UI_ABI_MAJOR 1
-#define FOUNDATION_UI_ABI_MINOR 8
+#define FOUNDATION_UI_ABI_MINOR 15
 #define FOUNDATION_UI_ABI_VERSION(major, minor) ((((uint64_t)(major)) << 32U) | (uint64_t)(minor))
 #define FOUNDATION_UI_ABI_CURRENT                                                                  \
     FOUNDATION_UI_ABI_VERSION(FOUNDATION_UI_ABI_MAJOR, FOUNDATION_UI_ABI_MINOR)
@@ -46,6 +46,12 @@ enum foundation_ui_segment_position {
     FOUNDATION_UI_SEGMENT_LAST = 3,
 };
 
+enum foundation_ui_action_style {
+    FOUNDATION_UI_ACTION_SECONDARY = 0,
+    FOUNDATION_UI_ACTION_PRIMARY = 1,
+    FOUNDATION_UI_ACTION_DESTRUCTIVE = 2,
+};
+
 enum foundation_ui_icon {
     FOUNDATION_UI_ICON_LINK = 0,
     FOUNDATION_UI_ICON_SHARE = 1,
@@ -66,6 +72,11 @@ enum foundation_ui_icon {
     FOUNDATION_UI_ICON_NOTIFICATION = 16,
     FOUNDATION_UI_ICON_DOWNLOAD = 17,
     FOUNDATION_UI_ICON_WEB = 18,
+    FOUNDATION_UI_ICON_SHIELD = 19,
+    FOUNDATION_UI_ICON_EXTENSION = 20,
+    FOUNDATION_UI_ICON_INFORMATION = 21,
+    FOUNDATION_UI_ICON_STORAGE = 22,
+    FOUNDATION_UI_ICON_ACCESSIBILITY = 23,
 };
 
 enum foundation_ui_input_kind {
@@ -123,9 +134,9 @@ extern "C" {
  *
  * Secret edits permit paste but suppress clipboard copies and wipe provider buffers before release.
  * Sliders use distinct inclusive bounds, a positive step, and values no greater than INT32_MAX.
- * A window owns at most one open-file dialog. Request starts a single-file selection on the UI
- * thread. Poll returns PENDING until the provider callback completes, then reports CANCELLED,
- * SELECTED, or a failed status once before returning to IDLE. A selected path is an owned string.
+ * A window owns at most one file or folder dialog. Request starts a selection on the UI thread.
+ * Poll returns PENDING until the provider callback completes, then reports CANCELLED, SELECTED, or
+ * a failed status once before returning to IDLE. A selected path is an owned string.
  * Closing the window discards its pending dialog result without invalidating the callback storage.
  * String output parameters must point to initialized fdn_string values. The function drops the
  * previous value and returns an owned string that the caller must drop. Other output pointers must
@@ -138,6 +149,7 @@ int32_t foundation_ui_open(const fdn_string* title, uint64_t width, uint64_t hei
 void foundation_ui_close(uint64_t* handle);
 int32_t foundation_ui_begin_frame(uint64_t handle);
 int32_t foundation_ui_end_frame(uint64_t handle);
+int32_t foundation_ui_wait(uint64_t handle, uint64_t timeout_milliseconds);
 int32_t foundation_ui_set_theme(uint64_t handle, uint64_t theme);
 int32_t foundation_ui_set_accent(uint64_t handle, uint64_t red, uint64_t green, uint64_t blue,
                                  uint64_t alpha);
@@ -148,6 +160,7 @@ int32_t foundation_ui_set_visible(uint64_t handle, bool visible);
 bool foundation_ui_visible(uint64_t handle);
 int32_t foundation_ui_raise(uint64_t handle);
 int32_t foundation_ui_request_open_file_dialog(uint64_t handle);
+int32_t foundation_ui_request_open_folder_dialog(uint64_t handle);
 int32_t foundation_ui_poll_open_file_dialog(uint64_t handle, uint64_t* state, fdn_string* path);
 int32_t foundation_ui_create_tray(uint64_t handle, const fdn_string* tooltip);
 int32_t foundation_ui_set_tray_tooltip(uint64_t handle, const fdn_string* tooltip);
@@ -164,6 +177,7 @@ void foundation_ui_row_push(uint64_t handle, float ratio);
 void foundation_ui_row_end(uint64_t handle);
 bool foundation_ui_begin_group(uint64_t handle, const fdn_string* name, bool scrollable);
 bool foundation_ui_begin_compact_group(uint64_t handle, const fdn_string* name);
+bool foundation_ui_begin_surface_group(uint64_t handle, const fdn_string* name);
 void foundation_ui_end_group(uint64_t handle);
 void foundation_ui_space(uint64_t handle, float height);
 void foundation_ui_empty(uint64_t handle);
@@ -188,20 +202,63 @@ int32_t foundation_ui_terminal_commit(uint64_t handle, uint64_t length);
 int32_t foundation_ui_terminal(uint64_t handle, float height, fdn_string* input, uint64_t* columns,
                                uint64_t* rows, bool* resized);
 bool foundation_ui_button(uint64_t handle, const fdn_string* value, bool selected, bool primary);
+bool foundation_ui_action_button(uint64_t handle, const fdn_string* value, uint64_t style,
+                                 bool enabled);
 bool foundation_ui_switch(uint64_t handle, bool value, bool enabled);
+bool foundation_ui_toggle_item(uint64_t handle, const fdn_string* title, const fdn_string* detail,
+                               bool value, bool enabled);
+bool foundation_ui_check_item(uint64_t handle, const fdn_string* title, const fdn_string* detail,
+                              bool value, bool enabled);
+bool foundation_ui_radio_item(uint64_t handle, const fdn_string* title, const fdn_string* detail,
+                              bool selected, bool enabled);
+bool foundation_ui_action_item(uint64_t handle, const fdn_string* title, const fdn_string* detail,
+                               const fdn_string* action, uint64_t style, bool enabled);
+bool foundation_ui_choice_item(uint64_t handle, const fdn_string* title, const fdn_string* detail,
+                               const fdn_string* value, bool enabled);
+void foundation_ui_property_item(uint64_t handle, const fdn_string* title, const fdn_string* value);
+void foundation_ui_empty_state(uint64_t handle, uint64_t icon, const fdn_string* title,
+                               const fdn_string* detail);
+void foundation_ui_notice(uint64_t handle, const fdn_string* title, const fdn_string* detail,
+                          uint64_t tone);
 bool foundation_ui_segment(uint64_t handle, const fdn_string* value, bool selected,
                            uint64_t position, bool enabled);
 int32_t foundation_ui_slider(uint64_t handle, uint64_t value, uint64_t minimum, uint64_t maximum,
                              uint64_t step, uint64_t* result, bool* changed);
 bool foundation_ui_file_entry(uint64_t handle, const fdn_string* name, const fdn_string* details,
                               bool directory);
+bool foundation_ui_navigation_item(uint64_t handle, const fdn_string* value, bool selected,
+                                   bool enabled);
+bool foundation_ui_sidebar_item(uint64_t handle, uint64_t icon, const fdn_string* value,
+                                bool selected, bool enabled);
+bool foundation_ui_list_item(uint64_t handle, const fdn_string* title, const fdn_string* detail,
+                             bool selected, bool enabled);
+bool foundation_ui_begin_picker(uint64_t handle, const fdn_string* value, float height);
+bool foundation_ui_begin_named_picker(uint64_t handle, const fdn_string* name,
+                                      const fdn_string* value, float height);
+bool foundation_ui_picker_item(uint64_t handle, const fdn_string* value, bool selected,
+                               bool enabled);
+void foundation_ui_end_picker(uint64_t handle);
+int32_t foundation_ui_progress(uint64_t handle, uint64_t value, uint64_t maximum);
 bool foundation_ui_begin_context_menu(uint64_t handle, float width, uint64_t items);
 bool foundation_ui_context_menu_item(uint64_t handle, const fdn_string* label, bool enabled);
 void foundation_ui_end_context_menu(uint64_t handle);
 bool foundation_ui_begin_popover(uint64_t handle, float width, float height);
+bool foundation_ui_begin_named_popover(uint64_t handle, const fdn_string* name, float width,
+                                       float height);
+bool foundation_ui_begin_toolbar_popover(uint64_t handle, const fdn_string* name, uint64_t icon,
+                                         const fdn_string* label, float width, float height,
+                                         bool enabled);
+void foundation_ui_close_popover(uint64_t handle);
 void foundation_ui_end_popover(uint64_t handle);
 int32_t foundation_ui_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,
                            uint64_t capacity, fdn_string* result, bool* changed, bool* committed);
+int32_t foundation_ui_edit_hint(uint64_t handle, const fdn_string* name, const fdn_string* value,
+                                const fdn_string* hint, uint64_t capacity, fdn_string* result,
+                                bool* changed, bool* committed);
+int32_t foundation_ui_action_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,
+                                  const fdn_string* hint, const fdn_string* action, uint64_t style,
+                                  uint64_t capacity, bool enabled, fdn_string* result,
+                                  bool* changed, bool* committed, bool* activated);
 int32_t foundation_ui_secret_edit(uint64_t handle, const fdn_string* name, const fdn_string* value,
                                   uint64_t capacity, fdn_string* result, bool* changed,
                                   bool* committed);
@@ -211,6 +268,7 @@ uint8_t* foundation_ui_image_buffer(uint64_t handle, uint64_t surface, uint64_t 
                                     uint64_t height, uint64_t* capacity);
 int32_t foundation_ui_image_commit(uint64_t handle, uint64_t surface);
 int32_t foundation_ui_image(uint64_t handle, uint64_t surface);
+int32_t foundation_ui_image_fill(uint64_t handle, uint64_t surface);
 int32_t foundation_ui_surface_size(uint64_t handle, uint64_t surface, uint64_t* width,
                                    uint64_t* height);
 int32_t foundation_ui_set_surface_input_mode(uint64_t handle, uint64_t surface, uint64_t mode);
