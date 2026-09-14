@@ -376,7 +376,7 @@ class LlvmEmitter {
             module_.addModuleFlag(llvm::Module::Warning, "Dwarf Version", 5);
         }
         debugBuilder_->createCompileUnit(
-            llvm::dwarf::DW_LANG_C11, primaryDebugFile_, "Foundation Lang 0.1.0",
+            llvm::dwarf::DW_LANG_C11, primaryDebugFile_, "Foundation Lang 1.0.0",
             options_.optimize, "", 0);
     }
 

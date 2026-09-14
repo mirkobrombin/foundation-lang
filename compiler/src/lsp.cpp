@@ -2005,7 +2005,7 @@ class LanguageServer {
                                    Json::object({{"supported", true},
                                                  {"changeNotifications", true}})}})}})},
              {"serverInfo",
-              Json::object({{"name", "foundation-ls"}, {"version", "0.1.0"}})}});
+              Json::object({{"name", "foundation-ls"}, {"version", "1.0.0"}})}});
     }
 
     void didOpen(const Json *params) {

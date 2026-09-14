@@ -37,7 +37,7 @@ set(llvm_binary "${OUTPUT_DIRECTORY}/hello-llvm${EXECUTABLE_SUFFIX}")
 set(c_binary "${OUTPUT_DIRECTORY}/hello-c${EXECUTABLE_SUFFIX}")
 
 run_checked("version" "${COMPILER}" version)
-if(NOT command_output STREQUAL "foundationc 0.1.0\n")
+if(NOT command_output STREQUAL "foundationc 1.0.0\n")
     message(FATAL_ERROR "version output mismatch:\n${command_output}")
 endif()
 

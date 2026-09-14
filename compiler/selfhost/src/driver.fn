@@ -206,7 +206,7 @@ fn compilerPackageArguments(args [String]) own arena<String> {
 fn runCompilerCommand(args [String]) Option<i32> {
     const command = compilerArgument(args, 0)
     if (command == "version" || command == "--version") && len(args) == 1 {
-        discard io.WriteStdoutText("foundationc 0.1.0\n")
+        discard io.WriteStdoutText("foundationc 1.0.0\n")
         return .Some(0)
     }
     if (command == "help" || command == "--help" || command == "-h") &&

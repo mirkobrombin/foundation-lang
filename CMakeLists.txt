@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(foundation_lang VERSION 0.1.0 LANGUAGES C CXX)
+project(foundation_lang VERSION 1.0.0 LANGUAGES C CXX)
 
 find_package(Threads REQUIRED)
 find_package(LLVM 21.1 CONFIG QUIET)
