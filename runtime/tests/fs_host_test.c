@@ -8,7 +8,10 @@
 #include <stdio.h>
 #include <string.h>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -29,6 +32,85 @@ static int join_path(char *result, size_t capacity, const fdn_string *root,
     const int length = snprintf(result, capacity, "%.*s/%s", (int)root->length,
                                 root->data, suffix);
     return length >= 0 && (size_t)length < capacity;
+}
+
+typedef struct {
+    fdn_string target;
+    char staging[4096];
+    int failed;
+} replace_worker;
+
+#if defined(_WIN32)
+static DWORD WINAPI replace_worker_main(LPVOID argument) {
+#else
+static void *replace_worker_main(void *argument) {
+#endif
+    replace_worker *worker = argument;
+    fdn_string staging = text(worker->staging);
+    fdn_string payload = fdn_string_static("writer\n", 7);
+    for (int round = 0; round < 32 && !worker->failed; ++round) {
+        fdn_string contents = fdn_string_static("", 0);
+        uint32_t kind = 0;
+        if (foundation_runtime_fs_write_text_atomic(&staging, &payload, 7) != 0 ||
+            foundation_runtime_fs_replace(&staging, &worker->target) != 0 ||
+            foundation_runtime_fs_kind(&worker->target, &kind) != 0 || kind != 1 ||
+            foundation_runtime_fs_read_text_sync_limited(&worker->target, 16, &contents) != 0 ||
+            contents.length == 0) {
+            worker->failed = 1;
+        }
+        fdn_string_drop(&contents);
+    }
+#if defined(_WIN32)
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+static int concurrent_replacements_succeed(const fdn_string *root, fdn_string target) {
+    replace_worker workers[8];
+#if defined(_WIN32)
+    HANDLE threads[8];
+#else
+    pthread_t threads[8];
+#endif
+    int started = 0;
+    int failed = 0;
+    for (int index = 0; index < 8; ++index) {
+        char name[64];
+        (void)snprintf(name, sizeof(name), "nested/inner/writer-%d.txt", index);
+        workers[index].target = target;
+        workers[index].failed = 0;
+        if (!join_path(workers[index].staging, sizeof(workers[index].staging), root, name)) {
+            return 0;
+        }
+    }
+    for (; started < 8; ++started) {
+#if defined(_WIN32)
+        threads[started] =
+            CreateThread(NULL, 0, replace_worker_main, &workers[started], 0, NULL);
+        if (threads[started] == NULL) {
+            failed = 1;
+            break;
+        }
+#else
+        if (pthread_create(&threads[started], NULL, replace_worker_main,
+                           &workers[started]) != 0) {
+            failed = 1;
+            break;
+        }
+#endif
+    }
+    for (int index = 0; index < started; ++index) {
+#if defined(_WIN32)
+        failed |= WaitForSingleObject(threads[index], INFINITE) != WAIT_OBJECT_0;
+        (void)CloseHandle(threads[index]);
+#else
+        failed |= pthread_join(threads[index], NULL) != 0;
+#endif
+        failed |= workers[index].failed;
+    }
+    return !failed;
 }
 
 static int run_test(int argc, char **argv) {
@@ -146,6 +228,11 @@ static int run_test(int argc, char **argv) {
         return 4;
     }
     fdn_string_drop(&contents);
+    if (!concurrent_replacements_succeed(&root, moved_value)) {
+        fdn_string_drop(&canonical);
+        fdn_string_drop(&root);
+        return 10;
+    }
 #if defined(_WIN32)
     if (foundation_runtime_fs_is_executable(&moved_value, &executable) != 0 ||
         executable || foundation_runtime_fs_set_executable(&moved_value, true) != 10) {

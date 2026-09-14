@@ -126,6 +126,18 @@ static int32_t fdn_host_windows_status(DWORD error) {
     return FDN_FS_IO;
 }
 
+/* A concurrent replace can leave the target briefly shared or delete-pending,
+   so callers retry these errors for up to 100 attempts. */
+static int fdn_host_windows_retry(DWORD error, unsigned int attempt) {
+    if ((error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION &&
+         error != ERROR_LOCK_VIOLATION) ||
+        attempt + 1 >= 100) {
+        return 0;
+    }
+    Sleep(1);
+    return 1;
+}
+
 static wchar_t *fdn_host_windows_path(const fdn_string *path) {
     wchar_t *result;
     int length;
@@ -285,17 +297,27 @@ int32_t foundation_runtime_fs_read_bytes_sync_limited(const fdn_string *path,
         HANDLE file;
         BY_HANDLE_FILE_INFORMATION info;
         uint64_t native_length;
+        DWORD open_error = ERROR_SUCCESS;
         if (native_path == NULL) {
             return FDN_FS_INVALID_PATH;
         }
-        file = CreateFileW(native_path, GENERIC_READ,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           NULL, OPEN_EXISTING,
-                           FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
-                           NULL);
+        for (unsigned int attempt = 0;; ++attempt) {
+            file = CreateFileW(native_path, GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               NULL, OPEN_EXISTING,
+                               FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
+                               NULL);
+            if (file != INVALID_HANDLE_VALUE) {
+                break;
+            }
+            open_error = GetLastError();
+            if (!fdn_host_windows_retry(open_error, attempt)) {
+                break;
+            }
+        }
         fdn_dealloc(native_path);
         if (file == INVALID_HANDLE_VALUE) {
-            return fdn_host_windows_status(GetLastError());
+            return fdn_host_windows_status(open_error);
         }
         if (GetFileInformationByHandle(file, &info) == 0) {
             status = fdn_host_windows_status(GetLastError());
@@ -765,13 +787,22 @@ int32_t foundation_runtime_fs_kind(const fdn_string *path, uint32_t *kind) {
     {
         wchar_t *native_path = fdn_host_windows_path(path);
         DWORD attributes;
+        DWORD error = ERROR_SUCCESS;
         if (native_path == NULL) {
             return FDN_FS_INVALID_PATH;
         }
-        attributes = GetFileAttributesW(native_path);
+        for (unsigned int attempt = 0;; ++attempt) {
+            attributes = GetFileAttributesW(native_path);
+            if (attributes != INVALID_FILE_ATTRIBUTES) {
+                break;
+            }
+            error = GetLastError();
+            if (!fdn_host_windows_retry(error, attempt)) {
+                break;
+            }
+        }
         fdn_dealloc(native_path);
         if (attributes == INVALID_FILE_ATTRIBUTES) {
-            const DWORD error = GetLastError();
             if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
                 return 0;
             }
@@ -942,10 +973,15 @@ static int32_t fdn_host_two_paths(const fdn_string *source,
         fdn_dealloc(to);
         return FDN_FS_INVALID_PATH;
     }
-    moved = replace != 0
-                ? MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
-                : MoveFileW(from, to);
-    error = moved != 0 ? ERROR_SUCCESS : GetLastError();
+    for (unsigned int attempt = 0;; ++attempt) {
+        moved = replace != 0
+                    ? MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+                    : MoveFileW(from, to);
+        error = moved != 0 ? ERROR_SUCCESS : GetLastError();
+        if (moved != 0 || replace == 0 || !fdn_host_windows_retry(error, attempt)) {
+            break;
+        }
+    }
     fdn_dealloc(from);
     fdn_dealloc(to);
     return moved != 0 ? 0 : fdn_host_windows_status(error);

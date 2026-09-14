@@ -1931,7 +1931,15 @@ static FILE *fdn_fs_open_file(const fdn_string *path, int32_t *status) {
         if (native_path == NULL) {
             return NULL;
         }
-        file = _wfsopen(native_path, L"rb", _SH_DENYNO);
+        for (unsigned int attempt = 0;; ++attempt) {
+            file = _wfsopen(native_path, L"rb", _SH_DENYNO);
+            if (file != NULL || errno != EACCES || attempt + 1 >= 100 ||
+                (_doserrno != ERROR_ACCESS_DENIED && _doserrno != ERROR_SHARING_VIOLATION &&
+                 _doserrno != ERROR_LOCK_VIOLATION)) {
+                break;
+            }
+            Sleep(1);
+        }
         fdn_dealloc(native_path);
     }
 #else
