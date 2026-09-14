@@ -212,7 +212,8 @@ fn compilerAddPlatformLinks(&command process.Command) bool {
 
 @target(windows)
 fn compilerAddPlatformLinks(&command process.Command) bool {
-    compilerAddArgument(&command, "-lbcrypt") &&
+    compilerAddArgument(&command, "-Wl,/STACK:16777216") &&
+        compilerAddArgument(&command, "-lbcrypt") &&
         compilerAddArgument(&command, "-lgdi32") &&
         compilerAddArgument(&command, "-liphlpapi") &&
         compilerAddArgument(&command, "-luser32") &&

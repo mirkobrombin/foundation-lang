@@ -78,7 +78,7 @@ if(C_COMPILER_ID STREQUAL "MSVC")
         COMMAND "${C_COMPILER}" /nologo /std:c11 /W4 /WX
                 /DFOUNDATION_VERIFY_ALLOCATIONS "${msvc_source}" ${runtime_sources}
                 "/I${RUNTIME_INCLUDE}" ${platform_libraries} "/Fe:${executable}"
-                "/Fo:${object_directory}/" /link /STACK:8388608
+                "/Fo:${object_directory}/" /link /STACK:16777216
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
         ERROR_VARIABLE build_error

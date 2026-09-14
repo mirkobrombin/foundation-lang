@@ -583,7 +583,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
         arguments.push_back("iphlpapi.lib");
         arguments.push_back("user32.lib");
         arguments.push_back("ws2_32.lib");
-        arguments.insert(arguments.end(), {"/link", "/Brepro", "/STACK:8388608"});
+        arguments.insert(arguments.end(), {"/link", "/Brepro", "/STACK:16777216"});
         return arguments;
     }
 

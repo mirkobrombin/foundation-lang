@@ -22,7 +22,7 @@ if(C_COMPILER_ID STREQUAL "MSVC")
     execute_process(
         COMMAND "${C_COMPILER}" /nologo /std:c11 /O2 /W4 /WX "${GENERATED}"
                 "${RUNTIME_SOURCE}" "/I${RUNTIME_INCLUDE}" bcrypt.lib
-                "/Fe:${executable}" "/Fo:${object_directory}/" /link /STACK:8388608
+                "/Fe:${executable}" "/Fo:${object_directory}/" /link /STACK:16777216
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
         ERROR_VARIABLE build_error
