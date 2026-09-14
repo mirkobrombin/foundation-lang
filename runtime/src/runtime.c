@@ -1935,7 +1935,9 @@ static FILE *fdn_fs_open_file(const fdn_string *path, int32_t *status) {
             file = _wfsopen(native_path, L"rb", _SH_DENYNO);
             if (file != NULL || errno != EACCES || attempt + 1 >= 100 ||
                 (_doserrno != ERROR_ACCESS_DENIED && _doserrno != ERROR_SHARING_VIOLATION &&
-                 _doserrno != ERROR_LOCK_VIOLATION)) {
+                 _doserrno != ERROR_LOCK_VIOLATION) ||
+                (_doserrno == ERROR_ACCESS_DENIED &&
+                 GetFileAttributesW(native_path) != INVALID_FILE_ATTRIBUTES)) {
                 break;
             }
             Sleep(1);

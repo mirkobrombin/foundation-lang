@@ -127,11 +127,22 @@ static int32_t fdn_host_windows_status(DWORD error) {
 }
 
 /* A concurrent replace can leave the target briefly shared or delete-pending,
-   so callers retry these errors for up to 100 attempts. */
-static int fdn_host_windows_retry(DWORD error, unsigned int attempt) {
-    if ((error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION &&
-         error != ERROR_LOCK_VIOLATION) ||
-        attempt + 1 >= 100) {
+   so callers retry these errors for up to 100 attempts. An access error on a
+   path whose attributes are still readable is a real failure, except when a
+   replacement targets an ordinary file that another handle holds open. */
+static int fdn_host_windows_retry(const wchar_t *path, DWORD error, unsigned int attempt,
+                                  int replace) {
+    if (attempt + 1 >= 100) {
+        return 0;
+    }
+    if (error == ERROR_ACCESS_DENIED) {
+        const DWORD attributes = GetFileAttributesW(path);
+        if (attributes != INVALID_FILE_ATTRIBUTES &&
+            (replace == 0 ||
+             (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY)) != 0)) {
+            return 0;
+        }
+    } else if (error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION) {
         return 0;
     }
     Sleep(1);
@@ -311,7 +322,7 @@ int32_t foundation_runtime_fs_read_bytes_sync_limited(const fdn_string *path,
                 break;
             }
             open_error = GetLastError();
-            if (!fdn_host_windows_retry(open_error, attempt)) {
+            if (!fdn_host_windows_retry(native_path, open_error, attempt, 0)) {
                 break;
             }
         }
@@ -797,7 +808,7 @@ int32_t foundation_runtime_fs_kind(const fdn_string *path, uint32_t *kind) {
                 break;
             }
             error = GetLastError();
-            if (!fdn_host_windows_retry(error, attempt)) {
+            if (!fdn_host_windows_retry(native_path, error, attempt, 0)) {
                 break;
             }
         }
@@ -978,7 +989,7 @@ static int32_t fdn_host_two_paths(const fdn_string *source,
                     ? MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
                     : MoveFileW(from, to);
         error = moved != 0 ? ERROR_SUCCESS : GetLastError();
-        if (moved != 0 || replace == 0 || !fdn_host_windows_retry(error, attempt)) {
+        if (moved != 0 || replace == 0 || !fdn_host_windows_retry(to, error, attempt, 1)) {
             break;
         }
     }
