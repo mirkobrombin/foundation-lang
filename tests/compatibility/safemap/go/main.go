@@ -37,10 +37,10 @@ func main() {
 	fmt.Println(safemap.StringHasher("hello"))
 
 	sharded := safemap.NewSharded[string, int](safemap.StringHasher, 3).
-		WithExpiry(time.Millisecond)
+		WithExpiry(250 * time.Millisecond)
 	sharded.Set("short", 7)
 	fmt.Println(sharded.Has("short"))
-	time.Sleep(2 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	fmt.Println(sharded.Has("short"))
 	fmt.Println("safemap compatibility ok")
 }

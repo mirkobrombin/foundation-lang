@@ -121,13 +121,13 @@ fn main() i32 {
         $safemap.StringHasher,
         3
     )
-    const configured = sharded.WithExpiry(time.Milliseconds(1))
+    const configured = sharded.WithExpiry(time.Milliseconds(250))
     requiredVoid($configured.wait())
     const stored = sharded.Set("short", 7)
     requiredVoid($stored.wait())
     const before = sharded.Has("short")
     print(format.Bool(requiredBool($before.wait())))
-    waitFor(time.Milliseconds(2))
+    waitFor(time.Milliseconds(500))
     const after = sharded.Has("short")
     print(format.Bool(requiredBool($after.wait())))
     print("safemap compatibility ok")
