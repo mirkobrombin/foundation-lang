@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foundation Lang</title>
+<meta name="description" content="Foundation is a compiled programming language where services, routes, and contracts are declared and checked in source.">
+<meta name="theme-color" content="#050a1c">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    background: linear-gradient(125deg, #03060f, #081533, #050b1f, #0c1d45, #040914);
+    background-size: 400% 400%;
+    animation: drift 36s ease-in-out infinite;
+  }
+
+  .blobs {
+    position: fixed;
+    inset: -20vmax;
+    pointer-events: none;
+    filter: blur(90px);
+  }
+
+  .blob {
+    position: absolute;
+    width: 46vmax;
+    height: 46vmax;
+    border-radius: 50%;
+    opacity: 0.32;
+    mix-blend-mode: screen;
+  }
+
+  .blob:nth-child(1) {
+    top: 18%;
+    left: 12%;
+    background: radial-gradient(circle, #1d4ed8 0%, transparent 68%);
+    animation: wander-a 48s ease-in-out infinite;
+  }
+
+  .blob:nth-child(2) {
+    top: 42%;
+    left: 48%;
+    background: radial-gradient(circle, #4338ca 0%, transparent 66%);
+    animation: wander-b 56s ease-in-out infinite;
+  }
+
+  .blob:nth-child(3) {
+    top: 8%;
+    left: 56%;
+    background: radial-gradient(circle, #0e7490 0%, transparent 64%);
+    opacity: 0.22;
+    animation: wander-c 64s ease-in-out infinite;
+  }
+
+  .blob:nth-child(4) {
+    top: 56%;
+    left: 6%;
+    background: radial-gradient(circle, #1e3a8a 0%, transparent 70%);
+    animation: wander-b 72s ease-in-out infinite reverse;
+  }
+
+  .shade {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 35%, rgba(2, 4, 12, 0.72) 100%);
+  }
+
+  main {
+    position: relative;
+    z-index: 1;
+  }
+
+  .logo {
+    display: block;
+    width: clamp(64px, 9vw, 120px);
+    height: auto;
+    filter: drop-shadow(0 0 28px rgba(96, 140, 255, 0.35));
+  }
+
+  .hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  @keyframes drift {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+
+  @keyframes wander-a {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33% { transform: translate(14vmax, 8vmax) scale(1.12); }
+    66% { transform: translate(-6vmax, 14vmax) scale(0.92); }
+  }
+
+  @keyframes wander-b {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    40% { transform: translate(-16vmax, -10vmax) scale(1.08); }
+    75% { transform: translate(8vmax, -4vmax) scale(0.94); }
+  }
+
+  @keyframes wander-c {
+    0%, 100% { transform: translate(0, 0) scale(0.95); }
+    50% { transform: translate(-12vmax, 16vmax) scale(1.15); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body,
+    .blob {
+      animation: none;
+    }
+  }
+</style>
+</head>
+<body>
+  <div class="blobs" aria-hidden="true">
+    <div class="blob"></div>
+    <div class="blob"></div>
+    <div class="blob"></div>
+    <div class="blob"></div>
+  </div>
+  <div class="shade" aria-hidden="true"></div>
+  <main>
+    <h1 class="hidden">Foundation Lang</h1>
+    <img class="logo" src="logo.svg" alt="Foundation" width="382" height="612">
+  </main>
+</body>
+</html>
