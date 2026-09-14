@@ -69,6 +69,20 @@ bool replaceFile(const std::filesystem::path &source,
 #endif
 }
 
+// A concurrent writer can hold the destination in a transient replace or
+// delete-pending state on Windows, so inspection shares the replace budget.
+bool retryDestination(unsigned int attempt) {
+#ifdef _WIN32
+    if (attempt + 1 < 100) {
+        Sleep(1);
+        return true;
+    }
+#else
+    static_cast<void>(attempt);
+#endif
+    return false;
+}
+
 } // namespace
 
 PackageMutationResult writePackageLockAtomically(const std::filesystem::path &path,
@@ -96,8 +110,19 @@ PackageMutationResult writePackageLockAtomically(const std::filesystem::path &pa
         return result;
     }
 
-    const auto destinationStatus = std::filesystem::symlink_status(path, error);
-    if (!error && destinationStatus.type() != std::filesystem::file_type::not_found) {
+    for (unsigned int attempt = 0;; ++attempt) {
+        error.clear();
+        const auto destinationStatus = std::filesystem::symlink_status(path, error);
+        if (error && error != std::errc::no_such_file_or_directory) {
+            if (retryDestination(attempt)) {
+                continue;
+            }
+            addError(result.errors, path, "FDN4083", "cannot inspect lock destination");
+            return result;
+        }
+        if (error || destinationStatus.type() == std::filesystem::file_type::not_found) {
+            break;
+        }
         if (!std::filesystem::is_regular_file(destinationStatus) ||
             std::filesystem::is_symlink(destinationStatus)) {
             addError(result.errors, path, "FDN4082",
@@ -105,16 +130,16 @@ PackageMutationResult writePackageLockAtomically(const std::filesystem::path &pa
             return result;
         }
         const auto current = readFile(path);
-        if (!current.has_value()) {
+        if (current.has_value()) {
+            if (*current == content) {
+                return result;
+            }
+            break;
+        }
+        if (!retryDestination(attempt)) {
             addError(result.errors, path, "FDN4083", "cannot read existing lockfile");
             return result;
         }
-        if (*current == content) {
-            return result;
-        }
-    } else if (error && error != std::errc::no_such_file_or_directory) {
-        addError(result.errors, path, "FDN4083", "cannot inspect lock destination");
-        return result;
     }
     error.clear();
 

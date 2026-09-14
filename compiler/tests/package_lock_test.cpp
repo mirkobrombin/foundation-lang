@@ -81,6 +81,9 @@ void concurrentLockWritesRemainComplete() {
     }
     for (const auto &result : results) {
         expect(result.errors.empty(), "concurrent lock writer publishes without error");
+        for (const auto &error : result.errors) {
+            std::cerr << "  " << error.code << ": " << error.message << '\n';
+        }
     }
     const auto parsed = foundation::readPackageLock(fixture.lockPath);
     expect(parsed.value.has_value() &&
