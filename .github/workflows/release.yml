@@ -171,7 +171,16 @@ jobs:
           -P tests/prepare-host-locks.cmake
 
       - name: Test
+        if: runner.os != 'Windows'
         run: ctest --test-dir build/release -C Release --output-on-failure --parallel 4
+
+      - name: Test on Windows
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set VS_PATH=%%i
+          call "%VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=x64
+          ctest --test-dir build/release -C Release --output-on-failure --parallel 4 || exit /b 1
 
       - name: Package Unix SDK
         if: runner.os != 'Windows'
