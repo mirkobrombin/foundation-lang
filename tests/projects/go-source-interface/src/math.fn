@@ -604,7 +604,7 @@ fn IsWithin(value i32, minimum i32, maximum i32) bool {
 }
 
 fn PrintLines(name String) void {
-    print("héllo " + name)
+    print(name + " Foundation")
     print("")
     print("tab\tquote\"")
 }

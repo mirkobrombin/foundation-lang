@@ -410,7 +410,7 @@ func TestTranslatedPrintWritesFoundationLines(t *testing.T) {
 	}
 	stdout := os.Stdout
 	os.Stdout = writer
-	PrintLines("Foundation")
+	PrintLines("h\xc3\xa9llo")
 	os.Stdout = stdout
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
@@ -419,7 +419,7 @@ func TestTranslatedPrintWritesFoundationLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []byte("héllo Foundation\n\ntab\tquote\"\n")
+	want := []byte("h\xc3\xa9llo Foundation\n\ntab\tquote\"\n")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("PrintLines wrote %q, want %q", got, want)
 	}
