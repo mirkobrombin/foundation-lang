@@ -1133,8 +1133,16 @@ Compilation compile(const std::filesystem::path &path,
     }
 
     auto fir = lower(analysis.program, *analysis.semantic);
-    compilation.generatedC = emitC(fir, path.generic_string());
-    compilation.generatedCHeader = emitCHeader(fir);
+    if (target == TargetPlatform::Freestanding) {
+        // Freestanding code has no entry point: the root package's C exports are the roots.
+        const auto rootPackage =
+            compilation.sources.empty() ? std::string{} : compilation.sources.front().packageName;
+        compilation.generatedC = emitPackageC(fir, rootPackage, path.generic_string(), true);
+        compilation.generatedCHeader = emitCHeader(fir, true);
+    } else {
+        compilation.generatedC = emitC(fir, path.generic_string());
+        compilation.generatedCHeader = emitCHeader(fir);
+    }
     compilation.generatedMetadata = emitMetadata(fir);
     compilation.fir = std::move(fir);
     return compilation;

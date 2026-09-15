@@ -5943,7 +5943,8 @@ void emitWorkflowBody(std::ostringstream &out, const FirProgram &program,
 
 std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
                       std::optional<FirFunctionId> testEntry,
-                      std::optional<std::string_view> libraryPackage = std::nullopt) {
+                      std::optional<std::string_view> libraryPackage = std::nullopt,
+                      bool freestanding = false) {
     auto program = libraryPackage.has_value()
                        ? specializePackageInterface(source, *libraryPackage)
                        : prepareFirForBackend(source, testEntry);
@@ -5972,24 +5973,33 @@ std::string emitCImpl(const FirProgram &source, std::string_view sourcePath,
         }
     }
     std::ostringstream out;
-    out << "#include <stdbool.h>\n";
-    out << "#include <stdint.h>\n";
-    out << "#include <math.h>\n";
-    if (usesFunctionPointerCast ||
-        (!libraryPackage.has_value() && !testEntry.has_value() &&
-         !program.functions[program.main].parameters.empty())) {
-        out << "#include <string.h>\n";
+    if (freestanding) {
+        out << "#include <stdbool.h>\n";
+        out << "#include <stddef.h>\n";
+        out << "#include <stdint.h>\n";
+        out << "#include \"foundation/runtime_core.h\"\n\n";
+    } else {
+        out << "#include <stdbool.h>\n";
+        out << "#include <stdint.h>\n";
+        out << "#include <math.h>\n";
+        if (usesFunctionPointerCast ||
+            (!libraryPackage.has_value() && !testEntry.has_value() &&
+             !program.functions[program.main].parameters.empty())) {
+            out << "#include <string.h>\n";
+        }
+        out << "#include \"foundation/runtime.h\"\n\n";
     }
-    out << "#include \"foundation/runtime.h\"\n\n";
     out << "#if defined(__GNUC__) || defined(__clang__)\n";
     out << "#define FDN_MAYBE_UNUSED __attribute__((unused))\n";
     out << "#else\n";
     out << "#define FDN_MAYBE_UNUSED\n";
     out << "#endif\n\n";
-    out << "typedef struct fdn_channel_pair {\n";
-    out << "    fdn_channel *fdn_field_0;\n";
-    out << "    fdn_channel *fdn_field_1;\n";
-    out << "} fdn_channel_pair;\n\n";
+    if (!freestanding) {
+        out << "typedef struct fdn_channel_pair {\n";
+        out << "    fdn_channel *fdn_field_0;\n";
+        out << "    fdn_channel *fdn_field_1;\n";
+        out << "} fdn_channel_pair;\n\n";
+    }
     for (std::size_t index = 0; index < program.structs.size(); ++index) {
         out << "typedef struct fdn_struct_" << index << " fdn_struct_" << index << ";\n";
     }
@@ -6303,8 +6313,8 @@ std::string emitC(const FirProgram &source, std::string_view sourcePath) {
 }
 
 std::string emitPackageC(const FirProgram &source, std::string_view packageName,
-                         std::string_view sourcePath) {
-    return emitCImpl(source, sourcePath, std::nullopt, packageName);
+                         std::string_view sourcePath, bool freestanding) {
+    return emitCImpl(source, sourcePath, std::nullopt, packageName, freestanding);
 }
 
 std::string emitTestC(const FirProgram &source, FirFunctionId test,
@@ -6315,7 +6325,7 @@ std::string emitTestC(const FirProgram &source, FirFunctionId test,
     return emitCImpl(source, sourcePath, test);
 }
 
-std::string emitCHeader(const FirProgram &source) {
+std::string emitCHeader(const FirProgram &source, bool freestanding) {
     const auto program = prepareFirForBackend(source);
     std::vector<const FirFunction *> exports;
     for (const auto &function : program.functions) {
@@ -6332,7 +6342,8 @@ std::string emitCHeader(const FirProgram &source) {
     out << "#define FOUNDATION_GENERATED_C_ABI_H\n\n";
     out << "#include <stdbool.h>\n";
     out << "#include <stdint.h>\n";
-    out << "#include \"foundation/runtime.h\"\n\n";
+    out << (freestanding ? "#include \"foundation/runtime_core.h\"\n\n"
+                         : "#include \"foundation/runtime.h\"\n\n");
     out << "#ifdef __cplusplus\n";
     out << "extern \"C\" {\n";
     out << "#endif\n\n";

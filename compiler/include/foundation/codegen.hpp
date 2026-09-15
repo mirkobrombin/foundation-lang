@@ -14,12 +14,15 @@ namespace foundation {
     std::optional<FirFunctionId> entry = std::nullopt);
 [[nodiscard]] std::string emitC(const FirProgram &program,
                                 std::string_view sourcePath = "<memory>");
+// Freestanding emission includes only the runtime core and compiler-provided freestanding
+// headers.
 [[nodiscard]] std::string emitPackageC(const FirProgram &program,
                                        std::string_view packageName,
-                                       std::string_view sourcePath = "<memory>");
+                                       std::string_view sourcePath = "<memory>",
+                                       bool freestanding = false);
 [[nodiscard]] std::string emitTestC(const FirProgram &program, FirFunctionId test,
                                     std::string_view sourcePath = "<memory>");
-[[nodiscard]] std::string emitCHeader(const FirProgram &program);
+[[nodiscard]] std::string emitCHeader(const FirProgram &program, bool freestanding = false);
 [[nodiscard]] std::string emitPackageCHeader(const FirProgram &program,
                                              std::string_view packageName,
                                              std::string_view libraryName);
