@@ -2148,20 +2148,12 @@ class GoSourceEmitter {
                 fail("go-source found invalid method receiver metadata", function.sourceSpan);
                 return false;
             }
-            if (*function.receiver == FirReceiverKind::Own) {
-                fail("go-source cannot preserve a consuming method receiver", function.sourceSpan);
-                return false;
-            }
             const auto receiver = function.parameters.front();
             if (receiver >= function.locals.size()) {
                 fail("go-source found an invalid method receiver", function.sourceSpan);
                 return false;
             }
-            auto receiverType = function.locals[receiver].type;
-            if ((receiverType.kind == TypeKind::View || receiverType.kind == TypeKind::Edit) &&
-                receiverType.arguments.size() == 1) {
-                receiverType = receiverType.arguments.front();
-            }
+            const auto receiverType = ownedValue(function.locals[receiver].type);
             if (receiverType.kind != TypeKind::Struct && receiverType.kind != TypeKind::Enum) {
                 fail("go-source requires a nominal method receiver", function.sourceSpan);
                 return false;

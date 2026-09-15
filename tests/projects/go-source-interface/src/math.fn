@@ -991,6 +991,32 @@ fn BuildList(count i32) Option<own ListNode> {
     list
 }
 
+struct Wallet {
+    Owner String
+    Coins i32
+
+    fn Spend($self, amount i32) own Wallet {
+        const Wallet { Owner Coins } = self
+        own Wallet { Owner = Owner Coins = Coins - amount }
+    }
+
+    fn Total($self) i32 {
+        self.Coins
+    }
+}
+
+fn SpendTwice(start i32) i32 {
+    const wallet = own Wallet { Owner = "a" Coins = start }
+    const spent = wallet.Spend(3)
+    const again = spent.Spend(4)
+    again.Total()
+}
+
+fn OwnedReceiver() i32 {
+    const owned = own Wallet { Owner = "b" Coins = 10 }
+    owned.Total()
+}
+
 fn check(name String, actual i32, expected i32) void {
     if actual == expected {
         print(name + " ok")
@@ -1034,6 +1060,8 @@ fn Report() void {
     check("tree total", SumTree(BuildTree(3)), 8)
     check("graft", SumTree(GraftLeft(BuildTree(2), 7)), 9)
     check("list sum", ListSum(BuildList(4)), 10)
+    check("spend twice", SpendTwice(20), 13)
+    check("owned receiver", OwnedReceiver(), 10)
 }
 
 fn main() i32 {

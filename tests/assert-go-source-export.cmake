@@ -1,5 +1,5 @@
 if(NOT DEFINED COMPILER OR NOT DEFINED SOURCE OR NOT DEFINED UNSUPPORTED_SOURCE OR
-   NOT DEFINED RUNTIME_SOURCE OR NOT DEFINED OWN_SOURCE OR NOT DEFINED ESCAPE_SOURCE OR
+   NOT DEFINED RUNTIME_SOURCE OR NOT DEFINED ESCAPE_SOURCE OR
    NOT DEFINED OWNER_CYCLE_SOURCE OR NOT DEFINED OPEN_GENERIC_SOURCE OR
    NOT DEFINED GENERIC_STRUCT_SOURCE OR NOT DEFINED MULTIPLE_SOURCE OR
    NOT DEFINED FIXTURE OR NOT DEFINED WORK OR NOT DEFINED GO_EXECUTABLE)
@@ -54,7 +54,8 @@ foreach(signature IN ITEMS
         "func (self BoxI32) Marker("
         "func (self *BoxI32) Set("
         "func (self Profile) Display("
-        "func (self *Profile) AddScore(")
+        "func (self *Profile) AddScore("
+        "func (self Wallet) Spend(")
     string(FIND "${generated_source}" "${signature}" signature_offset)
     if(signature_offset EQUAL -1)
         message(FATAL_ERROR "go-source export omitted ${signature}")
@@ -208,37 +209,6 @@ if(NOT runtime_diagnostics MATCHES "FDN4120" OR
         "runtime rejection omitted its contract or alternatives:\n${runtime_diagnostics}")
 endif()
 
-file(MAKE_DIRECTORY "${WORK}/own-source" "${WORK}/own-output")
-file(COPY "${OWN_SOURCE}/" DESTINATION "${WORK}/own-source")
-execute_process(
-    COMMAND "${COMPILER}" package resolve "${WORK}/own-source"
-    RESULT_VARIABLE own_resolve_status
-    OUTPUT_VARIABLE own_resolve_output
-    ERROR_VARIABLE own_resolve_error
-)
-if(NOT own_resolve_status EQUAL 0)
-    message(FATAL_ERROR
-        "cannot resolve consuming receiver fixture:\n${own_resolve_output}${own_resolve_error}")
-endif()
-execute_process(
-    COMMAND "${COMPILER}" package export "${WORK}/own-source"
-        -o "${WORK}/own-output"
-        --format go-source
-    RESULT_VARIABLE own_status
-    OUTPUT_VARIABLE own_output
-    ERROR_VARIABLE own_error
-)
-if(own_status EQUAL 0)
-    message(FATAL_ERROR "go-source accepted a consuming method receiver")
-endif()
-set(own_diagnostics "${own_output}${own_error}")
-if(NOT own_diagnostics MATCHES "FDN4120" OR
-   NOT own_diagnostics MATCHES "consuming method receiver" OR
-   NOT own_diagnostics MATCHES "go-cgo or go-dynamic")
-    message(FATAL_ERROR
-        "receiver rejection omitted its contract or alternatives:\n${own_diagnostics}")
-endif()
-
 file(MAKE_DIRECTORY "${WORK}/escape-source" "${WORK}/escape-output")
 file(COPY "${ESCAPE_SOURCE}/" DESTINATION "${WORK}/escape-source")
 execute_process(
@@ -390,8 +360,7 @@ endif()
 set(multiple_diagnostics "${multiple_output}${multiple_error}")
 string(REGEX MATCHALL "error\\[FDN4120\\]" multiple_codes "${multiple_diagnostics}")
 list(LENGTH multiple_codes multiple_count)
-if(NOT multiple_count EQUAL 6 OR
-   NOT multiple_diagnostics MATCHES "consuming method receiver" OR
+if(NOT multiple_count EQUAL 5 OR
    NOT multiple_diagnostics MATCHES "unless an owned enum payload closes the cycle" OR
    NOT multiple_diagnostics MATCHES "only when the expression initializes or assigns a local" OR
    NOT multiple_diagnostics MATCHES "panic only as a statement, return value, or branch value" OR

@@ -682,6 +682,23 @@ func TestTranslatedOwnersKeepValueSemantics(t *testing.T) {
 	}
 }
 
+func TestTranslatedConsumingReceiversUseGoValues(t *testing.T) {
+	if got := SpendTwice(20); got != 13 {
+		t.Fatalf("SpendTwice(20) = %d, want 13", got)
+	}
+	if got := OwnedReceiver(); got != 10 {
+		t.Fatalf("OwnedReceiver() = %d, want 10", got)
+	}
+	wallet := Wallet{Owner: "go", Coins: 20}
+	spent := wallet.Spend(3)
+	if spent.Owner != "go" || spent.Coins != 17 {
+		t.Fatalf("wallet.Spend(3) = %#v", spent)
+	}
+	if got := wallet.Total(); got != 20 || wallet.Coins != 20 {
+		t.Fatalf("the consumed original changed to %#v", wallet)
+	}
+}
+
 // behavior.out holds the output of the same Report function compiled by the C backend.
 func TestTranslatedReportMatchesFoundationBackends(t *testing.T) {
 	want, err := os.ReadFile("behavior.out")

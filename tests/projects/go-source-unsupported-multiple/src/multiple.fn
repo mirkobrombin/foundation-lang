@@ -1,13 +1,5 @@
 package sample.multiple
 
-struct Token {
-    Value i32
-
-    fn Consume($self) i32 {
-        self.Value
-    }
-}
-
 struct Chain {
     Value i32
     Next own Chain

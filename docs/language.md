@@ -1696,10 +1696,12 @@ with status 1 through `os.Exit`, so deferred Go functions and `recover` never ob
 generated code does not reproduce the Foundation frame trace. `panic` in another expression
 position, a function declared with a `never` result, and an iterator or any other function without
 a same-package body, including the prelude `range`, are rejected.
-`self` maps to a Go value receiver and `&self` maps to a pointer receiver. `ctor New` becomes
-`NewType`; another constructor becomes `NewTypeName`, and an associated function becomes
-`TypeName`. A `$self` method is rejected because Go cannot prevent the caller from reusing the
-consumed value. Custom-drop structs, raw pointers, callbacks, native imports, foreign metadata,
+`self` and `$self` map to Go value receivers and `&self` maps to a pointer receiver. `ctor New`
+becomes `NewType`; another constructor becomes `NewTypeName`, and an associated function becomes
+`TypeName`. A `$self` method receives its own copy of the consumed owner. Go cannot stop a caller
+from using its original afterward, but that use observes the value from before the call: owners are
+Go values, owned enum payloads are immutable, and closure captures cannot be reassigned.
+Custom-drop structs, raw pointers, callbacks, native imports, foreign metadata,
 native links, open generic exports, tasks, actions, and
 other runtime-backed FIR nodes are rejected with `FDN4120`. A rejection does not stop the scan: one
 run reports every native import, foreign declaration, and link requirement or, when the package has
