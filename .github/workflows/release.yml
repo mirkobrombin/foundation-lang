@@ -56,11 +56,15 @@ jobs:
             platform: linux
             cc: gcc
             cxx: g++
+            llvm-archive: LLVM-21.1.8-Linux-X64.tar.xz
+            llvm-sha256: b3b7f2801d15d50736acea3c73982994d025b01c2f035b91ae3b49d1b575732b
           - name: macOS
             os: macos-15
             platform: macos
             cc: clang
             cxx: clang++
+            llvm-archive: LLVM-21.1.8-macOS-ARM64.tar.xz
+            llvm-sha256: b95bdd32a33a81ee4d40363aaeb26728a26783fcef26a4d80f65457433ea4669
           - name: Windows x86_64
             os: windows-2025
             platform: windows
@@ -87,24 +91,34 @@ jobs:
           go-version: 1.25.x
           cache: false
 
-      - name: Install LLVM 21 on Linux
-        if: runner.os == 'Linux'
-        run: |
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 21
-          sudo apt-get install --no-install-recommends -y llvm-21-dev
-          echo "LLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm" >> "$GITHUB_ENV"
-
-      - name: Install LLVM 21 on macOS
-        if: runner.os == 'macOS'
+      # Official archives provide static LLVM libraries, so the SDK binaries do not need an LLVM
+      # install. The libraries are LLVM bitcode, which only the bundled lld can link.
+      - name: Install LLVM 21 on Unix
+        if: runner.os != 'Windows'
         env:
-          HOMEBREW_NO_AUTO_UPDATE: 1
+          LLVM_ARCHIVE: ${{ matrix.llvm-archive }}
+          LLVM_SHA256: ${{ matrix.llvm-sha256 }}
         run: |
-          brew install llvm@21 lld@21
-          echo "LLVM_DIR=$(brew --prefix llvm@21)/lib/cmake/llvm" >> "$GITHUB_ENV"
-          echo "$(brew --prefix llvm@21)/bin" >> "$GITHUB_PATH"
-          echo "$(brew --prefix lld@21)/bin" >> "$GITHUB_PATH"
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get install --no-install-recommends -y zlib1g-dev libzstd-dev libxml2-dev
+          else
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install zstd
+          fi
+          archive="$RUNNER_TEMP/$LLVM_ARCHIVE"
+          root="$RUNNER_TEMP/llvm-21.1.8"
+          curl -fsSL -o "$archive" "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/$LLVM_ARCHIVE"
+          if [ "$(cmake -E sha256sum "$archive" | cut -d ' ' -f 1)" != "$LLVM_SHA256" ]; then
+            echo "LLVM archive checksum mismatch" >&2
+            exit 1
+          fi
+          mkdir -p "$root"
+          tar -xJf "$archive" -C "$root" --strip-components=1
+          rm "$archive"
+          echo "LLVM_DIR=$root/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "LLVM_ROOT=$root" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = macOS ]; then
+            echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+          fi
 
       - name: Install LLVM 21 on Windows
         if: runner.os == 'Windows'
@@ -127,13 +141,23 @@ jobs:
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
-        run: >-
-          cmake -S . -B build/release -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DBUILD_TESTING=ON
-          -DFOUNDATION_WARNINGS_AS_ERRORS=ON
-          -DLLVM_DIR="$LLVM_DIR"
-          -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            linker="-B$LLVM_ROOT/bin -fuse-ld=lld"
+          else
+            linker="--ld-path=$LLVM_ROOT/bin/ld64.lld"
+          fi
+          cmake -S . -B build/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DFOUNDATION_WARNINGS_AS_ERRORS=ON \
+            -DLLVM_DIR="$LLVM_DIR" \
+            "-DCMAKE_EXE_LINKER_FLAGS=$linker" \
+            "-DCMAKE_SHARED_LINKER_FLAGS=$linker" \
+            "-DCMAKE_MODULE_LINKER_FLAGS=$linker" \
+            -DCMAKE_JOB_POOLS=link=1 \
+            -DCMAKE_JOB_POOL_LINK=link \
+            -DFOUNDATION_V2_SOURCE=${{ github.workspace }}/build/go-foundation-v2
 
       - name: Configure Windows
         if: runner.os == 'Windows'
@@ -199,6 +223,25 @@ jobs:
             -DARCHIVE_NAME="foundation-${TAG#v}-${PLATFORM}-${architecture}" \
             -DEXECUTABLE_SUFFIX= \
             -P tools/release/package-sdk.cmake
+
+      - name: Check Unix SDK outside the build machine
+        if: runner.os != 'Windows'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdk"
+          tar -xzf build/release-assets/foundation-*.tar.gz -C "$RUNNER_TEMP/sdk"
+          sdk=$(find "$RUNNER_TEMP/sdk" -mindepth 1 -maxdepth 1 -type d)
+          if [ "$RUNNER_OS" = Linux ]; then
+            docker run --rm -v "$sdk:/sdk:ro" -v "$GITHUB_WORKSPACE/tools/release:/check:ro" ubuntu:24.04 \
+              sh -c 'apt-get update -qq && apt-get install -qq -y --no-install-recommends gcc libc6-dev >/dev/null && sh /check/check-sdk.sh /sdk "$0"' "${TAG#v}"
+          else
+            if otool -L "$sdk"/bin/* | grep -v -E '^[^[:space:]]|^[[:space:]]+/(usr/lib|System/Library)/'; then
+              echo "SDK binaries link libraries outside the system" >&2
+              exit 1
+            fi
+            sh tools/release/check-sdk.sh "$sdk" "${TAG#v}"
+          fi
 
       - name: Package Windows SDK
         if: runner.os == 'Windows'
