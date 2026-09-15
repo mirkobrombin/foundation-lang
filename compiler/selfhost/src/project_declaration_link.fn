@@ -476,7 +476,8 @@ fn linkProjectFunctions(
     &aliases arena<projectImportAlias>,
     &symbols arena<projectDeclaration>,
     &diagnostics diagnostics,
-    foundMain bool
+    foundMain bool,
+    target targetPlatform
 ) bool {
     var mainDeclared = foundMain
     var index u64 = 0
@@ -533,6 +534,11 @@ fn linkProjectFunctions(
                     declaration.name = declaration.ownerType + "." + declaration.name
                 } else {
                     if declaration.name == "main" {
+                        if sameTarget(target, .Freestanding) {
+                            diagnostics.reportError(
+                                "FDN3012", "freestanding code cannot declare main",
+                                declaration.span)
+                        }
                         if mainDeclared {
                             diagnostics.reportError(
                                 "FDN3010",
@@ -564,9 +570,12 @@ fn linkProjectFile(
     &file parsedProjectFile,
     &symbols arena<projectDeclaration>,
     &diagnostics diagnostics,
-    foundMain bool
+    foundMain bool,
+    target targetPlatform,
+    sdkRoot String
 ) bool {
-    var aliases = validateProjectImports(&file.program, &symbols, &diagnostics)
+    var aliases = validateProjectImports(
+        &file.program, &symbols, target, sdkRoot, &diagnostics)
     const packageName = text.Copy(file.program.packageName)
     const sourcePath = text.Copy(file.sourcePath)
     linkProjectAttributeDeclarations(
@@ -579,5 +588,5 @@ fn linkProjectFile(
         &file.program, packageName, &aliases, &symbols, &diagnostics)
     linkProjectFunctions(
         &file.program, packageName, sourcePath, &aliases, &symbols, &diagnostics,
-        foundMain)
+        foundMain, target)
 }

@@ -145,6 +145,7 @@ fn deriveApplicationSource(
         analyzeOptions {
         requireMain = false
         retainInvalidModel = true
+        target = hostTargetPlatform()
     }
     )
     const semanticAnalysis {

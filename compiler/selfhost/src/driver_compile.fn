@@ -126,6 +126,7 @@ fn loadCheckedProgram(
         analyzeOptions {
         requireMain = requireMain
         retainInvalidModel = false
+        target = target
     }
     )
     const semanticAnalysis { model diagnostics as semanticDiagnostics } = analysis
@@ -188,7 +189,7 @@ fn writeCompilerOutput(outputPath String, value String) i32 {
 fn runCompilerCheck(input String, target targetPlatform) i32 {
     const selected = loadCheckedProgram(
         input,
-        true,
+        !sameTarget(target, .Freestanding),
         .Production,
         target
     )
@@ -237,14 +238,26 @@ fn runCompilerEmitApplicationHost(
     }
 }
 
+fn compilerRootPackage(&sources arena<projectSource>) String {
+    if sources.len() == 0 return ""
+    const first = match sources.take(0) {
+        None: panic("project source slot is empty")
+        Some(value): value
+    }
+    const packageName = text.Copy(first.packageName)
+    sources.restore(0, $first)
+    packageName
+}
+
 fn runCompilerEmitC(
     input String,
     outputPath String,
     target targetPlatform
 ) i32 {
+    const freestanding = sameTarget(target, .Freestanding)
     const selected = loadLoweredProgram(
         input,
-        true,
+        !freestanding,
         .Production,
         target
     )
@@ -253,6 +266,14 @@ fn runCompilerEmitC(
             return 1
         }
         Some(value): value
+    }
+    if freestanding {
+        // Freestanding code has no entry point: the root package's C exports are the roots.
+        const rootPackage = compilerRootPackage(&lowered.loaded.sources)
+        return writeCompilerOutput(
+            outputPath,
+            emitSelfHostedFreestandingC(&lowered.program, input, rootPackage)
+        )
     }
     const output = emitSelfHostedC(&lowered.program, input)
     writeCompilerOutput(outputPath, output)

@@ -5,16 +5,27 @@ import std.text
 fn emitSelfHostedCImpl(
     &source firProgram,
     sourcePath String,
-    testEntry Option<u64>
+    testEntry Option<u64>,
+    freestandingPackage Option<String>
 ) String {
-    var program = match testEntry {
-        None: monomorphizeProgram(&source)
-        Some(entry): monomorphizeProgramEntry(&source, entry)
+    const freestanding = optionStringPresent(freestandingPackage)
+    var program = match freestandingPackage {
+        Some(packageName): monomorphizeLibraryProgram(&source, packageName)
+        None: {
+            match testEntry {
+                None: monomorphizeProgram(&source)
+                Some(entry): monomorphizeProgramEntry(&source, entry)
+            }
+        }
     }
     var collected = cCollectTypes(&program)
     var contractUses = cCollectContractUses(&program)
     var builder = text.NewBuilder()
-    cEmitPreamble(&builder, true)
+    if freestanding {
+        cEmitFreestandingPreamble(&builder)
+    } else {
+        cEmitPreamble(&builder, true)
+    }
     cEmitTypeForwards(&builder, &program, &collected)
     cEmitFunctionTypeDefinitions(&builder, &collected)
     cEmitSliceDefinitions(&builder, &collected)
@@ -40,6 +51,7 @@ fn emitSelfHostedCImpl(
     cEmitFunctions(&builder, &program, sourcePath)
     cEmitAllTaskWorkDefinitions(&builder, &program, sourcePath)
     cEmitAllTaskSupport(&builder, &program, sourcePath)
+    if freestanding return cFinish(&builder)
     match testEntry {
         None: cEmitMainWrapper(&builder, &program)
         Some(entry): {
@@ -54,7 +66,15 @@ fn emitSelfHostedC(
     &source firProgram,
     sourcePath String
 ) String {
-    emitSelfHostedCImpl(&source, sourcePath, .None)
+    emitSelfHostedCImpl(&source, sourcePath, .None, .None)
+}
+
+fn emitSelfHostedFreestandingC(
+    &source firProgram,
+    sourcePath String,
+    packageName String
+) String {
+    emitSelfHostedCImpl(&source, sourcePath, .None, .Some(text.Copy(packageName)))
 }
 
 fn emitSelfHostedTestC(
@@ -62,5 +82,5 @@ fn emitSelfHostedTestC(
     test u64,
     sourcePath String
 ) String {
-    emitSelfHostedCImpl(&source, sourcePath, .Some(test))
+    emitSelfHostedCImpl(&source, sourcePath, .Some(test), .None)
 }

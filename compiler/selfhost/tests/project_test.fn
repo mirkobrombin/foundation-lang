@@ -36,7 +36,7 @@ test "project linking resolves declarations across packages" {
             Some(value): value
         }
         foundMain = linkProjectFile(
-            &file, &symbols, &diagnostics, foundMain)
+            &file, &symbols, &diagnostics, foundMain, hostTargetPlatform(), "")
         const parsedProjectFile { program sourcePath } = file
         discard sourcePath
         appendProjectProgram(&combined, $program)
@@ -49,7 +49,11 @@ test "project linking resolves declarations across packages" {
 
     var analysis = analyzeProgram(
         &combined,
-        analyzeOptions { requireMain = true retainInvalidModel = false }
+        analyzeOptions {
+            requireMain = true
+            retainInvalidModel = false
+            target = hostTargetPlatform()
+        }
     )
     var model = requireSemanticModel($analysis)
     var lowered = lowerProgram(&combined, &model)
@@ -114,7 +118,7 @@ test "project linking rejects bindings that shadow import aliases" {
         None: panic("project test file slot is empty")
         Some(value): value
     }
-    discard linkProjectFile(&file, &symbols, &diagnostics, false)
+    discard linkProjectFile(&file, &symbols, &diagnostics, false, hostTargetPlatform(), "")
     expect(projectTestHasDiagnostic($diagnostics, "FDN3004"))
 }
 

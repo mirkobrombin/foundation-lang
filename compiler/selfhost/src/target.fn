@@ -106,3 +106,11 @@ fn targetSelectorsOverlap(left targetSelector, right targetSelector) bool {
         (targetSelected(left, .Windows) && targetSelected(right, .Windows)) ||
         (targetSelected(left, .Freestanding) && targetSelected(right, .Freestanding))
 }
+
+// Reports whether an SDK package may be imported under the freestanding target. The set grows
+// only when a package's natives move into the runtime core.
+fn freestandingSdkPackage(packageName String) bool {
+    packageName == "std.prelude" || packageName == "std.text" ||
+        packageName == "std.align" || packageName == "std.path" ||
+        packageName == "std.pattern" || packageName == "std.json"
+}

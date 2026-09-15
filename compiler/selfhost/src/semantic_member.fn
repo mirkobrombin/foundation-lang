@@ -150,6 +150,33 @@ fn semanticNumericConversionIsInfallible(
     sourceType.kind.Matches("F32") && targetType.kind.Matches("F64")
 }
 
+// Freestanding triples use 32-bit or 64-bit usize and isize, so a conversion involving either is
+// infallible only when it is infallible at both widths.
+fn semanticPointerWidthType(&type semanticType, wide bool) semanticType {
+    if type.kind.Matches("Usize") {
+        if wide return newSemanticType(.U64)
+        return newSemanticType(.U32)
+    }
+    if type.kind.Matches("Isize") {
+        if wide return newSemanticType(.I64)
+        return newSemanticType(.I32)
+    }
+    copySemanticType(&type)
+}
+
+fn portableSemanticNumericConversionIsInfallible(
+    &sourceType semanticType,
+    &targetType semanticType
+) bool {
+    if sameSemanticType(&sourceType, &targetType) return true
+    var narrowSource = semanticPointerWidthType(&sourceType, false)
+    var narrowTarget = semanticPointerWidthType(&targetType, false)
+    var wideSource = semanticPointerWidthType(&sourceType, true)
+    var wideTarget = semanticPointerWidthType(&targetType, true)
+    semanticNumericConversionIsInfallible(&narrowSource, &narrowTarget) &&
+        semanticNumericConversionIsInfallible(&wideSource, &wideTarget)
+}
+
 fn semanticBuiltinEnum(
     &source program,
     name String
@@ -232,7 +259,12 @@ fn analyzeSemanticNumericConversion(
     discard target.typeArguments.add(copySemanticType(&sourceType))
     discard target.typeArguments.add(copySemanticType(&targetType))
     setSemanticCallTarget(&analyzer, expression, $target)
-    if semanticNumericConversionIsInfallible(&sourceType, &targetType) {
+    const infallible = if sameTarget(analyzer.options.target, .Freestanding) {
+        portableSemanticNumericConversionIsInfallible(&sourceType, &targetType)
+    } else {
+        semanticNumericConversionIsInfallible(&sourceType, &targetType)
+    }
+    if infallible {
         return targetType
     }
     const resultID = semanticBuiltinEnum(&source, "Result")
@@ -846,6 +878,13 @@ fn analyzeSemanticMember(
         )
     }
     if sourceType.kind.Matches("Task") {
+        if sameTarget(analyzer.options.target, .Freestanding) {
+            analyzer.diagnostics.reportError(
+                "FDN2186",
+                "Task operations are not available for the freestanding target",
+                span
+            )
+        }
         var arguments = semanticCallArgumentIDs(&member.arguments)
         var argumentNames = semanticCallArgumentNames(&member.argumentNames)
         rejectSemanticNamedArguments(
@@ -967,6 +1006,13 @@ fn analyzeSemanticChannelMember(
     &sourceType semanticType,
     span sourceSpan
 ) semanticType {
+    if sameTarget(analyzer.options.target, .Freestanding) {
+        analyzer.diagnostics.reportError(
+            "FDN2187",
+            "channel operations are not available for the freestanding target",
+            span
+        )
+    }
     var arguments = semanticCallArgumentIDs(&member.arguments)
     var argumentNames = semanticCallArgumentNames(&member.argumentNames)
     rejectSemanticNamedArguments(

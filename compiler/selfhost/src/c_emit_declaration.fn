@@ -53,6 +53,20 @@ fn cEmitPreamble(&builder text.Builder, includeString bool) void {
     cWrite(&builder, "} fdn_channel_pair;\n\n")
 }
 
+// Freestanding emission includes only the runtime core and compiler-provided freestanding
+// headers.
+fn cEmitFreestandingPreamble(&builder text.Builder) void {
+    cWrite(&builder, "#include <stdbool.h>\n")
+    cWrite(&builder, "#include <stddef.h>\n")
+    cWrite(&builder, "#include <stdint.h>\n")
+    cWrite(&builder, "#include \"foundation/runtime_core.h\"\n\n")
+    cWrite(&builder, "#if defined(__GNUC__) || defined(__clang__)\n")
+    cWrite(&builder, "#define FDN_MAYBE_UNUSED __attribute__((unused))\n")
+    cWrite(&builder, "#else\n")
+    cWrite(&builder, "#define FDN_MAYBE_UNUSED\n")
+    cWrite(&builder, "#endif\n\n")
+}
+
 fn cEmitTypeForwards(
     &builder text.Builder,
     &program firProgram,

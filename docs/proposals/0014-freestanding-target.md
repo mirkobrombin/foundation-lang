@@ -389,7 +389,9 @@ The self-hosted compiler provides `check`, `emit-c`, `emit-llvm`, `build`, `run`
 the parser, the manifest and lock models, and the resolver. It also gains `@target` on `methods`
 blocks, the freestanding SDK table, every rejection above with the same code and span, and
 `emit-c --target freestanding`. Self-hosted `emit-llvm` remains host-only, and `build-library`
-remains stage0-only because the self-hosted compiler has no library command.
+remains stage0-only because the self-hosted compiler has no library command. The one exception is
+`UUID.NewV4` and `UUID.NewV7` under `freestanding`: each compiler reports its existing unknown
+associated function diagnostic, and those diagnostics already differ for hosted programs.
 
 ### Determinism
 
@@ -571,8 +573,9 @@ portable `usize` and `isize` bounds under `freestanding`.
   `--target freestanding`. `FDN8005` for a 16-bit triple is checked when LLVM registers one.
 - Hosted boundary: the complete suite, `runtime.string`, `runtime.uuid`, and the panic trace tests
   pass after the split. A hosted run executes a `@target(hosted)` function.
-- Self-hosted: `foundation_selfhost_verify`, the reject fixtures with identical codes, and
-  `compiler.check.freestanding-selection` through the self-hosted compiler.
+- Self-hosted: `foundation_selfhost_verify`, the reject fixtures with identical codes and spans,
+  and `compiler.check.freestanding-selection` through the self-hosted compiler. `UUID.NewV4()` is
+  only required to be rejected, for the reason given under Self-hosted compiler.
 
 Build and run tests use the configured compiler when it is Clang or AppleClang. Otherwise they pass
 `--cc` with the Clang used by the WebAssembly guest tests. They are registered when either is

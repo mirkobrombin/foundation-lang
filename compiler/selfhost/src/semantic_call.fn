@@ -1082,6 +1082,10 @@ fn analyzeSemanticBuiltinCall(
         return usizeSemanticType()
     }
     if callee == "channel" {
+        if sameTarget(analyzer.options.target, .Freestanding) {
+            analyzer.diagnostics.reportError(
+                "FDN2187", "channels are not available for the freestanding target", span)
+        }
         if explicitTypes.len() != 1 {
             analyzer.diagnostics.reportError(
                 "FDN2043", "channel expects one type argument", span)

@@ -992,6 +992,20 @@ fn analyzeSemanticExpression(
                     "integer literal does not fit " + semanticTypeName(type.kind),
                     span
                 )
+            } else {
+                if sameTarget(analyzer.options.target, .Freestanding) &&
+                    (type.kind.Matches("Usize") || type.kind.Matches("Isize")) {
+                    var portable = semanticPointerWidthType(&type, false)
+                    if !semanticIntegerLiteralFits(
+                        &portable, payload.magnitude, payload.negative) {
+                        analyzer.diagnostics.reportError(
+                            "FDN2005",
+                            "integer literal does not fit the portable " +
+                            semanticTypeName(type.kind) + " range",
+                            span
+                        )
+                    }
+                }
             }
             expressionValue.Integer(payload)
         }

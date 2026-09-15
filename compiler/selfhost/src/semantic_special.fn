@@ -116,6 +116,26 @@ fn semanticStateFunctionInfoAt(
     result
 }
 
+fn rejectFreestandingWorkflowRetry(
+    &analyzer semanticAnalyzer,
+    &workflowSource semanticWorkflowSource
+) void {
+    var index u64 = 0
+    while index < workflowSource.steps.len() {
+        const step = match workflowSource.steps.take(index) {
+            None: panic("workflow step slot is empty")
+            Some(value): value
+        }
+        if step.attempts > 1 {
+            analyzer.diagnostics.reportError(
+                "FDN2189", "workflow retry is not available for the freestanding target",
+                step.span)
+        }
+        workflowSource.steps.restore(index, $step)
+        index += 1
+    }
+}
+
 fn semanticWorkflowSourceAt(
     &source program,
     function u64
@@ -825,6 +845,9 @@ fn analyzeSemanticSpecialFunction(
     }
     var workflowSource = semanticWorkflowSourceAt(&source, function)
     if workflowSource.present {
+        if sameTarget(analyzer.options.target, .Freestanding) {
+            rejectFreestandingWorkflowRetry(&analyzer, &workflowSource)
+        }
         analyzeSemanticWorkflow(
             &analyzer,
             &source,

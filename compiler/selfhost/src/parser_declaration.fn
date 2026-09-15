@@ -1358,6 +1358,7 @@ methods parser {
         var stepNames = collections.NewList<String>()
         var compensationCount u64 = 0
         while !self.check(.RightBrace) && !self.atEnd() {
+            const stepSpan = self.currentToken().span
             self.expectContextual("step", "FDN1221", "expected step in workflow")
             const stepName = self.expectToken(
                 .Identifier, "FDN1222", "expected workflow step name")
@@ -1411,7 +1412,7 @@ methods parser {
             steps.PushFront($workflowStep {
                 name = text.Copy(stepName.text)
                 function = text.Copy(function.name)
-                span = stepName.span
+                span = stepSpan
                 functionSpan = function.span
                 attempts = attempts
                 compensation = compensation

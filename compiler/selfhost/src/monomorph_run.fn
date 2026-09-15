@@ -54,6 +54,16 @@ fn monomorphizeProgram(
     monomorphizeProgramEntry(&source, mainFunction)
 }
 
+// Library emission has no entry point, so main lies past the last function.
+fn monomorphizeLibraryProgram(
+    &source firProgram,
+    packageName String
+) own firProgram {
+    var result = monomorphizePackageInterface(&source, packageName)
+    result.main = result.functions.len()
+    result
+}
+
 fn monomorphizePackageInterface(
     &source firProgram,
     packageName String

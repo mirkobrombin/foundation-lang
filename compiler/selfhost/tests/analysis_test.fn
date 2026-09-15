@@ -29,7 +29,11 @@ test "semantic analysis lowers contracts, generics, closures, and matches" {
     expect(!parsed.diagnostics.hasErrors())
     var analysis = analyzeProgram(
         &parsed.program,
-        analyzeOptions { requireMain = true retainInvalidModel = false }
+        analyzeOptions {
+            requireMain = true
+            retainInvalidModel = false
+            target = hostTargetPlatform()
+        }
     )
     var model = requireSemanticModel($analysis)
     var lowered = lowerProgram(&parsed.program, &model)
@@ -73,7 +77,11 @@ test "semantic analysis lowers task suspension and native callbacks" {
     expect(!parsed.diagnostics.hasErrors())
     var analysis = analyzeProgram(
         &parsed.program,
-        analyzeOptions { requireMain = true retainInvalidModel = false }
+        analyzeOptions {
+            requireMain = true
+            retainInvalidModel = false
+            target = hostTargetPlatform()
+        }
     )
     var model = requireSemanticModel($analysis)
     var lowered = lowerProgram(&parsed.program, &model)
@@ -116,7 +124,11 @@ test "semantic analysis lowers state machines and workflows" {
     expect(!parsed.diagnostics.hasErrors())
     var analysis = analyzeProgram(
         &parsed.program,
-        analyzeOptions { requireMain = true retainInvalidModel = false }
+        analyzeOptions {
+            requireMain = true
+            retainInvalidModel = false
+            target = hostTargetPlatform()
+        }
     )
     var model = requireSemanticModel($analysis)
     var lowered = lowerProgram(&parsed.program, &model)
@@ -186,7 +198,11 @@ fn expectSemanticDiagnostic(
     expect(!parsed.diagnostics.hasErrors())
     var analysis = analyzeProgram(
         &parsed.program,
-        analyzeOptions { requireMain = true retainInvalidModel = false }
+        analyzeOptions {
+            requireMain = true
+            retainInvalidModel = false
+            target = hostTargetPlatform()
+        }
     )
     const semanticAnalysis { model diagnostics } = analysis
     discard model

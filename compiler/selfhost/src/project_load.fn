@@ -310,10 +310,41 @@ fn appendProjectSdkPackage(
     true
 }
 
+fn projectSdkPackageExists(sdkRoot String, packageName String) bool {
+    if text.IsEmpty(sdkRoot) return false
+    var prefix = ""
+    if text.StartsWith(packageName, "std.") {
+        prefix = "std"
+    } else {
+        if text.StartsWith(packageName, "foundation.") {
+            prefix = "foundation"
+        } else {
+            return false
+        }
+    }
+    const candidate = projectSdkPackagePath(sdkRoot, prefix, packageName)
+    match fs.Kind(candidate) {
+        Ok(kind): {
+            if projectEntryIsDirectory(kind) return true
+        }
+        Err(error): {
+            discard error
+        }
+    }
+    match fs.Kind(candidate + ".fn") {
+        Ok(kind): projectEntryIsFile(kind)
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
 fn appendProjectSdkImports(
     &inputs arena<projectInputFile>,
     &seen arena<String>,
     sdkRoot String,
+    target targetPlatform,
     &imports arena<importDeclaration>,
     &diagnostics diagnostics
 ) bool {
@@ -324,7 +355,11 @@ fn appendProjectSdkImports(
             None: panic("import slot is empty")
             Some(value): value
         }
-        const appended = appendProjectSdkPackage(
+        // Under the freestanding target, SDK packages outside the freestanding set leave the
+        // graph, so their hosted natives and platform declarations are never linked.
+        const hosted = sameTarget(target, .Freestanding) &&
+            !freestandingSdkPackage(declaration.packageName)
+        const appended = hosted || appendProjectSdkPackage(
             &inputs,
             &seen,
             sdkRoot,
@@ -608,6 +643,7 @@ fn parseProjectInputs(
             &inputs,
             &seen,
             sdkRoot,
+            target,
             &source.imports,
             &diagnostics
         ) {
@@ -727,7 +763,7 @@ fn loadProjectInternal(
             Some(value): value
         }
         foundMain = linkProjectFile(
-            &file, &symbols, &diagnostics, foundMain)
+            &file, &symbols, &diagnostics, foundMain, target, sdkRoot)
         const parsedProjectFile { program sourcePath } = file
         discard sourcePath
         appendProjectProgram(&loaded.program, $program)

@@ -356,6 +356,8 @@ fn linkProjectType(
 fn validateProjectImports(
     &source program,
     &symbols arena<projectDeclaration>,
+    target targetPlatform,
+    sdkRoot String,
     &diagnostics diagnostics
 ) own arena<projectImportAlias> {
     var aliases = newArena<projectImportAlias>()
@@ -368,10 +370,20 @@ fn validateProjectImports(
         }
         const alias = projectDefaultAlias(declaration.packageName) if
         text.IsEmpty(declaration.alias) else text.Copy(declaration.alias)
-        if !projectPackageKnown(&symbols, declaration.packageName) {
+        if sameTarget(target, .Freestanding) &&
+            !freestandingSdkPackage(declaration.packageName) &&
+            projectSdkPackageExists(sdkRoot, declaration.packageName) {
             diagnostics.reportError(
-                "FDN3005", "package not found: " + declaration.packageName,
+                "FDN3011",
+                "SDK package " + declaration.packageName +
+                " is not available for the freestanding target",
                 declaration.span)
+        } else {
+            if !projectPackageKnown(&symbols, declaration.packageName) {
+                diagnostics.reportError(
+                    "FDN3005", "package not found: " + declaration.packageName,
+                    declaration.span)
+            }
         }
         if arenaContainsString(&packages, declaration.packageName) {
             diagnostics.reportError(

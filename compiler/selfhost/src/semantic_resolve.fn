@@ -2685,6 +2685,21 @@ fn declareSemanticFunctions(
                 function.span
             )
         }
+        if sameTarget(analyzer.options.target, .Freestanding) {
+            if function.taskFunction {
+                analyzer.diagnostics.reportError(
+                    "FDN2186", "tasks are not available for the freestanding target",
+                    function.span)
+            }
+            if function.blocking || function.callback {
+                const marker = "@blocking" if function.blocking else "@callback"
+                analyzer.diagnostics.reportError(
+                    "FDN2188",
+                    marker + " imports are not available for the freestanding target",
+                    function.span
+                )
+            }
+        }
         var hasCSymbol = false
         var cSymbol = ""
         const selectedCSymbol = replace function.cSymbol with .None

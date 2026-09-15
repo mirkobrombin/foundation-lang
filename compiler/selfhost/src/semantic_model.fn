@@ -298,10 +298,15 @@ struct semanticModel {
 struct analyzeOptions {
     requireMain bool
     retainInvalidModel bool
+    target targetPlatform
 }
 
 fn defaultAnalyzeOptions() analyzeOptions {
-    analyzeOptions { requireMain = true retainInvalidModel = false }
+    analyzeOptions {
+        requireMain = true
+        retainInvalidModel = false
+        target = hostTargetPlatform()
+    }
 }
 
 fn newCallTarget(kind callTargetKind) callTarget {

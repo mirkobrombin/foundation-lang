@@ -592,6 +592,10 @@ fn analyzeSemanticSpawn(
     &spawnValue spawnExpression,
     span sourceSpan
 ) semanticType {
+    if sameTarget(analyzer.options.target, .Freestanding) {
+        analyzer.diagnostics.reportError(
+            "FDN2186", "spawn is not available for the freestanding target", span)
+    }
     const previous = analyzer.state.spawnCall
     analyzer.state.spawnCall = .Some(spawnValue.call)
     var result = analyzeSemanticExpressionWithoutExpected(

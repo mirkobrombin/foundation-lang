@@ -212,4 +212,77 @@ require_rejected_parity("package snapshot option" 2 "package snapshot <project> 
     package snapshot "${ROOT}/tests/package-workflow/app"
     --output "${PARITY_DIRECTORY}/invalid-snapshot")
 
+# The self-hosted compiler reports every freestanding rejection with the stage0 code at the stage0
+# location.
+foreach(rejection IN ITEMS
+        "task-declaration;FDN2186" "spawn;FDN2186" "channel-construction;FDN2187"
+        "channel-send;FDN2187" "select;FDN2187" "blocking-import;FDN2188"
+        "callback-import;FDN2188" "retry;FDN2189" "import-fs;FDN3011"
+        "import-concurrent;FDN3011" "import-collections;FDN3011" "main;FDN3012"
+        "usize-literal;FDN2005")
+    list(GET rejection 0 name)
+    list(GET rejection 1 code)
+    set(fixture "${ROOT}/tests/cases/freestanding-reject/${name}.fn")
+    foreach(compiler IN ITEMS COMPILER STAGE0)
+        execute_process(
+            COMMAND "${${compiler}}" check "${fixture}" --target freestanding
+            RESULT_VARIABLE status
+            OUTPUT_VARIABLE output
+            ERROR_VARIABLE error
+        )
+        # Stage0 ends the location with a colon and the self-hosted compiler does not.
+        string(REGEX MATCHALL ":[0-9]+:[0-9]+:? error\\[${code}\\]" locations "${error}")
+        list(TRANSFORM locations REPLACE ":? error\\[.*$" "")
+        list(SORT locations)
+        if(status EQUAL 0 OR NOT locations)
+            message(FATAL_ERROR
+                "${compiler} did not reject ${name} with ${code}:\n${output}${error}")
+        endif()
+        set(${compiler}_locations "${locations}")
+    endforeach()
+    if(NOT COMPILER_locations STREQUAL STAGE0_locations)
+        message(FATAL_ERROR
+            "${name} reports ${code} at ${COMPILER_locations} instead of ${STAGE0_locations}")
+    endif()
+endforeach()
+
+# Both compilers reject the hosted-only UUID constructors with their existing unknown
+# associated function diagnostics, which already differ for hosted programs.
+set(fixture "${ROOT}/tests/cases/freestanding-reject/uuid-new-v4.fn")
+foreach(compiler IN ITEMS COMPILER STAGE0)
+    execute_process(
+        COMMAND "${${compiler}}" check "${fixture}" --target freestanding
+        RESULT_VARIABLE status
+        OUTPUT_VARIABLE output
+        ERROR_VARIABLE error
+    )
+    if(status EQUAL 0 OR NOT error MATCHES ":2:[0-9]+:? error\\[FDN[0-9]+\\]")
+        message(FATAL_ERROR
+            "${compiler} did not reject UUID.NewV4 for freestanding:\n${output}${error}")
+    endif()
+    if(compiler STREQUAL "STAGE0" AND NOT error MATCHES ":2:10: error\\[FDN2190\\]")
+        message(FATAL_ERROR "STAGE0 did not reject UUID.NewV4 with FDN2190:\n${error}")
+    endif()
+endforeach()
+
+run_checked("freestanding selection" "${CMAKE_COMMAND}"
+    "-DCOMPILER=${COMPILER}"
+    "-DPROJECT=${ROOT}/tests/projects/freestanding-selection"
+    "-DWORK=${OUTPUT_DIRECTORY}/freestanding-selection"
+    -P "${ROOT}/tests/assert-freestanding-selection.cmake")
+
+set(freestanding_c "${OUTPUT_DIRECTORY}/freestanding.c")
+run_checked("freestanding C emission" "${COMPILER}" emit-c
+    "${ROOT}/tests/projects/freestanding-library" -o "${freestanding_c}" --target freestanding)
+file(READ "${freestanding_c}" freestanding_source)
+if(freestanding_source MATCHES "foundation/runtime\\.h" OR freestanding_source MATCHES "int main")
+    message(FATAL_ERROR "freestanding C emission contains hosted code")
+endif()
+if(DEFINED ENV{FOUNDATION_CLANG} AND NOT "$ENV{FOUNDATION_CLANG}" STREQUAL "")
+    run_checked("freestanding C compilation" "$ENV{FOUNDATION_CLANG}"
+        --target=wasm32-unknown-unknown -std=c11 -ffreestanding -nostdlibinc -O2 -Wall -Wextra
+        -Wpedantic -Werror -DFOUNDATION_FREESTANDING=1 -I "${ROOT}/runtime/include"
+        -c "${freestanding_c}" -o "${OUTPUT_DIRECTORY}/freestanding.o")
+endif()
+
 message(STATUS "self-hosted compiler commands passed")
