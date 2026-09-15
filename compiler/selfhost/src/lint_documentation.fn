@@ -1,0 +1,290 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+fn lintTypeKey(packageName String, name String) String {
+    packageName + "\n" + name
+}
+
+// Reports an exported symbol that carries no documentation.
+fn reportLintUndocumented(
+    &sources arena<projectSource>,
+    &flags arena<bool>,
+    &findings arena<lintFinding>,
+    definition sourceSpan,
+    generated bool,
+    exported bool,
+    kind String,
+    name String
+) void {
+    if definition.source >= sources.len() || !exported || !docInProject(&flags, definition.source) {
+        return
+    }
+    if !generated && !text.IsEmpty(symbolSourceDocumentation(&sources, definition)) return
+    addLintFinding(
+        &findings,
+        "FCS2001",
+        "strict profile requires documentation for exported " + kind + " " + name,
+        definition
+    )
+}
+
+fn collectLintExportedTypes(
+    &syntax program,
+    &exportedTypes arena<String>,
+    &contractKeys arena<String>,
+    &contractNames arena<String>
+) void {
+    var index u64 = 0
+    while index < syntax.structs.len() {
+        const value = match syntax.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(found): found
+        }
+        if value.exported {
+            discard exportedTypes.add(lintTypeKey(value.packageName, value.name))
+        }
+        syntax.structs.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < syntax.enums.len() {
+        const value = match syntax.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(found): found
+        }
+        if value.exported {
+            discard exportedTypes.add(lintTypeKey(value.packageName, value.name))
+        }
+        syntax.enums.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < syntax.contracts.len() {
+        const value = match syntax.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(found): found
+        }
+        const key = lintTypeKey(value.packageName, value.name)
+        if value.exported {
+            discard exportedTypes.add(text.Copy(key))
+        }
+        discard contractKeys.add($key)
+        discard contractNames.add(text.Copy(value.name))
+        syntax.contracts.restore(index, $value)
+        index += 1
+    }
+}
+
+fn findLintStructDocumentation(
+    &syntax program,
+    &sources arena<projectSource>,
+    &flags arena<bool>,
+    &generatedTypes arena<String>,
+    &findings arena<lintFinding>
+) void {
+    var index u64 = 0
+    while index < syntax.structs.len() {
+        var value = match syntax.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(found): found
+        }
+        const generated = arenaContainsString(&generatedTypes, value.name)
+        const definition = symbolIdentifierSpan(&sources, value.span, value.name)
+        reportLintUndocumented(
+            &sources, &flags, &findings, definition,
+            generated, value.exported, "type", metadataShortName(value.name))
+        var pending = collections.NewList<structField>()
+        while !value.fields.IsEmpty() {
+            const field = match value.fields.PopFront() {
+                None: panic("struct field list invariant failed")
+                Some(found): found
+            }
+            reportLintUndocumented(
+                &sources, &flags, &findings, field.span, generated,
+                value.exported && field.exported, "field", field.name)
+            pending.PushFront($field)
+        }
+        while !pending.IsEmpty() {
+            const field = match pending.PopFront() {
+                None: panic("struct field restore invariant failed")
+                Some(found): found
+            }
+            value.fields.PushFront($field)
+        }
+        syntax.structs.restore(index, $value)
+        index += 1
+    }
+}
+
+fn findLintEnumDocumentation(
+    &syntax program,
+    &sources arena<projectSource>,
+    &flags arena<bool>,
+    &generatedTypes arena<String>,
+    &findings arena<lintFinding>
+) void {
+    var index u64 = 0
+    while index < syntax.enums.len() {
+        var value = match syntax.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(found): found
+        }
+        if value.builtin.Matches("None") {
+            const generated = arenaContainsString(&generatedTypes, value.name)
+            const exported = !value.generated && value.exported
+            const definition = symbolIdentifierSpan(&sources, value.span, value.name)
+            reportLintUndocumented(
+                &sources, &flags, &findings, definition,
+                generated, exported, "enum", metadataShortName(value.name))
+            var pending = collections.NewList<enumVariant>()
+            while !value.variants.IsEmpty() {
+                const variant = match value.variants.PopFront() {
+                    None: panic("enum variant list invariant failed")
+                    Some(found): found
+                }
+                reportLintUndocumented(
+                    &sources, &flags, &findings, variant.span, generated,
+                    exported && variant.exported, "variant", variant.name)
+                pending.PushFront($variant)
+            }
+            while !pending.IsEmpty() {
+                const variant = match pending.PopFront() {
+                    None: panic("enum variant restore invariant failed")
+                    Some(found): found
+                }
+                value.variants.PushFront($variant)
+            }
+        }
+        syntax.enums.restore(index, $value)
+        index += 1
+    }
+}
+
+fn findLintContractDocumentation(
+    &syntax program,
+    &sources arena<projectSource>,
+    &flags arena<bool>,
+    &findings arena<lintFinding>
+) void {
+    var index u64 = 0
+    while index < syntax.contracts.len() {
+        var value = match syntax.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(found): found
+        }
+        const definition = symbolIdentifierSpan(&sources, value.span, value.name)
+        reportLintUndocumented(
+            &sources, &flags, &findings, definition,
+            false, value.exported, "contract", metadataShortName(value.name))
+        var pending = collections.NewList<contractMethod>()
+        while !value.methodList.IsEmpty() {
+            const method = match value.methodList.PopFront() {
+                None: panic("contract method list invariant failed")
+                Some(found): found
+            }
+            const methodDefinition = symbolIdentifierSpan(&sources, method.span, method.name)
+            reportLintUndocumented(
+                &sources, &flags, &findings, methodDefinition,
+                false, value.exported && method.exported, "method", method.name)
+            pending.PushFront($method)
+        }
+        while !pending.IsEmpty() {
+            const method = match pending.PopFront() {
+                None: panic("contract method restore invariant failed")
+                Some(found): found
+            }
+            value.methodList.PushFront($method)
+        }
+        syntax.contracts.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < syntax.attributeDeclarations.len() {
+        const value = match syntax.attributeDeclarations.take(index) {
+            None: panic("attribute declaration slot is empty")
+            Some(found): found
+        }
+        const definition = symbolIdentifierSpan(&sources, value.span, value.name)
+        reportLintUndocumented(
+            &sources, &flags, &findings, definition,
+            false, value.exported, "attribute", metadataShortName(value.name))
+        syntax.attributeDeclarations.restore(index, $value)
+        index += 1
+    }
+}
+
+// Functions and type methods follow the language index: closures, tests,
+// field defaults, contract defaults, and state timeouts are not symbols of
+// their own.
+fn findLintFunctionDocumentation(
+    &syntax program,
+    &sources arena<projectSource>,
+    &flags arena<bool>,
+    &exportedTypes arena<String>,
+    &contractKeys arena<String>,
+    &contractNames arena<String>,
+    &findings arena<lintFinding>
+) void {
+    var index u64 = 0
+    while index < syntax.functions.len() {
+        var value = match syntax.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        var timed = false
+        match replace value.stateTimeout with .None {
+            None: {}
+            Some(found): {
+                timed = true
+                value.stateTimeout = .Some(found)
+            }
+        }
+        const receiver = match value.receiver {
+            None: false
+            Some(kind): {
+                discard kind
+                true
+            }
+        }
+        const skipped = value.closure || optionStringPresent(value.testName) ||
+            text.Contains(value.name, "$field_default.") ||
+            (receiver && arenaContainsString(&contractNames, value.ownerType)) || timed
+        if !skipped {
+            const member = !text.IsEmpty(value.ownerType)
+            const key = lintTypeKey(value.packageName, value.ownerType)
+            const exported = if member {
+                value.exported && arenaContainsString(&exportedTypes, key) &&
+                    !arenaContainsString(&contractKeys, key)
+            } else {
+                value.exported
+            }
+            const name = metadataShortName(value.name)
+            const definition = symbolIdentifierSpan(&sources, value.span, name)
+            reportLintUndocumented(
+                &sources, &flags, &findings, definition,
+                false, exported, "method" if member else "function", name)
+        }
+        syntax.functions.restore(index, $value)
+        index += 1
+    }
+}
+
+fn findLintExportedDocumentation(
+    &syntax program,
+    &sources arena<projectSource>,
+    &flags arena<bool>,
+    &findings arena<lintFinding>
+) void {
+    var generatedTypes = symbolGeneratedWorkflowTypes(&syntax)
+    var exportedTypes = newArena<String>()
+    var contractKeys = newArena<String>()
+    var contractNames = newArena<String>()
+    collectLintExportedTypes(&syntax, &exportedTypes, &contractKeys, &contractNames)
+    findLintStructDocumentation(&syntax, &sources, &flags, &generatedTypes, &findings)
+    findLintEnumDocumentation(&syntax, &sources, &flags, &generatedTypes, &findings)
+    findLintContractDocumentation(&syntax, &sources, &flags, &findings)
+    findLintFunctionDocumentation(
+        &syntax, &sources, &flags, &exportedTypes, &contractKeys, &contractNames, &findings)
+}

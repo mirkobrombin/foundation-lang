@@ -1,0 +1,280 @@
+package foundation.compiler
+
+import std.text
+
+fn compareLintFinding(left lintFinding, right lintFinding) i32 {
+    if left.span.source != right.span.source {
+        return -1 if left.span.source < right.span.source else 1
+    }
+    if left.span.offset != right.span.offset {
+        return -1 if left.span.offset < right.span.offset else 1
+    }
+    text.Compare(left.code, right.code)
+}
+
+// Returns the last configured severity of a rule; later settings win.
+fn lintConfiguredSeverity(
+    code String,
+    &settings arena<codeStandardRuleSetting>
+) Option<codeStandardSeverity> {
+    var index = settings.len()
+    while index > 0 {
+        index -= 1
+        const value = match settings.take(index) {
+            None: panic("rule setting slot is empty")
+            Some(found): found
+        }
+        const same = value.code == code
+        const severity = value.severity
+        settings.restore(index, $value)
+        if same return .Some(severity)
+    }
+    .None
+}
+
+fn lintProfileIs(profile codeStandardProfile, name String) bool {
+    codeStandardProfileName(profile) == name
+}
+
+// FCS9001 is always reported and Valid reports nothing else. A configured
+// rule is reported under Standard and Strict; marker rules are otherwise
+// off, and the documentation, density, discard, and raw-boundary rules
+// belong to Strict.
+fn lintRuleEnabled(
+    code String,
+    profile codeStandardProfile,
+    &settings arena<codeStandardRuleSetting>
+) bool {
+    if code == "FCS9001" return true
+    if lintProfileIs(profile, "valid") return false
+    match lintConfiguredSeverity(code, &settings) {
+        None: {}
+        Some(severity): {
+            discard severity
+            return true
+        }
+    }
+    if code == "FCS7001" || code == "FCS7002" || code == "FCS7003" || code == "FCS7004" {
+        return false
+    }
+    if code == "FCS2001" || code == "FCS2002" || code == "FCS4001" || code == "FCS5001" {
+        return lintProfileIs(profile, "strict")
+    }
+    true
+}
+
+fn findLintSourceRules(
+    &sources arena<projectSource>,
+    &flags arena<bool>,
+    profile codeStandardProfile,
+    &findings arena<lintFinding>,
+    &suppressions arena<String>
+) void {
+    var index u64 = 0
+    while index < sources.len() {
+        const source = index
+        index += 1
+        if !docInProject(&flags, source) continue
+        const contents = compilerProjectSourceContents(&sources, source)
+        collectLintSuppressions(contents, source, &findings, &suppressions)
+        if lintProfileIs(profile, "valid") continue
+        findLintLongLines(contents, source, codeStandardWidth(profile), &findings)
+        findLintSignatureLayout(contents, source, &findings)
+        findLintCommentDensity(contents, source, &findings)
+        findLintCommentLabels(contents, source, &findings)
+    }
+}
+
+// Checks the root sources of an analyzed project against the code standard
+// and returns the enabled, unsuppressed findings in source order with their
+// configured severities.
+fn lintProject(
+    &syntax program,
+    &sources arena<projectSource>,
+    $semantic Option<own semanticModel>,
+    profile codeStandardProfile,
+    &roots arena<u64>,
+    &settings arena<codeStandardRuleSetting>
+) own arena<diagnostic> {
+    var flags = docProjectFlags(&sources, &roots)
+    var findings = newArena<lintFinding>()
+    var suppressions = newArena<String>()
+    findLintSourceRules(&sources, &flags, profile, &findings, &suppressions)
+    match semantic {
+        None: {}
+        Some(found): {
+            var model = found
+            if !lintProfileIs(profile, "valid") {
+                findLintDiscardReasons(&syntax, &model, &sources, &flags, &findings)
+            }
+        }
+    }
+    if !lintProfileIs(profile, "valid") {
+        findLintPostfixComplexity(&syntax, &flags, &findings)
+        findLintPublicUnsafeBoundaries(&syntax, &sources, &flags, &findings)
+        findLintComplexity(&syntax, &flags, lintProfileIs(profile, "strict"), &findings)
+        findLintExportedDocumentation(&syntax, &sources, &flags, &findings)
+    }
+    sortArena<lintFinding>(&findings, compareLintFinding)
+    var result = newArena<diagnostic>()
+    var index u64 = 0
+    while index < findings.len() {
+        const finding = match findings.take(index) {
+            None: panic("lint finding slot is empty")
+            Some(found): found
+        }
+        const key = lintSuppressionKey(finding.span.source, finding.span.line, finding.code)
+        const suppressed = finding.code != "FCS9001" && arenaContainsString(&suppressions, key)
+        if lintRuleEnabled(finding.code, profile, &settings) && !suppressed {
+            const severity = match lintConfiguredSeverity(finding.code, &settings) {
+                None: codeStandardSeverity.Warning
+                Some(found): found
+            }
+            match severity {
+                Off: {}
+                Warning: {
+                    discard result.add(diagnostic {
+                        code = text.Copy(finding.code)
+                        message = text.Copy(finding.message)
+                        span = finding.span
+                        severity = .Warning
+                    })
+                }
+                Error: {
+                    discard result.add(diagnostic {
+                        code = text.Copy(finding.code)
+                        message = text.Copy(finding.message)
+                        span = finding.span
+                        severity = .Error
+                    })
+                }
+            }
+        }
+        findings.restore(index, $finding)
+        index += 1
+    }
+    result
+}
+
+// Parses the profile and rule options that follow the lint input. A profile
+// may appear once; each rule is FCSCODE=off|warning|error for a
+// configurable rule.
+fn parseCompilerLintArguments(
+    args [String],
+    &profile Option<codeStandardProfile>,
+    &settings arena<codeStandardRuleSetting>
+) bool {
+    var index usize = 2
+    while index < len(args) {
+        if index + 1 >= len(args) return false
+        const option = compilerArgument(args, index)
+        const value = compilerArgument(args, index + 1)
+        index += 2
+        const profileSeen = match profile {
+            None: false
+            Some(found): {
+                discard found
+                true
+            }
+        }
+        if option == "--profile" && !profileSeen {
+            match parseCodeStandardProfile(value) {
+                None: {
+                    return false
+                }
+                Some(found): {
+                    profile = .Some(found)
+                }
+            }
+            continue
+        }
+        if option != "--rule" return false
+        const separator = match text.Find(value, "=") {
+            None: {
+                return false
+            }
+            Some(found): found
+        }
+        if separator <= 3 return false
+        const code = applicationSlice(value, 0, separator)
+        if !configurableCodeStandardRule(code) return false
+        const severity = match parseCodeStandardSeverity(
+            applicationSlice(value, separator + 1, text.ByteLen(value))) {
+            None: {
+                return false
+            }
+            Some(found): found
+        }
+        discard settings.add(codeStandardRuleSetting { code = code severity = severity })
+    }
+    true
+}
+
+fn copyCodeStandardRules(
+    &source arena<codeStandardRuleSetting>,
+    &target arena<codeStandardRuleSetting>
+) void {
+    var index u64 = 0
+    while index < source.len() {
+        const value = match source.take(index) {
+            None: panic("rule setting slot is empty")
+            Some(found): found
+        }
+        discard target.add(codeStandardRuleSetting {
+            code = text.Copy(value.code)
+            severity = value.severity
+        })
+        source.restore(index, $value)
+        index += 1
+    }
+}
+
+// Lints the project that contains input after validating its whole compiler
+// graph. The manifest profile and rules apply first; invocation options
+// override them. Any compiler error or lint finding fails the run.
+fn runCompilerLint(
+    input String,
+    profile Option<codeStandardProfile>,
+    &options arena<codeStandardRuleSetting>
+) i32 {
+    var analysis = analyzeCompilerProject(input, false, false, .Test, hostTargetPlatform(), false)
+    if compilerDiagnosticsHaveErrors(&analysis.diagnostics) {
+        writeCompilerReport(input, &analysis)
+        return 1
+    }
+    var selected codeStandardProfile = .Standard
+    var settings = newArena<codeStandardRuleSetting>()
+    match discoverPackageManifest(input) {
+        None: {}
+        Some(manifestPath): {
+            var parsed = readPackageManifest(manifestPath)
+            match replace parsed.value with .None {
+                None: {}
+                Some(found): {
+                    var manifest = found
+                    selected = manifest.codeStandard
+                    copyCodeStandardRules(&manifest.codeStandardRules, &settings)
+                }
+            }
+        }
+    }
+    match profile {
+        None: {}
+        Some(found): {
+            selected = found
+        }
+    }
+    copyCodeStandardRules(&options, &settings)
+    const compilerAnalysis { loaded diagnostics model } = analysis
+    discard diagnostics
+    const loadedProject { program sources } = loaded
+    var syntax = program
+    var projectSources = sources
+    var semantic = model
+    var roots = compilerRootSources(input, &projectSources)
+    var findings = lintProject(
+        &syntax, &projectSources, $semantic, selected, &roots, &settings)
+    if findings.len() == 0 return 0
+    writeCompilerSourceDiagnostics(&projectSources, &findings)
+    1
+}

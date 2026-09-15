@@ -1,0 +1,468 @@
+package foundation.compiler
+
+import std.collections
+import std.text
+
+// The parts of one expression that the lint rules inspect. Kind 1 is a
+// negation, 2 a binary operation, 3 a member access, 4 a literal or name,
+// 5 a conditional expression, and 0 anything else.
+struct lintExpressionShape {
+    kind u64
+    first u64
+    second u64
+    third u64
+    flag bool
+    hasBase bool
+    span sourceSpan
+}
+
+fn lintExpressionShapeAt(&syntax program, id u64) lintExpressionShape {
+    const node = match syntax.expressions.take(id) {
+        None: panic("expression slot is empty")
+        Some(found): found
+    }
+    const expressionNode { value span } = node
+    var shape = lintExpressionShape {
+        kind = 0 first = 0 second = 0 third = 0 flag = false hasBase = false span = span
+    }
+    const restored = match value {
+        Unary(payload): {
+            if payload.operation.Matches("Not") || payload.operation.Matches("BitwiseNot") ||
+                payload.operation.Matches("Negate") {
+                shape.kind = 1
+                shape.first = payload.operand
+            }
+            expressionValue.Unary(payload)
+        }
+        Binary(payload): {
+            shape.kind = 2
+            shape.first = payload.left
+            shape.second = payload.right
+            expressionValue.Binary(payload)
+        }
+        Member(payload): {
+            shape.kind = 3
+            shape.flag = payload.invoked || !payload.arguments.IsEmpty()
+            match payload.base {
+                None: {}
+                Some(base): {
+                    shape.hasBase = true
+                    shape.first = base
+                }
+            }
+            expressionValue.Member(payload)
+        }
+        Conditional(payload): {
+            shape.kind = 5
+            shape.first = payload.condition
+            shape.second = payload.thenValue
+            shape.third = payload.elseValue
+            shape.flag = payload.postfix
+            expressionValue.Conditional(payload)
+        }
+        Integer(payload): {
+            shape.kind = 4
+            expressionValue.Integer(payload)
+        }
+        Floating(payload): {
+            shape.kind = 4
+            expressionValue.Floating(payload)
+        }
+        Boolean(payload): {
+            shape.kind = 4
+            expressionValue.Boolean(payload)
+        }
+        StringValue(payload): {
+            shape.kind = 4
+            expressionValue.StringValue(payload)
+        }
+        Name(payload): {
+            shape.kind = 4
+            expressionValue.Name(payload)
+        }
+        Array(payload): expressionValue.Array(payload)
+        Ownership(payload): expressionValue.Ownership(payload)
+        Call(payload): expressionValue.Call(payload)
+        StructValue(payload): expressionValue.StructValue(payload)
+        Index(payload): expressionValue.Index(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        Spawn(payload): expressionValue.Spawn(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    syntax.expressions.restore(id, $expressionNode { value = restored span = span })
+    shape
+}
+
+// Simple expressions are literals, names, negations, binary operations, and
+// member reads without calls, built only from simple parts.
+fn lintSimpleExpression(&syntax program, id u64) bool {
+    if id >= syntax.expressions.len() return false
+    const shape = lintExpressionShapeAt(&syntax, id)
+    if shape.kind == 1 return lintSimpleExpression(&syntax, shape.first)
+    if shape.kind == 2 {
+        return lintSimpleExpression(&syntax, shape.first) &&
+            lintSimpleExpression(&syntax, shape.second)
+    }
+    if shape.kind == 3 {
+        return !shape.flag && (!shape.hasBase || lintSimpleExpression(&syntax, shape.first))
+    }
+    shape.kind == 4
+}
+
+fn findLintPostfixComplexity(
+    &syntax program,
+    &flags arena<bool>,
+    &findings arena<lintFinding>
+) void {
+    var id u64 = 0
+    while id < syntax.expressions.len() {
+        const shape = lintExpressionShapeAt(&syntax, id)
+        id += 1
+        if shape.kind != 5 || !shape.flag || !docInProject(&flags, shape.span.source) continue
+        if !lintSimpleExpression(&syntax, shape.first) ||
+            !lintSimpleExpression(&syntax, shape.second) ||
+            !lintSimpleExpression(&syntax, shape.third) {
+            addLintFinding(
+                &findings,
+                "FCS3001",
+                "postfix conditional requires simple condition and value expressions",
+                shape.span
+            )
+        }
+    }
+}
+
+// The parts of one statement that the lint rules inspect. Kind 1 is if, 2
+// while, 3 for, 4 a result else, 5 unsafe, 6 select, 7 discard, and 0 any
+// other statement. Blocks list the nested bodies; a select lists each
+// operation body and then its error block.
+struct lintStatementShape {
+    kind u64
+    blocks own arena<u64>
+    operations u64
+    value u64
+    span sourceSpan
+}
+
+fn lintStatementShapeAt(&syntax program, id u64) own lintStatementShape {
+    const node = match syntax.statements.take(id) {
+        None: panic("statement slot is empty")
+        Some(found): found
+    }
+    const statementNode { value span } = node
+    var shape = own lintStatementShape {
+        kind = 0 blocks = newArena<u64>() operations = 0 value = 0 span = span
+    }
+    const restored = match value {
+        IfValue(payload): {
+            shape.kind = 1
+            discard shape.blocks.add(payload.thenBlock)
+            match payload.elseBlock {
+                None: {}
+                Some(block): {
+                    discard shape.blocks.add(block)
+                }
+            }
+            statementValue.IfValue(payload)
+        }
+        WhileValue(payload): {
+            shape.kind = 2
+            discard shape.blocks.add(payload.body)
+            statementValue.WhileValue(payload)
+        }
+        ForValue(payload): {
+            shape.kind = 3
+            discard shape.blocks.add(payload.body)
+            statementValue.ForValue(payload)
+        }
+        ResultElse(payload): {
+            shape.kind = 4
+            discard shape.blocks.add(payload.elseBlock)
+            statementValue.ResultElse(payload)
+        }
+        UnsafeValue(payload): {
+            shape.kind = 5
+            discard shape.blocks.add(payload.body)
+            statementValue.UnsafeValue(payload)
+        }
+        SelectValue(payload): {
+            var chosen = payload
+            shape.kind = 6
+            var pending = collections.NewList<selectOperationArm>()
+            while !chosen.operations.IsEmpty() {
+                const arm = match chosen.operations.PopFront() {
+                    None: panic("select operation list invariant failed")
+                    Some(found): found
+                }
+                discard shape.blocks.add(arm.body)
+                shape.operations += 1
+                pending.PushFront($arm)
+            }
+            while !pending.IsEmpty() {
+                const arm = match pending.PopFront() {
+                    None: panic("select operation restore invariant failed")
+                    Some(found): found
+                }
+                chosen.operations.PushFront($arm)
+            }
+            discard shape.blocks.add(chosen.errorBlock)
+            statementValue.SelectValue(chosen)
+        }
+        DiscardValue(payload): {
+            shape.kind = 7
+            shape.value = payload.value
+            statementValue.DiscardValue(payload)
+        }
+        Variable(payload): statementValue.Variable(payload)
+        StructDestructure(payload): statementValue.StructDestructure(payload)
+        Assignment(payload): statementValue.Assignment(payload)
+        Expression(payload): statementValue.Expression(payload)
+        ReturnValue(payload): statementValue.ReturnValue(payload)
+        BreakValue: statementValue.BreakValue
+        ContinueValue: statementValue.ContinueValue
+    }
+    syntax.statements.restore(id, $statementNode { value = restored span = span })
+    shape
+}
+
+fn lintBlockStatements(&syntax program, block u64) own arena<u64> {
+    var result = newArena<u64>()
+    var node = match syntax.blocks.take(block) {
+        None: panic("block slot is empty")
+        Some(found): found
+    }
+    var pending = collections.NewList<u64>()
+    while !node.statements.IsEmpty() {
+        const statement = match node.statements.PopFront() {
+            None: panic("block statement list invariant failed")
+            Some(found): found
+        }
+        discard result.add(statement)
+        pending.PushFront(statement)
+    }
+    while !pending.IsEmpty() {
+        const statement = match pending.PopFront() {
+            None: panic("block statement restore invariant failed")
+            Some(found): found
+        }
+        node.statements.PushFront(statement)
+    }
+    syntax.blocks.restore(block, $node)
+    result
+}
+
+struct lintComplexity {
+    decisions u64
+    depth u64
+}
+
+// Counts the control-flow decisions of a block and its deepest nesting.
+// Every branch, loop, and result else counts once; each select operation
+// counts once.
+fn lintBlockComplexity(&syntax program, block u64, depth u64) lintComplexity {
+    if block >= syntax.blocks.len() return lintComplexity { decisions = 0 depth = 0 }
+    var deepest = depth
+    var statements = lintBlockStatements(&syntax, block)
+    var result u64 = 0
+    var index u64 = 0
+    while index < statements.len() {
+        const statement = importArenaAt(&statements, index)
+        index += 1
+        if statement >= syntax.statements.len() continue
+        var shape = lintStatementShapeAt(&syntax, statement)
+        if shape.kind >= 1 && shape.kind <= 4 {
+            result += 1
+        }
+        if shape.kind == 6 {
+            result += shape.operations
+        }
+        if shape.kind >= 1 && shape.kind <= 6 {
+            var nested u64 = 0
+            while nested < shape.blocks.len() {
+                const inner = lintBlockComplexity(
+                    &syntax, importArenaAt(&shape.blocks, nested), depth + 1)
+                result += inner.decisions
+                if inner.depth > deepest {
+                    deepest = inner.depth
+                }
+                nested += 1
+            }
+        }
+    }
+    lintComplexity { decisions = result depth = deepest }
+}
+
+fn findLintComplexity(
+    &syntax program,
+    &flags arena<bool>,
+    strict bool,
+    &findings arena<lintFinding>
+) void {
+    const limit u64 = 7 if strict else 12
+    var index u64 = 0
+    while index < syntax.functions.len() {
+        const value = match syntax.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        const checked = value.hasBody && docInProject(&flags, value.span.source)
+        const body = value.body
+        const span = value.span
+        syntax.functions.restore(index, $value)
+        index += 1
+        if !checked continue
+        const measured = lintBlockComplexity(&syntax, body, 1)
+        if measured.decisions > limit || measured.depth > 4 {
+            addLintFinding(
+                &findings,
+                "FCS6001",
+                "function control-flow complexity exceeds the active FCS threshold",
+                span
+            )
+        }
+    }
+}
+
+fn lintResultType(&syntax program, &model semanticModel, expression u64) bool {
+    if expression >= model.expressionTypes.len() return false
+    var type = match model.expressionTypes.take(expression) {
+        None: panic("expression type slot is empty")
+        Some(found): found
+    }
+    const declaration = type.declaration
+    const enumType = type.kind.Matches("EnumValue")
+    model.expressionTypes.restore(expression, $type)
+    if !enumType || declaration >= syntax.enums.len() return false
+    const value = match syntax.enums.take(declaration) {
+        None: panic("enum slot is empty")
+        Some(found): found
+    }
+    const result = value.name == "Result"
+    syntax.enums.restore(declaration, $value)
+    result
+}
+
+// A discard is explained by a comment at the end of its line or by a
+// non-empty comment on the line above.
+fn lintDiscardReason(source String, span sourceSpan) bool {
+    var lines = lintSourceLines(source)
+    if span.line == 0 || span.line > lines.len() return false
+    const current = symbolTrim(lintLineTextAt(&lines, span.line))
+    match text.Find(current, "//") {
+        None: {}
+        Some(comment): {
+            if !text.IsEmpty(symbolTrim(
+                applicationSlice(current, comment + 2, text.ByteLen(current)))) {
+                return true
+            }
+        }
+    }
+    if span.line <= 1 return false
+    const previous = symbolTrim(lintLineTextAt(&lines, span.line - 1))
+    text.StartsWith(previous, "//") &&
+        !text.IsEmpty(symbolTrim(applicationSlice(previous, 2, text.ByteLen(previous))))
+}
+
+fn findLintDiscardReasons(
+    &syntax program,
+    &model semanticModel,
+    &sources arena<projectSource>,
+    &flags arena<bool>,
+    &findings arena<lintFinding>
+) void {
+    var id u64 = 0
+    while id < syntax.statements.len() {
+        var shape = lintStatementShapeAt(&syntax, id)
+        id += 1
+        if shape.kind != 7 || !docInProject(&flags, shape.span.source) continue
+        if !lintResultType(&syntax, &model, shape.value) continue
+        if shape.span.source >= sources.len() continue
+        const contents = compilerProjectSourceContents(&sources, shape.span.source)
+        if lintDiscardReason(contents, shape.span) continue
+        addLintFinding(
+            &findings,
+            "FCS4001",
+            "discarding a Result requires an adjacent reason comment",
+            shape.span
+        )
+    }
+}
+
+fn lintRawType(&type typeSyntax) bool {
+    if type.name == "[raw]" || type.name == "[raw-const]" return true
+    var found = false
+    var pending = collections.NewList<typeSyntax>()
+    while !type.arguments.IsEmpty() {
+        var argument = match type.arguments.PopFront() {
+            None: panic("type argument list invariant failed")
+            Some(value): value
+        }
+        if lintRawType(&argument) {
+            found = true
+        }
+        pending.PushFront($argument)
+    }
+    while !pending.IsEmpty() {
+        const argument = match pending.PopFront() {
+            None: panic("type argument restore invariant failed")
+            Some(value): value
+        }
+        type.arguments.PushFront($argument)
+    }
+    found
+}
+
+fn lintRawParameters(&parameters collections.List<parameter>) bool {
+    var found = false
+    var pending = collections.NewList<parameter>()
+    while !parameters.IsEmpty() {
+        var value = match parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(found): found
+        }
+        if lintRawType(&value.type) {
+            found = true
+        }
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(found): found
+        }
+        parameters.PushFront($value)
+    }
+    found
+}
+
+fn findLintPublicUnsafeBoundaries(
+    &syntax program,
+    &sources arena<projectSource>,
+    &flags arena<bool>,
+    &findings arena<lintFinding>
+) void {
+    var index u64 = 0
+    while index < syntax.functions.len() {
+        var value = match syntax.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        const span = value.span
+        const checked = docInProject(&flags, span.source) && value.exported &&
+            span.source < sources.len() &&
+            (lintRawType(&value.returnType) || lintRawParameters(&value.parameters))
+        syntax.functions.restore(index, $value)
+        index += 1
+        if !checked continue
+        const contents = compilerProjectSourceContents(&sources, span.source)
+        if !text.Contains(lintDocumentationBefore(contents, span.offset), "SAFETY") {
+            addLintFinding(
+                &findings,
+                "FCS5001",
+                "public raw-pointer boundary requires documentation with a SAFETY contract",
+                span
+            )
+        }
+    }
+}

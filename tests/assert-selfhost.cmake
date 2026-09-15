@@ -150,6 +150,19 @@ function(require_snapshot_parity label project)
         package snapshot "${project}" -o "${expected}")
 endfunction()
 
+# Writes the lock a lint fixture needs for the host target.
+function(write_lint_lock directory root)
+    string(TOLOWER "${CMAKE_HOST_SYSTEM_NAME}" lock_target)
+    if(lock_target STREQUAL "darwin")
+        set(lock_target "macos")
+    endif()
+    file(WRITE "${directory}/foundation.lock"
+        "format foundation.lock/v1\n"
+        "root ${root} 1.0.0\n"
+        "target ${lock_target}\n"
+    )
+endfunction()
+
 file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
 set(hello "${ROOT}/tests/cases/accept/hello.fn")
 set(tests "${ROOT}/tests/cases/accept/test-declarations.fn")
@@ -433,5 +446,35 @@ require_rejected_parity("documentation target" 2 "documentation <source-or-proje
     --target plan9)
 require_emit_parity("documentation freestanding" "freestanding.md" documentation
     "${ROOT}/tests/projects/freestanding-library" --target freestanding)
+
+set(lint_work "${PARITY_DIRECTORY}/lint")
+file(MAKE_DIRECTORY "${lint_work}/fcs-rules" "${lint_work}/fcs-violations")
+file(COPY "${ROOT}/tests/projects/lint-profile/" DESTINATION "${lint_work}")
+write_lint_lock("${lint_work}" lint.fixture)
+file(COPY "${ROOT}/tests/projects/fcs-rules/" DESTINATION "${lint_work}/fcs-rules")
+write_lint_lock("${lint_work}/fcs-rules" fcs.rules)
+file(COPY "${ROOT}/tests/projects/fcs-violations/" DESTINATION "${lint_work}/fcs-violations")
+write_lint_lock("${lint_work}/fcs-violations" fcs.violations)
+require_command_parity("lint suppression" lint "${lint_work}/fcs-rules")
+require_command_parity("lint violations" lint "${lint_work}/fcs-violations")
+if(NOT command_status EQUAL 1)
+    message(FATAL_ERROR "lint accepted the strict violation fixture")
+endif()
+require_command_parity("lint violations valid" lint "${lint_work}/fcs-violations"
+    --profile valid)
+require_command_parity("lint strict manifest" lint "${lint_work}")
+require_command_parity("lint standard" lint "${lint_work}" --profile standard)
+require_command_parity("lint advisory rule" lint "${lint_work}" --profile standard
+    --rule FCS2001=error)
+require_command_parity("lint rule severity" lint "${lint_work}" --rule FCS1001=error)
+require_command_parity("lint valid" lint "${lint_work}" --profile valid)
+require_rejected_parity("lint profile" 2 "lint <source-or-project>"
+    lint "${lint_work}" --profile custom)
+require_rejected_parity("lint unknown rule" 2 "lint <source-or-project>"
+    lint "${lint_work}" --rule FCS9999=off)
+require_rejected_parity("lint fixed rule" 2 "lint <source-or-project>"
+    lint "${lint_work}" --rule FCS9001=off)
+require_rejected_parity("lint compiler errors" 1 "error\\[FDN"
+    lint "${ROOT}/tests/cases/reject/unknown-associated-function.fn" --profile valid)
 
 message(STATUS "self-hosted compiler commands passed")

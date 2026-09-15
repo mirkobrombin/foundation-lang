@@ -7,6 +7,8 @@ fn compilerUsage() String {
     "usage:\n" +
         "  foundationc-selfhost check <source-or-project> " +
         "[--target <platform>]\n" +
+        "  foundationc-selfhost lint <source-or-project> " +
+        "[--profile <valid|standard|strict>] [--rule <FCSCODE=off|warning|error>]\n" +
         "  foundationc-selfhost format <source>\n" +
         "  foundationc-selfhost format --check <source-or-project>\n" +
         "  foundationc-selfhost format --write <source-or-project>\n" +
@@ -234,6 +236,12 @@ fn runCompilerCommand(args [String]) Option<i32> {
     if command == "package" {
         var packageArguments = compilerPackageArguments(args)
         return .Some(runPackageCommand(&packageArguments))
+    }
+    if command == "lint" && len(args) >= 2 {
+        var profile Option<codeStandardProfile> = .None
+        var settings = newArena<codeStandardRuleSetting>()
+        if !parseCompilerLintArguments(args, &profile, &settings) return .None
+        return .Some(runCompilerLint(compilerArgument(args, 1), profile, &settings))
     }
     if command == "format" && len(args) == 2 {
         return .Some(runCompilerFormat(compilerArgument(args, 1), .Stdout))

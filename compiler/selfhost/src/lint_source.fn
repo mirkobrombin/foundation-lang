@@ -1,0 +1,439 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+struct lintFinding {
+    code String
+    message String
+    span sourceSpan
+}
+
+struct lintLine {
+    text String
+    offset u64
+    line u64
+}
+
+// Splits source at line feeds. A carriage return stays part of its line, and
+// a trailing line feed yields a final empty line.
+fn lintSourceLines(source String) own arena<lintLine> {
+    var result = newArena<lintLine>()
+    const size = text.ByteLen(source)
+    var offset u64 = 0
+    var line u64 = 1
+    while offset <= size {
+        var end = offset
+        while end < size && applicationByteAt(source, end) != 10 {
+            end += 1
+        }
+        discard result.add(lintLine {
+            text = applicationSlice(source, offset, end)
+            offset = offset
+            line = line
+        })
+        if end == size break
+        offset = end + 1
+        line += 1
+    }
+    result
+}
+
+fn lintLineAt(&lines arena<lintLine>, index u64) lintLine {
+    const value = match lines.take(index) {
+        None: panic("source line slot is empty")
+        Some(found): found
+    }
+    const result = lintLine { text = text.Copy(value.text) offset = value.offset line = value.line }
+    lines.restore(index, $value)
+    result
+}
+
+fn addLintFinding(
+    &findings arena<lintFinding>,
+    code String,
+    message String,
+    span sourceSpan
+) void {
+    discard findings.add(lintFinding {
+        code = text.Copy(code)
+        message = text.Copy(message)
+        span = span
+    })
+}
+
+fn lintWholeLineSpan(value lintLine, source u64) sourceSpan {
+    sourceSpan {
+        offset = value.offset
+        length = text.ByteLen(value.text)
+        line = value.line
+        column = 1
+        source = source
+    }
+}
+
+fn lintSuppressionKey(source u64, line u64, code String) String {
+    format.U64(source) + ":" + format.U64(line) + ":" + code
+}
+
+fn lintFirstBlank(value String) Option<u64> {
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        if importBlank(applicationByteAt(value, index)) return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+// Records each motivated suppression for the next source line; malformed
+// suppressions and suppressions without a following line report FCS9001.
+fn collectLintSuppressions(
+    source String,
+    sourceIndex u64,
+    &findings arena<lintFinding>,
+    &suppressions arena<String>
+) void {
+    var lines = lintSourceLines(source)
+    const prefix = "// fcs:ignore"
+    var index u64 = 0
+    while index < lines.len() {
+        const current = lintLineAt(&lines, index)
+        index += 1
+        const value = symbolTrim(current.text)
+        if !text.StartsWith(value, prefix) continue
+        const remainder = symbolTrim(
+            applicationSlice(value, text.ByteLen(prefix), text.ByteLen(value)))
+        var code = text.Copy(remainder)
+        var reason = ""
+        match lintFirstBlank(remainder) {
+            None: {}
+            Some(separator): {
+                code = applicationSlice(remainder, 0, separator)
+                reason = symbolTrim(
+                    applicationSlice(remainder, separator + 1, text.ByteLen(remainder)))
+            }
+        }
+        if !configurableCodeStandardRule(code) || text.IsEmpty(reason) {
+            addLintFinding(
+                &findings,
+                "FCS9001",
+                "fcs:ignore requires one configurable FCS code and a non-empty reason",
+                lintWholeLineSpan(current, sourceIndex)
+            )
+            continue
+        }
+        var target = index
+        var suppressed = false
+        while target < lines.len() {
+            const candidate = lintLineAt(&lines, target)
+            const trimmed = symbolTrim(candidate.text)
+            if !text.IsEmpty(trimmed) && !text.StartsWith(trimmed, "//") &&
+                !text.StartsWith(trimmed, "/*") {
+                discard suppressions.add(lintSuppressionKey(sourceIndex, candidate.line, code))
+                suppressed = true
+                break
+            }
+            target += 1
+        }
+        if !suppressed {
+            addLintFinding(
+                &findings,
+                "FCS9001",
+                "fcs:ignore has no following source line to suppress",
+                lintWholeLineSpan(current, sourceIndex)
+            )
+        }
+    }
+}
+
+// Columns count UTF-8 scalar starts and expand tabs to four-column stops.
+fn lintNextColumn(column u64, byte u64) u64 {
+    if byte == 9 return ((column - 1) / 4 + 1) * 4 + 1
+    if (byte & 192) == 128 return column
+    column + 1
+}
+
+fn findLintLongLines(
+    source String,
+    sourceIndex u64,
+    width u64,
+    &findings arena<lintFinding>
+) void {
+    var lines = lintSourceLines(source)
+    var index u64 = 0
+    while index < lines.len() {
+        const current = lintLineAt(&lines, index)
+        index += 1
+        const length = text.ByteLen(current.text)
+        var column u64 = 1
+        var cursor u64 = 0
+        while cursor < length {
+            column = lintNextColumn(column, applicationByteAt(current.text, cursor))
+            if column > width + 1 {
+                addLintFinding(
+                    &findings,
+                    "FCS1001",
+                    "line exceeds the " + format.U64(width) + " column profile width",
+                    sourceSpan {
+                        offset = current.offset + cursor
+                        length = length - cursor
+                        line = current.line
+                        column = width + 1
+                        source = sourceIndex
+                    }
+                )
+                break
+            }
+            cursor += 1
+        }
+    }
+}
+
+fn lintSignatureKeyword(&tokens arena<token>, index u64) bool {
+    importTokenKindIs(&tokens, index, .Fn) || importTokenKindIs(&tokens, index, .Task) ||
+        importTokenKindIs(&tokens, index, .Ctor) || importTokenKindIs(&tokens, index, .Action) ||
+        importTokenKindIs(&tokens, index, .Attribute)
+}
+
+// Returns the text of the 1-based line, or nothing outside the source.
+fn lintLineTextAt(&lines arena<lintLine>, line u64) String {
+    if line == 0 || line > lines.len() return ""
+    const selected = match lines.take(line - 1) {
+        None: panic("source line slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(selected.text)
+    lines.restore(line - 1, $selected)
+    result
+}
+
+fn lintLineOffsetAt(&lines arena<lintLine>, index u64) u64 {
+    const selected = match lines.take(index) {
+        None: panic("source line slot is empty")
+        Some(found): found
+    }
+    const offset = selected.offset
+    lines.restore(index, $selected)
+    offset
+}
+
+// Requires one parameter per line strictly between the parenthesis lines of
+// a multiline signature; nested lists, generics, and arrays stay inside
+// their parameter.
+fn lintParameterLinesValid(
+    &tokens arena<token>,
+    open u64,
+    close u64
+) bool {
+    const openLine = importTokenSpan(&tokens, open).line
+    const closeLine = importTokenSpan(&tokens, close).line
+    var occupied = newArena<u64>()
+    var depth u64 = 1
+    var genericDepth u64 = 0
+    var bracketDepth u64 = 0
+    var parameterStarted = false
+    var cursor = open + 1
+    while cursor < close {
+        const current = cursor
+        cursor += 1
+        if importTokenKindIs(&tokens, current, .LeftParen) {
+            depth += 1
+            continue
+        }
+        if importTokenKindIs(&tokens, current, .RightParen) {
+            depth -= 1
+            continue
+        }
+        if depth != 1 continue
+        if importTokenKindIs(&tokens, current, .Less) {
+            genericDepth += 1
+            continue
+        }
+        if importTokenKindIs(&tokens, current, .Greater) && genericDepth != 0 {
+            genericDepth -= 1
+            continue
+        }
+        if importTokenKindIs(&tokens, current, .LeftBracket) {
+            bracketDepth += 1
+            continue
+        }
+        if importTokenKindIs(&tokens, current, .RightBracket) && bracketDepth != 0 {
+            bracketDepth -= 1
+            continue
+        }
+        if importTokenKindIs(&tokens, current, .Comma) && genericDepth == 0 && bracketDepth == 0 {
+            parameterStarted = false
+            continue
+        }
+        if parameterStarted continue
+        parameterStarted = true
+        const line = importTokenSpan(&tokens, current).line
+        if line == openLine || line == closeLine || formatOffsetKnown(&occupied, line) {
+            return false
+        }
+        discard occupied.add(line)
+    }
+    true
+}
+
+fn findLintSignatureLayout(
+    source String,
+    sourceIndex u64,
+    &findings arena<lintFinding>
+) void {
+    var lines = lintSourceLines(source)
+    var tokens = importTokens(source, sourceIndex)
+    const count = tokens.len()
+    var index u64 = 0
+    while index + 2 < count {
+        const declaration = index
+        index += 1
+        if !lintSignatureKeyword(&tokens, declaration) ||
+            !importTokenKindIs(&tokens, declaration + 1, .Identifier) {
+            continue
+        }
+        var open = declaration + 2
+        while open < count && !importTokenKindIs(&tokens, open, .LeftParen) &&
+            !importTokenKindIs(&tokens, open, .LeftBrace) &&
+            !importTokenKindIs(&tokens, open, .Eof) {
+            open += 1
+        }
+        if open == count || !importTokenKindIs(&tokens, open, .LeftParen) continue
+        var depth u64 = 0
+        var close = open
+        while close < count {
+            if importTokenKindIs(&tokens, close, .LeftParen) {
+                depth += 1
+            } else {
+                if importTokenKindIs(&tokens, close, .RightParen) {
+                    depth -= 1
+                    if depth == 0 break
+                }
+            }
+            close += 1
+        }
+        if close == count continue
+        const openSpan = importTokenSpan(&tokens, open)
+        const closeSpan = importTokenSpan(&tokens, close)
+        if openSpan.line == closeSpan.line continue
+        if !text.EndsWith(symbolTrim(lintLineTextAt(&lines, openSpan.line)), "(") {
+            addLintFinding(
+                &findings, "FCS1002", "multiline signatures place the opening parenthesis last",
+                openSpan)
+        }
+        if !text.StartsWith(symbolTrim(lintLineTextAt(&lines, closeSpan.line)), ")") {
+            addLintFinding(
+                &findings, "FCS1002", "multiline signatures place the closing parenthesis first",
+                closeSpan)
+        }
+        if !lintParameterLinesValid(&tokens, open, close) {
+            addLintFinding(
+                &findings, "FCS1002", "multiline signatures place one parameter on each line",
+                openSpan)
+        }
+        index = close + 1
+    }
+}
+
+fn findLintCommentDensity(
+    source String,
+    sourceIndex u64,
+    &findings arena<lintFinding>
+) void {
+    var lines = lintSourceLines(source)
+    var comments u64 = 0
+    var code u64 = 0
+    var last = lintLine { text = "" offset = 0 line = 0 }
+    var index u64 = 0
+    while index < lines.len() {
+        const current = lintLineAt(&lines, index)
+        index += 1
+        const value = symbolTrim(current.text)
+        if text.IsEmpty(value) continue
+        if text.StartsWith(value, "//") || text.StartsWith(value, "/*") ||
+            text.StartsWith(value, "*") {
+            comments += 1
+        } else {
+            code += 1
+        }
+        last = current
+    }
+    if comments > 12 && comments > code {
+        addLintFinding(
+            &findings,
+            "FCS2002",
+            "comment lines outnumber source lines; keep implementation notes focused",
+            lintWholeLineSpan(last, sourceIndex)
+        )
+    }
+}
+
+fn lintLabelCode(label String) String {
+    if label == "NOTE" return "FCS7001"
+    if label == "TODO" return "FCS7002"
+    if label == "FIXME" return "FCS7003"
+    "FCS7004"
+}
+
+fn findLintCommentLabels(
+    source String,
+    sourceIndex u64,
+    &findings arena<lintFinding>
+) void {
+    var lines = lintSourceLines(source)
+    var labels = newArena<String>()
+    discard labels.add("NOTE")
+    discard labels.add("TODO")
+    discard labels.add("FIXME")
+    discard labels.add("SAFETY")
+    var index u64 = 0
+    while index < lines.len() {
+        const current = lintLineAt(&lines, index)
+        index += 1
+        const value = symbolTrim(current.text)
+        if !text.StartsWith(value, "//") continue
+        const comment = symbolTrim(applicationSlice(value, 2, text.ByteLen(value)))
+        var label u64 = 0
+        while label < labels.len() {
+            const name = symbolArgument(&labels, label)
+            if comment == name || text.StartsWith(comment, name + ":") {
+                addLintFinding(
+                    &findings,
+                    lintLabelCode(name),
+                    name + " comment marker",
+                    lintWholeLineSpan(current, sourceIndex)
+                )
+                break
+            }
+            label += 1
+        }
+    }
+}
+
+// Collects the // comment block above the line holding offset, skipping
+// attribute lines, with every comment line trimmed.
+fn lintDocumentationBefore(source String, offset u64) String {
+    var lines = lintSourceLines(source)
+    var line u64 = 0
+    while line + 1 < lines.len() && lintLineOffsetAt(&lines, line + 1) <= offset {
+        line += 1
+    }
+    while line != 0 && text.StartsWith(symbolTrim(lintLineTextAt(&lines, line)), "@") {
+        line -= 1
+    }
+    var first = line
+    while first != 0 && text.StartsWith(symbolTrim(lintLineTextAt(&lines, first)), "//") {
+        first -= 1
+    }
+    var result = ""
+    var index = first
+    while index < line {
+        const value = symbolTrim(lintLineTextAt(&lines, index + 1))
+        if !text.IsEmpty(result) {
+            result += "\n"
+        }
+        result += symbolTrim(applicationSlice(value, 2, text.ByteLen(value)))
+        index += 1
+    }
+    result
+}
