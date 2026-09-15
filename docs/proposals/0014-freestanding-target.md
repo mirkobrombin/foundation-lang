@@ -1,6 +1,6 @@
 # 0014: Freestanding target
 
-Status: proposed
+Status: accepted
 
 ## User problem
 
