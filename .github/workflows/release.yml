@@ -258,11 +258,6 @@ jobs:
       - name: Build
         run: cmake --build build/release --config Release
 
-      - name: Verify self-hosted compiler
-        run: >-
-          cmake --build build/release --config Release
-          --target foundation_selfhost_verify
-
       - name: Prepare package locks
         if: runner.os != 'Windows'
         run: >-
@@ -279,6 +274,11 @@ jobs:
           "-DCOMPILER=${{ github.workspace }}/build/release/Release/foundationc.exe"
           "-DROOT=${{ github.workspace }}"
           -P tests/prepare-host-locks.cmake
+
+      - name: Verify self-hosted compiler
+        run: >-
+          cmake --build build/release --config Release
+          --target foundation_selfhost_verify
 
       - name: Test
         if: runner.os != 'Windows'

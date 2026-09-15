@@ -84,15 +84,15 @@ jobs:
       - name: Build
         run: cmake --build --preset dev
 
-      - name: Verify self-hosted compiler
-        run: cmake --build --preset dev --target foundation_selfhost_verify
-
       - name: Prepare package locks for host
         run: >-
           cmake
           -DCOMPILER=${{ github.workspace }}/build/dev/foundationc
           -DROOT=${{ github.workspace }}
           -P tests/prepare-host-locks.cmake
+
+      - name: Verify self-hosted compiler
+        run: cmake --build --preset dev --target foundation_selfhost_verify
 
       - name: Test three times
         run: |
@@ -159,11 +159,6 @@ jobs:
       - name: Build
         run: cmake --build build/windows --config Debug
 
-      - name: Verify self-hosted compiler
-        run: >-
-          cmake --build build/windows --config Release
-          --target foundation_selfhost_verify
-
       - name: Prepare package locks for host
         shell: pwsh
         run: >-
@@ -171,6 +166,11 @@ jobs:
           "-DCOMPILER=${{ github.workspace }}/build/windows/Debug/foundationc.exe"
           "-DROOT=${{ github.workspace }}"
           -P tests/prepare-host-locks.cmake
+
+      - name: Verify self-hosted compiler
+        run: >-
+          cmake --build build/windows --config Release
+          --target foundation_selfhost_verify
 
       - name: Test three times
         shell: cmd
