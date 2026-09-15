@@ -12,6 +12,10 @@ fn makeToken() own Token {
     own Token { Value = 42 }
 }
 
+fn twice(value i32) i32 {
+    value * 2
+}
+
 fn RejectedStatements(flag bool) i32 {
     const Token { Value } = makeToken()
     const escaped = if flag {
@@ -21,4 +25,16 @@ fn RejectedStatements(flag bool) i32 {
         3
     }
     Value + escaped
+}
+
+fn PanicArgument() i32 {
+    twice(panic("no value"))
+}
+
+fn RangeTotal() i32 {
+    var total = 0
+    for value in range(0, 3, 1) {
+        total = total + value
+    }
+    total
 }

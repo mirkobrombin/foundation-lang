@@ -602,3 +602,156 @@ fn SumTo(limit i32) i32 {
 fn IsWithin(value i32, minimum i32, maximum i32) bool {
     value >= minimum && value <= maximum
 }
+
+fn PrintLines(name String) void {
+    print("héllo " + name)
+    print("")
+    print("tab\tquote\"")
+}
+
+fn PrintAndPanic() void {
+    print("before panic")
+    panic("stop")
+}
+
+fn CheckedDivide(left i32, right i32) i32 {
+    if right == 0 {
+        panic("division rejected: " + "zero")
+    }
+    left / right
+}
+
+fn RequirePositive(value i32) i32 {
+    if value > 0 return value
+    panic("value must be positive")
+}
+
+fn RequireSome(value Option<i32>) i32 {
+    match value {
+        None: panic("missing value")
+        Some(inner): inner
+    }
+}
+
+fn RequireReady(ready bool) i32 {
+    42 if ready else panic("not ready")
+}
+
+fn RequireNarrow(value i64) i32 {
+    const converted = i32.From(value) else {
+        panic("conversion failed")
+    }
+    converted
+}
+
+fn WidenSigned(value i32) i64 {
+    i64.From(value)
+}
+
+fn WidenUnsigned(value u8) i32 {
+    i32.From(value)
+}
+
+fn WidenFloat(value f32) f64 {
+    f64.From(value)
+}
+
+fn ExactFloat(value i32) f64 {
+    f64.From(value)
+}
+
+fn NarrowSigned(value i64) Result<i32, NumberError> {
+    i32.From(value)
+}
+
+fn SignedToUnsigned(value i32) Result<u32, NumberError> {
+    u32.From(value)
+}
+
+fn UnsignedToSigned(value u64) Result<i64, NumberError> {
+    i64.From(value)
+}
+
+fn FloatToSigned(value f64) Result<i32, NumberError> {
+    i32.From(value)
+}
+
+fn FloatToUnsigned(value f32) Result<u8, NumberError> {
+    u8.From(value)
+}
+
+fn FloatToSize(value f64) Result<usize, NumberError> {
+    usize.From(value)
+}
+
+fn FloatToIsize(value f64) Result<isize, NumberError> {
+    isize.From(value)
+}
+
+fn SignedToFloat(value i64) Result<f64, NumberError> {
+    f64.From(value)
+}
+
+fn SizeToFloat(value usize) Result<f32, NumberError> {
+    f32.From(value)
+}
+
+fn NarrowFloat(value f64) Result<f32, NumberError> {
+    f32.From(value)
+}
+
+fn NarrowOrZero(value i64) i32 {
+    const converted = i32.From(value) else {
+        return 0
+    }
+    converted
+}
+
+struct Countdown {
+    Remaining i32
+
+    fn Next(&self) Option<i32> {
+        if self.Remaining == 0 return .None
+        const value = self.Remaining
+        self.Remaining = self.Remaining - 1
+        .Some(value)
+    }
+}
+
+fn countdown(start i32) Countdown {
+    Countdown { Remaining = start }
+}
+
+fn SumCountdown(start i32) i32 {
+    var total = 0
+    for value in countdown(start) {
+        total = total + value
+    }
+    total
+}
+
+fn IndexedCountdown(start i32) i32 {
+    var total = 0
+    for index, value in countdown(start) {
+        if value == 2 continue
+        if index == 5 break
+        total = total * 10 + value
+    }
+    total
+}
+
+fn StopCountdown() i32 {
+    var source = Countdown { Remaining = 5 }
+    for value in source {
+        if value == 3 break
+    }
+    source.Remaining
+}
+
+fn DrainCountdown(&source Countdown) i32 {
+    var total = 0
+    for value in source {
+        total = total + value
+    }
+    total
+}

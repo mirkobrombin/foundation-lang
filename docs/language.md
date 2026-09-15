@@ -1626,10 +1626,13 @@ instance methods; struct, array, and enum
 construction; complete value-struct destructuring; field and sequence access; named function
 values and anonymous functions with copy, edit, or own captures; direct and function-value calls;
 closed specializations of package-internal generic functions with explicit or inferred type
-arguments; local, field, and sequence-element assignment and replacement; branches; while and sequence
-`for` loops; break and continue; boolean expressions; checked integer arithmetic; exhaustive
-expression matches with literal payload patterns and guards; block and postfix conditional
-expressions; and `Result` else handling, including `Result<void, E>`. Foundation `[N]T` maps to Go
+arguments; local, field, and sequence-element assignment and replacement; branches; while loops,
+sequence `for` loops, and iterator `for` loops over a same-package `fn Next(&self) Option<T>`;
+break and continue; boolean expressions; checked integer arithmetic; `Target.From` numeric
+conversions; `print`; `panic` as a statement, return value, match arm, or conditional branch value;
+exhaustive expression matches with literal payload patterns and guards; block and postfix
+conditional expressions; and `Result` else handling, including `Result<void, E>`.
+Foundation `[N]T` maps to Go
 `[N]T`; read and edit `[T]` views map to `[]T`. Array-to-view conversion evaluates its source once,
 including an array returned by a call. Generated Foundation bodies mutate a view only when its
 Foundation parameter is editable. Go cannot encode a read-only slice parameter, so a Go caller
@@ -1637,7 +1640,8 @@ must preserve that read contract. Indexing remains bounds checked by Go. Concret
 instantiations become nominal Go value types. Each variant has an exported constructor and an
 `IsVariant` method; payload variants also have a checked `GetVariant` method. String literals,
 concatenation, equality, inequality, empty tests, and UTF-8 byte length map to Go String operations.
-Generated checked helpers preserve Foundation overflow and division failure behavior. Conditional
+Generated checked arithmetic helpers detect the same overflow and division failures as the other
+backends and raise a Go panic that names the failure. Conditional
 expressions evaluate the condition once and only evaluate the selected branch. Match arms and
 conditional branches in this subset cannot return from the surrounding function or break or
 continue one of its loops.
@@ -1663,6 +1667,18 @@ reuse that one address for the checked operation. A right-hand side with observa
 cannot redirect the assignment target.
 Value-struct destructuring evaluates the initializer once and binds every field in pattern order.
 Owner destructuring is rejected because this mode cannot preserve the outer allocation transfer.
+`print(value)` writes the String bytes and one newline to `os.Stdout` in a single write. An
+infallible `Target.From` becomes a Go conversion. A checked conversion calls a generated helper that
+returns the same `Result<Target, NumberError>` as the C and LLVM backends: it tests `NonFinite`,
+then `OutOfRange`, then `PrecisionLoss`, and range-checks every value before a Go conversion whose
+result Go leaves implementation-defined. An iterator `for` loop evaluates its sequence once, owns a
+temporary iterator or edits the iterator place through a Go pointer, calls `Next` before every
+iteration, and advances its `usize` index with the checked addition of the other backends.
+`panic(message)` writes `foundation panic: `, the message, and a newline to `os.Stderr`, then exits
+with status 1 through `os.Exit`, so deferred Go functions and `recover` never observe it. The
+generated code does not reproduce the Foundation frame trace. `panic` in another expression
+position, a function declared with a `never` result, and an iterator or any other function without
+a same-package body, including the prelude `range`, are rejected.
 `self` maps to a Go value receiver and `&self` maps to a pointer receiver. `ctor New` becomes
 `NewType`; another constructor becomes `NewTypeName`, and an associated function becomes
 `TypeName`. A `$self` method is rejected because Go cannot prevent the caller from reusing the

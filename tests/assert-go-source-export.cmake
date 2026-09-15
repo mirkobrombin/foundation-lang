@@ -369,10 +369,12 @@ endif()
 set(multiple_diagnostics "${multiple_output}${multiple_error}")
 string(REGEX MATCHALL "error\\[FDN4120\\]" multiple_codes "${multiple_diagnostics}")
 list(LENGTH multiple_codes multiple_count)
-if(NOT multiple_count EQUAL 3 OR
+if(NOT multiple_count EQUAL 6 OR
    NOT multiple_diagnostics MATCHES "consuming method receiver" OR
    NOT multiple_diagnostics MATCHES "cannot preserve owner destructuring" OR
-   NOT multiple_diagnostics MATCHES "conditional branches cannot return or escape an outer loop")
+   NOT multiple_diagnostics MATCHES "conditional branches cannot return or escape an outer loop" OR
+   NOT multiple_diagnostics MATCHES "panic only as a statement, return value, or branch value" OR
+   NOT multiple_diagnostics MATCHES "function without a same-package body")
     message(FATAL_ERROR
         "go-source did not report every rejection in one run:\n${multiple_diagnostics}")
 endif()

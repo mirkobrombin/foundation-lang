@@ -1,6 +1,15 @@
 package sample_source
 
-import "testing"
+import (
+	"bytes"
+	"errors"
+	"io"
+	"math"
+	"os"
+	"os/exec"
+	"strconv"
+	"testing"
+)
 
 func TestTranslatedFoundationSource(t *testing.T) {
 	if got := Add(20, 22); got != 42 {
@@ -391,5 +400,216 @@ func TestTranslatedArithmeticKeepsFoundationOverflowChecks(t *testing.T) {
 			}()
 			test()
 		})
+	}
+}
+
+func TestTranslatedPrintWritesFoundationLines(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = writer
+	PrintLines("Foundation")
+	os.Stdout = stdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("héllo Foundation\n\ntab\tquote\"\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("PrintLines wrote %q, want %q", got, want)
+	}
+}
+
+var panicCases = map[string]func(){
+	"statement":   func() { PrintAndPanic() },
+	"branch":      func() { _ = CheckedDivide(1, 0) },
+	"return":      func() { _ = RequirePositive(0) },
+	"match":       func() { _ = RequireSome(NewOptionI32None()) },
+	"conditional": func() { _ = RequireReady(false) },
+	"else":        func() { _ = RequireNarrow(1 << 40) },
+}
+
+func TestTranslatedPanicTerminatesProcess(t *testing.T) {
+	if name := os.Getenv("FOUNDATION_PANIC_CASE"); name != "" {
+		defer func() {
+			if recover() != nil {
+				_, _ = os.Stdout.WriteString("recovered\n")
+			}
+		}()
+		panicCases[name]()
+		return
+	}
+	if got := CheckedDivide(84, 2); got != 42 {
+		t.Fatalf("CheckedDivide(84, 2) = %d, want 42", got)
+	}
+	if got := RequirePositive(42); got != 42 {
+		t.Fatalf("RequirePositive(42) = %d, want 42", got)
+	}
+	if got := RequireSome(NewOptionI32Some(42)); got != 42 {
+		t.Fatalf("RequireSome(Some(42)) = %d, want 42", got)
+	}
+	if got := RequireReady(true); got != 42 {
+		t.Fatalf("RequireReady(true) = %d, want 42", got)
+	}
+	if got := RequireNarrow(42); got != 42 {
+		t.Fatalf("RequireNarrow(42) = %d, want 42", got)
+	}
+	tests := map[string]struct {
+		stdout string
+		stderr string
+	}{
+		"statement":   {"before panic\n", "foundation panic: stop\n"},
+		"branch":      {"", "foundation panic: division rejected: zero\n"},
+		"return":      {"", "foundation panic: value must be positive\n"},
+		"match":       {"", "foundation panic: missing value\n"},
+		"conditional": {"", "foundation panic: not ready\n"},
+		"else":        {"", "foundation panic: conversion failed\n"},
+	}
+	for name, want := range tests {
+		t.Run(name, func(t *testing.T) {
+			command := exec.Command(os.Args[0], "-test.run=^TestTranslatedPanicTerminatesProcess$")
+			command.Env = append(os.Environ(), "FOUNDATION_PANIC_CASE="+name)
+			var stdout, stderr bytes.Buffer
+			command.Stdout = &stdout
+			command.Stderr = &stderr
+			err := command.Run()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+				t.Fatalf("panic exit = %v, want status 1", err)
+			}
+			if stdout.String() != want.stdout || stderr.String() != want.stderr {
+				t.Fatalf("panic wrote stdout %q and stderr %q", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+type numberResult interface {
+	GetErr() (NumberError, bool)
+}
+
+func conversionFailure(result numberResult) string {
+	failure, failed := result.GetErr()
+	switch {
+	case !failed:
+		return "Ok"
+	case failure.IsOutOfRange():
+		return "OutOfRange"
+	case failure.IsNonFinite():
+		return "NonFinite"
+	case failure.IsPrecisionLoss():
+		return "PrecisionLoss"
+	}
+	return "invalid"
+}
+
+func TestTranslatedNumericConversionsMatchFoundation(t *testing.T) {
+	if WidenSigned(-2_147_483_648) != -2_147_483_648 || WidenUnsigned(255) != 255 ||
+		WidenFloat(0.1) != float64(float32(0.1)) || ExactFloat(-2_147_483_648) != -2_147_483_648 {
+		t.Fatal("an infallible conversion changed its value")
+	}
+	nan := math.NaN()
+	infinity := math.Inf(1)
+	pointerHalf := math.Ldexp(1, strconv.IntSize-1)
+	pointerLimit := math.Ldexp(1, strconv.IntSize)
+	tests := []struct {
+		name   string
+		result numberResult
+		want   string
+	}{
+		{"i64 max i32", NarrowSigned(2_147_483_647), "Ok"},
+		{"i64 above i32", NarrowSigned(2_147_483_648), "OutOfRange"},
+		{"i64 min i32", NarrowSigned(-2_147_483_648), "Ok"},
+		{"i64 below i32", NarrowSigned(-2_147_483_649), "OutOfRange"},
+		{"negative to u32", SignedToUnsigned(-1), "OutOfRange"},
+		{"i32 max to u32", SignedToUnsigned(2_147_483_647), "Ok"},
+		{"u64 above i64", UnsignedToSigned(1 << 63), "OutOfRange"},
+		{"i64 max from u64", UnsignedToSigned(1<<63 - 1), "Ok"},
+		{"NaN to i32", FloatToSigned(nan), "NonFinite"},
+		{"infinity to i32", FloatToSigned(-infinity), "NonFinite"},
+		{"f64 above i32", FloatToSigned(2_147_483_648), "OutOfRange"},
+		{"f64 max i32", FloatToSigned(2_147_483_647), "Ok"},
+		{"f64 min i32", FloatToSigned(-2_147_483_648), "Ok"},
+		{"f64 below i32", FloatToSigned(-2_147_483_649), "OutOfRange"},
+		{"fraction to i32", FloatToSigned(1.5), "PrecisionLoss"},
+		{"negative fraction to i32", FloatToSigned(-0.5), "PrecisionLoss"},
+		{"negative zero to i32", FloatToSigned(math.Copysign(0, -1)), "Ok"},
+		{"f32 max u8", FloatToUnsigned(255), "Ok"},
+		{"f32 above u8", FloatToUnsigned(256), "OutOfRange"},
+		{"negative fraction to u8", FloatToUnsigned(-0.5), "OutOfRange"},
+		{"negative zero to u8", FloatToUnsigned(float32(math.Copysign(0, -1))), "Ok"},
+		{"f32 NaN to u8", FloatToUnsigned(float32(nan)), "NonFinite"},
+		{"negative to usize", FloatToSize(-1), "OutOfRange"},
+		{"usize limit", FloatToSize(pointerLimit), "OutOfRange"},
+		{"usize high bit", FloatToSize(pointerHalf), "Ok"},
+		{"isize limit", FloatToIsize(pointerHalf), "OutOfRange"},
+		{"isize min", FloatToIsize(-pointerHalf), "Ok"},
+		{"exact i64 to f64", SignedToFloat(1 << 53), "Ok"},
+		{"inexact i64 to f64", SignedToFloat(1<<53 + 1), "PrecisionLoss"},
+		{"i64 max to f64", SignedToFloat(math.MaxInt64), "PrecisionLoss"},
+		{"i64 min to f64", SignedToFloat(math.MinInt64), "Ok"},
+		{"usize max to f32", SizeToFloat(math.MaxUint), "PrecisionLoss"},
+		{"exact usize to f32", SizeToFloat(1 << 24), "Ok"},
+		{"inexact usize to f32", SizeToFloat(1<<24 + 1), "PrecisionLoss"},
+		{"half to f32", NarrowFloat(0.5), "Ok"},
+		{"tenth to f32", NarrowFloat(0.1), "PrecisionLoss"},
+		{"f32 max", NarrowFloat(math.MaxFloat32), "Ok"},
+		{"above f32 max", NarrowFloat(math.Nextafter(math.MaxFloat32, infinity)), "PrecisionLoss"},
+		{"f32 overflow midpoint", NarrowFloat(0x1.ffffffp127), "OutOfRange"},
+		{"below overflow midpoint", NarrowFloat(math.Nextafter(0x1.ffffffp127, 0)), "PrecisionLoss"},
+		{"f64 above f32", NarrowFloat(1e39), "OutOfRange"},
+		{"f64 NaN to f32", NarrowFloat(nan), "NonFinite"},
+		{"f64 infinity to f32", NarrowFloat(-infinity), "NonFinite"},
+		{"f32 underflow", NarrowFloat(1e-50), "PrecisionLoss"},
+	}
+	for _, test := range tests {
+		if got := conversionFailure(test.result); got != test.want {
+			t.Errorf("%s = %s, want %s", test.name, got, test.want)
+		}
+	}
+	if value, ok := NarrowSigned(-2_147_483_648).GetOk(); !ok || value != -2_147_483_648 {
+		t.Fatalf("NarrowSigned(min) = (%d, %v)", value, ok)
+	}
+	if value, ok := UnsignedToSigned(1<<63 - 1).GetOk(); !ok || value != math.MaxInt64 {
+		t.Fatalf("UnsignedToSigned(max) = (%d, %v)", value, ok)
+	}
+	if value, ok := FloatToSigned(-2_147_483_648).GetOk(); !ok || value != math.MinInt32 {
+		t.Fatalf("FloatToSigned(min) = (%d, %v)", value, ok)
+	}
+	if value, ok := FloatToSize(pointerHalf).GetOk(); !ok || value != 1<<(strconv.IntSize-1) {
+		t.Fatalf("FloatToSize(high bit) = (%d, %v)", value, ok)
+	}
+	if value, ok := SignedToFloat(math.MinInt64).GetOk(); !ok || value != -0x1p63 {
+		t.Fatalf("SignedToFloat(min) = (%v, %v)", value, ok)
+	}
+	if value, ok := NarrowFloat(math.MaxFloat32).GetOk(); !ok || value != math.MaxFloat32 {
+		t.Fatalf("NarrowFloat(max) = (%v, %v)", value, ok)
+	}
+	if NarrowOrZero(3_000_000_000) != 0 || NarrowOrZero(42) != 42 {
+		t.Fatal("NarrowOrZero did not take its else branch exactly on failure")
+	}
+}
+
+func TestTranslatedIteratorLoopsKeepFoundationOrder(t *testing.T) {
+	if got := SumCountdown(4); got != 10 {
+		t.Fatalf("SumCountdown(4) = %d, want 10", got)
+	}
+	if got := SumCountdown(0); got != 0 {
+		t.Fatalf("SumCountdown(0) = %d, want 0", got)
+	}
+	if got := IndexedCountdown(6); got != 6543 {
+		t.Fatalf("IndexedCountdown(6) = %d, want 6543", got)
+	}
+	if got := StopCountdown(); got != 2 {
+		t.Fatalf("StopCountdown() = %d, want 2", got)
+	}
+	source := Countdown{Remaining: 3}
+	if got := DrainCountdown(&source); got != 6 || source.Remaining != 0 {
+		t.Fatalf("DrainCountdown() = %d with remaining %d", got, source.Remaining)
 	}
 }

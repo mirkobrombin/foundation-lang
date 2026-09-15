@@ -1624,6 +1624,15 @@ class GoSourceEmitter {
 
         std::ostringstream output;
         output << "package " << goPackageName(packageInterface_) << "\n\n";
+        if (imports_.size() == 1) {
+            output << "import \"" << *imports_.begin() << "\"\n\n";
+        } else if (!imports_.empty()) {
+            output << "import (\n";
+            for (const auto &imported : imports_) {
+                output << "\t\"" << imported << "\"\n";
+            }
+            output << ")\n\n";
+        }
         renderStructs(output);
         if (!reachableStructs_.empty() && !reachableEnums_.empty()) {
             output << '\n';
@@ -2364,13 +2373,13 @@ class GoSourceEmitter {
             return true;
         }
         if (const auto *expression = std::get_if<FirExpressionStatement>(&statement.value)) {
-            return scanExpression(function, expression->expression);
+            return scanValue(function, expression->expression);
         }
         if (const auto *discarded = std::get_if<FirDiscardStatement>(&statement.value)) {
             return scanExpression(function, discarded->expression);
         }
         if (const auto *returned = std::get_if<FirReturnStatement>(&statement.value)) {
-            return !returned->value.has_value() || scanExpression(function, *returned->value);
+            return !returned->value.has_value() || scanValue(function, *returned->value);
         }
         if (const auto *branch = std::get_if<FirIfStatement>(&statement.value)) {
             const auto condition = scanExpression(function, branch->condition);
@@ -2386,22 +2395,44 @@ class GoSourceEmitter {
         if (const auto *loop = std::get_if<FirForStatement>(&statement.value)) {
             const auto rejections = rejections_;
             if (loop->sequenceStorage >= function.locals.size() ||
-                loop->index >= function.locals.size() || loop->value >= function.locals.size() ||
-                loop->next.has_value() || loop->ownsSequence ||
-                !scanExpression(function, loop->sequence) || !scanBlock(function, loop->body)) {
+                loop->index >= function.locals.size() || loop->value >= function.locals.size()) {
+                fail("go-source found invalid for metadata", statement.span);
+                return false;
+            }
+            const auto sequence = scanExpression(function, loop->sequence);
+            const auto next = !loop->next.has_value() || scanExpression(function, *loop->next);
+            if (!scanBlock(function, loop->body) || !sequence || !next) {
                 if (rejections_ == rejections) {
-                    fail("go-source supports for over arrays and slices only", statement.span);
+                    fail("go-source supports for over arrays, slices, and iterators only",
+                         statement.span);
                 }
                 return false;
+            }
+            if (loop->next.has_value()) {
+                const auto option = function.expressions[*loop->next].type;
+                if (!builtinEnum(option, "Option") || !enumPayloadType(option, 1).has_value()) {
+                    fail("go-source requires an iterator that returns Option", statement.span);
+                    return false;
+                }
+                const auto *loan = std::get_if<FirOwnershipExpression>(
+                    &function.expressions[loop->sequence].value);
+                if (!loop->ownsSequence &&
+                    (loan == nullptr || !addressableExpression(function, loan->operand))) {
+                    fail("go-source cannot preserve this iterator loan", statement.span);
+                    return false;
+                }
+                return true;
             }
             auto type = function.expressions[loop->sequence].type;
             if ((type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
                 type.arguments.size() == 1) {
                 type = type.arguments.front();
             }
-            if ((type.kind != TypeKind::Array && type.kind != TypeKind::Slice) ||
+            if (loop->ownsSequence ||
+                (type.kind != TypeKind::Array && type.kind != TypeKind::Slice) ||
                 type.arguments.size() != 1) {
-                fail("go-source supports for over arrays and slices only", statement.span);
+                fail("go-source supports for over arrays, slices, and iterators only",
+                     statement.span);
                 return false;
             }
             return true;
@@ -2414,12 +2445,39 @@ class GoSourceEmitter {
         return false;
     }
 
+    bool panicCall(const FirFunction &function, FirExpressionId id) const {
+        if (id >= function.expressions.size()) {
+            return false;
+        }
+        const auto *call = std::get_if<FirCallExpression>(&function.expressions[id].value);
+        return call != nullptr && call->kind == FirCallKind::Panic;
+    }
+
+    // Accepts panic only where Go can end the control path with a terminating statement.
+    bool scanValue(const FirFunction &function, FirExpressionId id) {
+        if (!panicCall(function, id)) {
+            return scanExpression(function, id);
+        }
+        const auto &expression = function.expressions[id];
+        const auto &call = std::get<FirCallExpression>(expression.value);
+        if (call.arguments.size() != 1 || !call.typeArguments.empty()) {
+            fail("go-source found invalid panic arguments", expression.span);
+            return false;
+        }
+        return scanExpression(function, call.arguments.front());
+    }
+
     bool scanExpression(const FirFunction &function, FirExpressionId id) {
         if (id >= function.expressions.size()) {
             fail("go-source found an invalid expression in " + function.name, function.sourceSpan);
             return false;
         }
         const auto &expression = function.expressions[id];
+        if (panicCall(function, id)) {
+            fail("go-source supports panic only as a statement, return value, or branch value",
+                 expression.span);
+            return false;
+        }
         if (!sourceType(expression.type).has_value()) {
             fail("go-source reached an unsupported expression type", expression.span);
             return false;
@@ -2535,7 +2593,7 @@ class GoSourceEmitter {
                 }
                 if ((arm.guard.has_value() && !scanExpression(function, *arm.guard)) ||
                     !scanBlock(function, arm.block) ||
-                    (arm.expression.has_value() && !scanExpression(function, *arm.expression))) {
+                    (arm.expression.has_value() && !scanValue(function, *arm.expression))) {
                     return false;
                 }
                 if (blockEscapesExpression(function, arm.block)) {
@@ -2550,10 +2608,8 @@ class GoSourceEmitter {
             const auto rejections = rejections_;
             if (!scanExpression(function, value->condition) ||
                 function.expressions[value->condition].type != boolType ||
-                !scanBlock(function, value->thenBlock) ||
-                !scanExpression(function, value->thenValue) ||
-                !scanBlock(function, value->elseBlock) ||
-                !scanExpression(function, value->elseValue)) {
+                !scanBlock(function, value->thenBlock) || !scanValue(function, value->thenValue) ||
+                !scanBlock(function, value->elseBlock) || !scanValue(function, value->elseValue)) {
                 if (rejections_ == rejections) {
                     fail("go-source found an invalid conditional expression", expression.span);
                 }
@@ -2671,6 +2727,34 @@ class GoSourceEmitter {
                     return false;
                 }
                 return true;
+            }
+            if (call->kind == FirCallKind::Print) {
+                if (call->arguments.size() != 1 || !call->typeArguments.empty()) {
+                    fail("go-source found invalid print arguments", expression.span);
+                    return false;
+                }
+                return scanExpression(function, call->arguments.front());
+            }
+            if (call->kind == FirCallKind::NumericConversion) {
+                if (call->arguments.size() != 1 || call->typeArguments.size() != 2 ||
+                    !isNumeric(call->typeArguments[0]) || !isNumeric(call->typeArguments[1])) {
+                    fail("go-source found invalid numeric conversion metadata", expression.span);
+                    return false;
+                }
+                if (!scanExpression(function, call->arguments.front())) {
+                    return false;
+                }
+                if (expression.type == call->typeArguments[1]) {
+                    return true;
+                }
+                const auto error = enumPayloadType(expression.type, 1);
+                if (!builtinEnum(expression.type, "Result") || !error.has_value() ||
+                    !builtinEnum(*error, "NumberError") ||
+                    enumPayloadType(expression.type, 0) != call->typeArguments[1]) {
+                    fail("go-source found an invalid checked numeric conversion", expression.span);
+                    return false;
+                }
+                return scanType(expression.type, expression.span);
             }
             if ((call->kind != FirCallKind::Function && call->kind != FirCallKind::FunctionValue) ||
                 !call->typeArguments.empty()) {
@@ -2850,6 +2934,119 @@ class GoSourceEmitter {
         return helperNames_.at(key);
     }
 
+    std::string printHelper() {
+        if (!helperNames_.contains("Print")) {
+            const auto name = uniqueName("foundationPrint");
+            helperNames_["Print"] = name;
+            imports_.insert("os");
+            helpers_[name] = "func " + name +
+                             "(value string) {\n"
+                             "\t_, _ = os.Stdout.WriteString(value + \"\\n\")\n"
+                             "}\n";
+        }
+        return helperNames_.at("Print");
+    }
+
+    // Foundation panic does not unwind, so the helper exits before any deferred Go function or
+    // recover can run. It returns a value only so the call site can wrap it in a Go panic, which
+    // Go accepts as a terminating statement.
+    std::string panicHelper() {
+        if (!helperNames_.contains("Panic")) {
+            const auto name = uniqueName("foundationPanic");
+            helperNames_["Panic"] = name;
+            imports_.insert("os");
+            helpers_[name] = "func " + name +
+                             "(message string) any {\n"
+                             "\t_, _ = os.Stderr.WriteString(\"foundation panic: \" + message + "
+                             "\"\\n\")\n"
+                             "\tos.Exit(1)\n"
+                             "\treturn nil\n"
+                             "}\n";
+        }
+        return helperNames_.at("Panic");
+    }
+
+    std::optional<std::string> renderPanic(const FirFunction &function, FirExpressionId id,
+                                           unsigned int depth) {
+        const auto &call = std::get<FirCallExpression>(function.expressions[id].value);
+        const auto message = renderExpression(function, call.arguments.front(), depth);
+        if (!message.has_value()) {
+            return std::nullopt;
+        }
+        return "panic(" + panicHelper() + '(' + *message + "))";
+    }
+
+    std::pair<std::string, std::string> integerBounds(Type type) {
+        imports_.insert("math");
+        const auto tag = goSourceTypeTag(type);
+        const auto bits = type.kind == TypeKind::Isize || type.kind == TypeKind::Usize
+                              ? std::string{}
+                              : tag.substr(1);
+        if (isSignedInteger(type)) {
+            return {"math.MinInt" + bits, "math.MaxInt" + bits + "+1"};
+        }
+        return {"0", "math.MaxUint" + bits + "+1"};
+    }
+
+    // Mirrors the C and LLVM checked conversions: NonFinite precedes OutOfRange, which precedes
+    // PrecisionLoss, and every range test runs before a Go conversion whose result would be
+    // implementation-defined.
+    std::string conversionHelper(Type source, Type target, const Type &resultType) {
+        const auto key = "Convert" + enumTypeLabel(source) + "To" + enumTypeLabel(target);
+        if (helperNames_.contains(key)) {
+            return helperNames_.at(key);
+        }
+        const auto name = uniqueName("foundation" + key);
+        helperNames_[key] = name;
+        const auto sourceName = *goSourceType(source);
+        const auto targetName = *goSourceType(target);
+        const auto result = enumName(resultType);
+        const auto error = enumName(*enumPayloadType(resultType, 1));
+        const auto failure = [&](FirVariantId variant) {
+            return "\t\treturn " + result + "{tag: 1, " + enumFieldName(resultType, 1) + ": " +
+                   error + "{tag: " + std::to_string(variant) + "}}\n\t}\n";
+        };
+        std::ostringstream output;
+        output << "func " << name << "(value " << sourceName << ") " << result << " {\n";
+        if (isFloating(source)) {
+            imports_.insert("math");
+            const auto wide = source == f32Type ? "float64(value)" : "value";
+            output << "\tif math.IsNaN(" << wide << ") || math.IsInf(" << wide << ", 0) {\n"
+                   << failure(1);
+        }
+        if (isInteger(source) && isInteger(target)) {
+            output << "\tconverted := " << targetName << "(value)\n\tif ";
+            if (isSignedInteger(source) && !isSignedInteger(target)) {
+                output << "value < 0 || ";
+            } else if (!isSignedInteger(source) && isSignedInteger(target)) {
+                output << "converted < 0 || ";
+            }
+            output << sourceName << "(converted) != value {\n" << failure(0);
+        } else if (isFloating(source) && isInteger(target)) {
+            const auto [lower, upper] = integerBounds(target);
+            output << "\tif value < " << lower << " || value >= " << upper << " {\n"
+                   << failure(0) << "\tconverted := " << targetName << "(value)\n"
+                   << "\tif " << sourceName << "(converted) != value {\n"
+                   << failure(2);
+        } else if (isInteger(source)) {
+            const auto [lower, upper] = integerBounds(source);
+            output << "\tconverted := " << targetName << "(value)\n"
+                   << "\tif converted < " << lower << " || converted >= " << upper << " || "
+                   << sourceName << "(converted) != value {\n"
+                   << failure(2);
+        } else {
+            // f64 values at or beyond the midpoint above MaxFloat32 round to infinity.
+            output << "\tif math.Abs(value) >= 0x1.ffffffp+127 {\n"
+                   << failure(0) << "\tconverted := " << targetName << "(value)\n"
+                   << "\tif " << sourceName << "(converted) != value {\n"
+                   << failure(2);
+        }
+        output << "\treturn " << result << "{tag: 0, " << enumFieldName(resultType, 0)
+               << ": converted}\n}\n";
+        helpers_[name] = output.str();
+        return name;
+    }
+
     static std::string renderIntegerHelper(std::string_view name, FirBinaryOperator operation,
                                            Type type) {
         const auto goType = *goSourceType(type);
@@ -3014,17 +3211,25 @@ class GoSourceEmitter {
             if (failed_) {
                 return std::nullopt;
             }
-            output << indentation(armDepth) << "return";
-            if (!renderedResult->empty()) {
-                if (!arm.expression.has_value()) {
-                    fail("go-source cannot render a value match arm without a value", span);
-                    return std::nullopt;
-                }
-                const auto value = renderExpression(function, *arm.expression, armDepth);
+            if (arm.expression.has_value() && panicCall(function, *arm.expression)) {
+                const auto value = renderPanic(function, *arm.expression, armDepth);
                 if (!value.has_value()) {
                     return std::nullopt;
                 }
-                output << ' ' << *value;
+                output << indentation(armDepth) << *value;
+            } else {
+                output << indentation(armDepth) << "return";
+                if (!renderedResult->empty()) {
+                    if (!arm.expression.has_value()) {
+                        fail("go-source cannot render a value match arm without a value", span);
+                        return std::nullopt;
+                    }
+                    const auto value = renderExpression(function, *arm.expression, armDepth);
+                    if (!value.has_value()) {
+                        return std::nullopt;
+                    }
+                    output << ' ' << *value;
+                }
             }
             output << "\n";
             if (guarded) {
@@ -3065,6 +3270,13 @@ class GoSourceEmitter {
             renderBlock(output, function, block, branchDepth);
             if (failed_) {
                 return false;
+            }
+            if (panicCall(function, value)) {
+                const auto rendered = renderPanic(function, value, branchDepth);
+                if (rendered.has_value()) {
+                    output << indentation(branchDepth) << *rendered << "\n";
+                }
+                return rendered.has_value();
             }
             const auto rendered = renderExpression(function, value, branchDepth);
             if (!rendered.has_value()) {
@@ -3528,6 +3740,21 @@ class GoSourceEmitter {
                 }
                 return *goSourceType(expression.type) + "(len(" + *argument + "))";
             }
+            if (call->kind == FirCallKind::Print || call->kind == FirCallKind::NumericConversion) {
+                const auto argument = renderExpression(function, arguments->front(), depth);
+                if (!argument.has_value()) {
+                    return std::nullopt;
+                }
+                if (call->kind == FirCallKind::Print) {
+                    return printHelper() + '(' + *argument + ')';
+                }
+                const auto &target = call->typeArguments[1];
+                if (expression.type == target) {
+                    return *goSourceType(target) + '(' + *argument + ')';
+                }
+                return conversionHelper(call->typeArguments[0], target, expression.type) + '(' +
+                       *argument + ')';
+            }
             if (call->kind == FirCallKind::FunctionValue) {
                 if (call->local >= function.locals.size() || call->local >= currentLocals_.size()) {
                     fail("go-source cannot resolve a function value call", expression.span);
@@ -3764,9 +3991,11 @@ class GoSourceEmitter {
             return;
         }
         if (const auto *expression = std::get_if<FirExpressionStatement>(&statement.value)) {
-            const auto value = renderExpression(function, expression->expression, depth);
+            const auto panic = panicCall(function, expression->expression);
+            const auto value = panic ? renderPanic(function, expression->expression, depth)
+                                     : renderExpression(function, expression->expression, depth);
             if (value.has_value()) {
-                if (function.expressions[expression->expression].type == voidType) {
+                if (panic || function.expressions[expression->expression].type == voidType) {
                     output << indentation << *value << "\n";
                 } else {
                     output << indentation << "_ = " << *value << "\n";
@@ -3782,6 +4011,13 @@ class GoSourceEmitter {
             return;
         }
         if (const auto *returned = std::get_if<FirReturnStatement>(&statement.value)) {
+            if (returned->value.has_value() && panicCall(function, *returned->value)) {
+                const auto value = renderPanic(function, *returned->value, depth);
+                if (value.has_value()) {
+                    output << indentation << *value << "\n";
+                }
+                return;
+            }
             output << indentation << "return";
             if (returned->value.has_value()) {
                 const auto value = renderExpression(function, *returned->value, depth);
@@ -3826,6 +4062,36 @@ class GoSourceEmitter {
             }
             const auto sequenceName = currentLocals_[loop->sequenceStorage];
             const auto indexName = currentLocals_[loop->index];
+            if (loop->next.has_value()) {
+                output << indentation << sequenceName << " := ";
+                if (loop->ownsSequence) {
+                    output << *sequence << "\n";
+                } else {
+                    output << "&(" << *sequence << ")\n";
+                    currentLocals_[loop->sequenceStorage] = '*' + sequenceName;
+                }
+                const auto option = function.expressions[*loop->next].type;
+                const auto next = temporaryLocal("next");
+                output << indentation << "for " << indexName << " := uint(0); ; " << indexName
+                       << " = " << integerHelper(FirBinaryOperator::Add, usizeType) << '('
+                       << indexName << ", 1) {\n";
+                const auto rendered = renderExpression(function, *loop->next, depth + 1);
+                if (!rendered.has_value()) {
+                    return;
+                }
+                const auto &valueName = currentLocals_[loop->value];
+                output << indentation << '\t' << next << " := " << *rendered << "\n"
+                       << indentation << "\tif " << next << ".tag == 0 {\n"
+                       << indentation << "\t\tbreak\n"
+                       << indentation << "\t}\n"
+                       << indentation << '\t' << valueName << " := " << next << '.'
+                       << enumFieldName(option, 1) << "\n"
+                       << indentation << "\t_ = " << valueName << "\n";
+                renderBlock(output, function, loop->body, depth + 1);
+                currentLocals_[loop->sequenceStorage] = sequenceName;
+                output << indentation << "}\n";
+                return;
+            }
             const auto rawIndex = temporaryLocal("index");
             const auto previousIndex = currentLocals_[loop->index];
             const auto previousValue = currentLocals_[loop->value];
@@ -3997,6 +4263,7 @@ class GoSourceEmitter {
     std::map<std::pair<std::string, FirVariantId>, std::string> enumConstructorNames_;
     std::vector<std::string> currentLocals_;
     std::set<std::string> currentGeneratedLocals_;
+    std::set<std::string> imports_;
     std::set<std::tuple<std::size_t, std::size_t, std::size_t, std::string>> reported_;
     std::size_t rejections_{};
     bool failed_{};
