@@ -216,6 +216,13 @@ test("recognizes package and lock directives with dedicated scopes", () => {
     const nativeLink = new RegExp(packageGrammar.repository.nativeLink.patterns[0].match)
         .exec("native_link m target linux");
     assert.deepEqual(nativeLink?.slice(1), ["native_link", "m", "target", "linux"]);
+    const freestandingLink = new RegExp(packageGrammar.repository.nativeLink.patterns[0].match)
+        .exec("native_link soft target freestanding");
+    assert.deepEqual(freestandingLink?.slice(1),
+        ["native_link", "soft", "target", "freestanding"]);
+    const hostedLink = new RegExp(packageGrammar.repository.nativeLink.patterns[0].match)
+        .exec("native_link m target hosted");
+    assert.deepEqual(hostedLink?.slice(1), ["native_link", "m", "target", "hosted"]);
     const hyphenatedLink = new RegExp(packageGrammar.repository.nativeLink.patterns[0].match)
         .exec("native_link fuse-compat");
     assert.deepEqual(hyphenatedLink?.slice(1), ["native_link", "fuse-compat", undefined, undefined]);

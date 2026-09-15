@@ -47,7 +47,7 @@
             "patterns": [
                 {
                     "name": "meta.attribute.compiler.foundation",
-                    "match": "(@)(target)(\\()\\s*(linux|macos|windows)\\s*(\\))",
+                    "match": "(@)(target)(\\()\\s*(linux|macos|windows|freestanding|hosted)\\s*(\\))",
                     "captures": {
                         "1": { "name": "punctuation.definition.annotation.foundation" },
                         "2": { "name": "support.type.attribute.foundation" },

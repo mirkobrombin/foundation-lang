@@ -168,7 +168,7 @@
         "nativeLink": {
             "patterns": [
                 {
-                    "match": "^\\s*(native_link)\\s+([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*)(?:\\s+(target)\\s+(linux|macos|windows))?\\s*(?=#|$)",
+                    "match": "^\\s*(native_link)\\s+([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*)(?:\\s+(target)\\s+(linux|macos|windows|freestanding|hosted))?\\s*(?=#|$)",
                     "captures": {
                         "1": { "name": "keyword.declaration.native-link.foundation.package" },
                         "2": { "name": "entity.name.library.native.foundation.package" },
@@ -181,7 +181,7 @@
         "nativeSource": {
             "patterns": [
                 {
-                    "match": "^\\s*(native_source)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)(?:\\s+(target)\\s+(linux|macos|windows))?\\s*(?=#|$)",
+                    "match": "^\\s*(native_source)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)(?:\\s+(target)\\s+(linux|macos|windows|freestanding|hosted))?\\s*(?=#|$)",
                     "captures": {
                         "1": { "name": "keyword.declaration.native-source.foundation.package" },
                         "2": { "name": "string.unquoted.path.foundation.package" },
@@ -211,7 +211,7 @@
         "dependency": {
             "patterns": [
                 {
-                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)(?:\\s+(target)\\s+(linux|macos|windows))?(?:\\s+(scope)\\s+(test))?\\s*(?=#|$)",
+                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)(?:\\s+(target)\\s+(linux|macos|windows|freestanding|hosted))?(?:\\s+(scope)\\s+(test))?\\s*(?=#|$)",
                     "captures": {
                         "1": { "name": "keyword.declaration.dependency.foundation.package" },
                         "2": { "name": "entity.name.namespace.dependency.foundation.package" },
@@ -225,7 +225,7 @@
                     }
                 },
                 {
-                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)\\s+(scope)\\s+(test)\\s+(target)\\s+(linux|macos|windows)\\s*(?=#|$)",
+                    "match": "^\\s*(dependency)\\s+([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*)\\s+([*]|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)\\s+(path|registry)\\s+(\"(?:\\\\.|[^\"\\\\])*\"|[^\\s#]+)\\s+(scope)\\s+(test)\\s+(target)\\s+(linux|macos|windows|freestanding|hosted)\\s*(?=#|$)",
                     "captures": {
                         "1": { "name": "keyword.declaration.dependency.foundation.package" },
                         "2": { "name": "entity.name.namespace.dependency.foundation.package" },

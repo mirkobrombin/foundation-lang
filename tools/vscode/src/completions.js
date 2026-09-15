@@ -54,7 +54,7 @@ const staticCompletions = [
         label: "@target(...)",
         kind: "Keyword",
         detail: "Select a declaration for one compilation target",
-        insertText: "@target(${1|linux,macos,windows|})"
+        insertText: "@target(${1|linux,macos,windows,freestanding,hosted|})"
     },
     {
         label: "@blocking",

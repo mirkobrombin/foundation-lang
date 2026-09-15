@@ -47,7 +47,7 @@
         "target": {
             "patterns": [
                 {
-                    "match": "^\\s*(target)\\s+(linux|macos|windows)\\s*(?=#|$)",
+                    "match": "^\\s*(target)\\s+(linux|macos|windows|freestanding)\\s*(?=#|$)",
                     "captures": {
                         "1": { "name": "keyword.other.target.foundation.lock" },
                         "2": { "name": "constant.language.target.foundation.lock" }

@@ -337,7 +337,7 @@
     "Target declaration": {
         "prefix": "target",
         "body": [
-            "@target(${1|linux,macos,windows|})",
+            "@target(${1|linux,macos,windows,freestanding,hosted|})",
             "fn ${2:name}() ${3:void} {",
             "    ${4:return}",
             "}"
