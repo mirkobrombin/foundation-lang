@@ -2,6 +2,9 @@
 
 `std.path` manipulates platform paths without exposing C macros or native path encodings.
 
+`std.path` is available on every target. Under `freestanding` it uses `/` separators
+and POSIX roots.
+
 ```foundation
 fn Separator() String
 fn Join(left String, right String) String

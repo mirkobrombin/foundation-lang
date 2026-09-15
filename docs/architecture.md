@@ -103,6 +103,11 @@ leak a C++ type into emitted code, runtime headers, package metadata, or the lan
 
 `runtime` contains the stable C ABI and platform shims. It exposes capability, not policy. Memory,
 threads, clocks, files, sockets, and dynamic loading enter the language through this boundary.
+`runtime/src/core.c` holds the core every target needs: frames, panic, Strings, checked arithmetic,
+allocation counters, and the `std.text` natives. Hosted builds compile it with the platform
+runtime. Freestanding libraries compile only the core and `core_print.c` with
+`FOUNDATION_FREESTANDING`, where allocation, panic, output, and the frame chain go through
+integrator hooks.
 Native inputs compile beside generated C and include the generated `foundation_abi.h`; no compiler
 or C++ type crosses that header.
 

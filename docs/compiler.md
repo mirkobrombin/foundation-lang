@@ -38,6 +38,14 @@ The root README states the LLVM version required by the current checkout. CMake 
 checks for LLVM and optional providers. Provider-specific source revisions belong in their build
 configuration and provider README, not in this implementation overview.
 
+`build-library --target freestanding` builds a static archive for an LLVM triple. The LLVM
+backend receives the triple, CPU, sorted features, relocation model, and function and data
+sections, and adds no C library calls beyond the memory primitives. Clang compiles the generated C,
+the runtime core, and native C inputs with one freestanding option set. The compiler identifies the
+selected Clang and writes the archive itself. The
+[freestanding target](language.md#freestanding-target) defines the options, bundle, and hook
+contract.
+
 OpenSSL and WAMR are optional builds. OpenSSL supplies TLS and asymmetric authentication. WAMR
 supplies WebAssembly guest execution through the engine-neutral plugin ABI. Neither provider
 changes Foundation IR or the base runtime dependency set.
@@ -52,10 +60,16 @@ The [language specification](language.md) defines the accepted syntax and semant
 rejected fixtures exercise that boundary through the compiler entry point; this document does not
 duplicate an exhaustive feature inventory.
 
-Package-scope `@target(linux)`, `@target(macos)`, and `@target(windows)` declarations are selected
-before linking. `check`, `documentation`, `emit-c`, `emit-c-header`, and `emit-metadata` accept an
-explicit target that must match the package lock. Native build, run, and test commands remain
-host-targeted.
+Package-scope `@target(...)` declarations, including `methods` blocks, are selected before
+linking; `hosted` matches every operating-system target. `check`, `documentation`, `emit-c`,
+`emit-c-header`, and `emit-metadata` accept an explicit target that must match the package lock.
+Native build, run, and test commands remain host-targeted.
+
+Under `freestanding`, project loading keeps only the freestanding SDK set in the graph, and
+analysis rejects tasks, channels, `select`, blocking and callback imports, retry policies, and
+`main`. The front end does not know the triple, so `usize` and `isize` use portable bounds. C
+emission for `freestanding` includes only the runtime core header and compiler-provided
+freestanding headers, and roots the program at its C ABI exports.
 
 Package-defined attributes carry typed constant metadata. The compiler checks visibility, target,
 arguments, repetition, and metadata-safe value types. Resolved applications survive in FIR, and

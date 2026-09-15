@@ -214,22 +214,28 @@ The retired `let` spelling is also rejected; immutable bindings use `const`.
 
 ## Target selection
 
-`@target(linux)`, `@target(macos)`, and `@target(windows)` select package-scope declarations for
-one compilation target. A declaration has at most one `@target`. Unknown targets are errors.
+`@target(linux)`, `@target(macos)`, `@target(windows)`, and `@target(freestanding)` select
+package-scope declarations for one compilation target. `@target(hosted)` selects a declaration for
+`linux`, `macos`, and `windows`; `hosted` is a selector, not a target. A declaration has at most one
+`@target`. A `methods` block accepts `@target` and no other attribute, and an inactive block is
+removed with its members. Unknown targets are errors.
 Other `@Name(...)` forms resolve through the typed package attribute system. The parser checks
 every branch for lexical and syntax errors, but removes inactive declarations and the syntax owned
 by their bodies before package linking. They
 therefore cannot introduce duplicate names, imports, types, or C symbols on another target.
 
-The compiler uses its host platform by default. `check`, `emit-c`, `emit-c-header`, and `emit-metadata`
-accept `--target linux`, `--target macos`, or `--target windows`. The target is deterministic
-compiler input and must match a package lock. `build`, `run`, and `test` use the host C toolchain;
-cross-compilation passes emitted C11 and the runtime to a matching target toolchain. Programs use
-portable packages such as `std.platform` and do not use C preprocessor conditions.
+The compiler uses its host platform by default. `check`, `documentation`, `emit-c`,
+`emit-c-header`, and `emit-metadata` accept `--target linux`, `--target macos`,
+`--target windows`, or `--target freestanding`. The target is deterministic compiler input and must
+match a package lock. `build`, `run`, and `test` use the host C toolchain; cross-compilation passes
+emitted C11 and the runtime to a matching target toolchain. The
+[freestanding target](#freestanding-target) never requires `main` and builds static libraries.
+Programs use portable packages such as `std.platform` and do not use C preprocessor conditions.
 
 ## Entry point and functions
 
-An executable declares exactly one `fn main() i32` or `fn main(args [String]) i32`. The
+An executable declares exactly one `fn main() i32` or `fn main(args [String]) i32`.
+Freestanding code declares no entry point; its roots are C ABI exports. The
 argument slice contains the command-line values after the executable name. Its Strings and storage
 are borrowed for the call and released by the generated C entry adapter. Other functions may
 appear in any source order. Parameters are immutable. Calls are statically resolved, checked for
@@ -414,13 +420,14 @@ own test tree and test dependencies never enter the consuming graph. The lock re
 edges with `scope test`; runtime is the implicit default. Package digests cover both declared source
 trees, so changing a test source invalidates immutable cached content.
 
-`native_source path/to/provider.c [target <platform>]` declares a C source file compiled with the
-package and every application that consumes it. The path must belong to a `foreign c ... path`
-tree, which keeps the source and its headers inside the verified package snapshot. `native_link`
-requirements follow the same target selection and pass through every consuming package. The
-compiler combines these declarations across the locked runtime graph. Repeatable `--native` and
-`--native-link` arguments remain available for providers selected by the application rather than
-the package.
+`native_source path/to/provider.c [target <selector>]` declares a C source file compiled with the
+package and every application that consumes it. A manifest selector is a platform,
+`freestanding`, or `hosted`; a lock records only a target. The path must belong to a
+`foreign c ... path` tree, which keeps the source and its headers inside the verified package
+snapshot. `native_link` requirements follow the same target selection and pass through every
+consuming package. The compiler combines these declarations across the locked runtime graph.
+Repeatable `--native` and `--native-link` arguments remain available for providers selected by the
+application rather than the package.
 
 For single-file compatibility, a directly compiled single file may omit its package declaration.
 Directory projects never receive that exception.
@@ -981,6 +988,8 @@ A `task` is a suspendable typed function lowered to a stackless state machine. I
 thread affinity. `spawn call` enqueues it on the active Foundation executor and returns an owned
 `Task<T>` handle. The scheduler may use one executor thread or a bounded pool without changing
 source semantics. There is no `async` or `await` modifier and no implicit detached work.
+
+Tasks, channels, `select`, and `@blocking` or `@callback` imports require a hosted target.
 
 `$pending.wait()` transfers and consumes the task handle, drives or suspends the current executor
 until completion, and moves the result exactly once. A second wait is therefore a compile-time use
@@ -1571,7 +1580,8 @@ source locations, specialized imports and exports, ownership, ABI conventions, a
 provenance. ABI minor 1 models compiler-owned `@callback` imports with the
 `foundation_reactor_v1` protocol, completion status, once lifetime, reactor context, and optional
 cancel symbol. ABI minor 2 adds target-specific native links, checked nominal C layouts, and direct
-C function-pointer types. ABI minor 3 records the Foundation language level. Layout values remain
+C function-pointer types. ABI minor 3 records the Foundation language level. ABI minor 4 records
+the freestanding triple, CPU, sorted features, and required hooks. Layout values remain
 pointer-only at the boundary.
 
 `foundationc build-library <project> -o <directory> --kind static|shared` builds the same checked
@@ -1725,3 +1735,74 @@ run reports every native import, foreign declaration, and link requirement or, w
 none, every open generic export or else every rejected function signature and statement, each as
 its own `FDN4120` diagnostic. The command does not fall back to `go-cgo` or `go-dynamic`
 implicitly.
+
+## Freestanding target
+
+The `freestanding` target builds a static library whose only environment requirements are five
+link-time hooks and the memory primitives every C compiler may call. It has no entry point, no
+executor, and no host services:
+
+```text
+foundationc package resolve <project> --target freestanding
+foundationc build-library <project> -o <directory> --kind static --target freestanding
+    --triple <llvm-triple> [--cpu <name>] [--features <list>] [--cc <clang>]
+    [--backend <llvm|c>] [--pic]
+foundationc emit-pii <project> -o <file.json> --triple <llvm-triple> [--cpu <name>]
+    [--features <list>]
+```
+
+Under `freestanding`, the compiler rejects task declarations, `spawn`, and `Task` operations with
+`FDN2186`; channels and `select` with `FDN2187`; `@blocking` and `@callback` imports with
+`FDN2188`; a workflow retry policy that permits more than one attempt with `FDN2189`; and `main`
+with `FDN3012`. Only `std.prelude`, `std.text`, `std.align`, `std.path`, `std.pattern`, and
+`std.json` may be imported; any other SDK package reports `FDN3011`. `UUID.NewV4` and
+`UUID.NewV7` require a hosted target. `usize` and `isize` literals must fit 32 bits (`FDN2005`),
+and a numeric conversion involving either is infallible only when it is infallible at both 32 and
+64 bits. Runtime arithmetic and `sizeOf` use the triple's width.
+
+LLVM normalizes `--triple`. `--cpu` must name a CPU of that triple (`FDN8006`). Without it, the
+LLVM backend uses `generic` and C compilations keep the Clang default for the triple. `--features`
+takes comma-separated `+name` or `-name` entries that the LLVM target knows, each name at most once
+(`FDN8007`); the entries are sorted by name. A pointer width other than 32 or 64 bits reports
+`FDN8005`. The configured C compiler compiles C inputs when it is Clang; `--cc` selects another
+Clang. The compiler identifies the selected executable with `--version` and a probe compilation,
+and reports `FDN8008` when either fails.
+
+The bundle contains `include/<native_name>.h`, `include/foundation/library.h`,
+`include/foundation/freestanding.h`, `lib/lib<native_name>.a`, and PII. The archive members are
+the generated object, `core`, `core_print`, and the package's native inputs, in GNU format with
+deterministic headers.
+
+`foundation/freestanding.h` declares the hook contract:
+
+```c
+fdn_context *fdn_hook_context(void);
+void *fdn_hook_alloc(size_t size);
+void fdn_hook_free(void *value);
+_Noreturn void fdn_hook_panic(fdn_string message, const fdn_panic_location *location);
+void fdn_hook_write(const char *data, size_t length);
+```
+
+The integrator defines the hooks in C or another language that exports the C ABI; the `fdn_`
+namespace keeps Foundation code from defining them. `fdn_hook_context` returns the context of the
+calling execution in constant time without blocking or allocating, because every Foundation frame
+entry and exit calls it. `fdn_hook_alloc` receives a size of at least 1 and returns storage aligned
+to `_Alignof(max_align_t)`, or `NULL`, which becomes the panic `allocation failed`.
+`fdn_hook_free` receives each allocated pointer exactly once, possibly from another context.
+
+`fdn_hook_panic` receives a borrowed message and the innermost active frame, or `NULL`; the frame
+names a package unless it is a native boundary. The hook must not return. It may halt, reset, trap,
+or transfer control away permanently. Drops do not run, and the panicked context must be
+reinitialized before it runs Foundation code again. A hook that returns reaches a trap.
+`fdn_hook_write` is required only when an emitted function prints. It receives the text, which is
+omitted when empty, and then `"\n"`. No hook may call Foundation code or an `fdn_` function, except
+that the panic hook may reinitialize another context.
+
+A context is one logical execution, such as a core, an RTOS task, or an interrupt level.
+`fdn_context` is integrator storage of eight pointers whose all-zero value is initial; use
+`FDN_CONTEXT_INIT` or `fdn_context_init`. The context hook returns the same pointer for the whole
+life of a context, and a Foundation call completes on the context where it began. Contexts may run
+concurrently on different cores. An interrupt handler that preempts Foundation code and calls
+Foundation code uses a different context. Re-entry on the same context is valid, and a native
+import may switch contexts before calling an export if it restores the context before returning.
+Allocation and handle counters are global atomics. Freestanding code uses no thread-local storage.

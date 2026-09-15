@@ -126,11 +126,13 @@ LLVM itself only warns about unknown features, so the compiler checks this befor
 
 The compiler sorts the entries by name. The sorted list is the effective feature string: the order
 on the command line has no meaning. The LLVM backend passes the CPU and the sorted string to
-`createTargetMachine`. Every C compilation receives `-Xclang -target-cpu -Xclang <cpu>`, including
-`generic`, and one `-Xclang -target-feature -Xclang <entry>` pair per entry in sorted order. These
-options come after every option the driver derives from the triple. The Clang driver may add
-default features for the triple, for example a default RISC-V ISA. Explicit entries take
-precedence over those defaults because the compiler front end applies features in order.
+`createTargetMachine`. When `--cpu` is present, every C compilation receives
+`-Xclang -target-cpu -Xclang <cpu>`. Without it, C compilations keep the Clang default CPU for the
+triple, because Clang rejects the name `generic` for some triples, such as x86. Every C compilation
+receives one `-Xclang -target-feature -Xclang <entry>` pair per entry in sorted order. These options
+come after every option the driver derives from the triple. The Clang driver may add default
+features for the triple, for example a default RISC-V ISA. Explicit entries take precedence over
+those defaults because the compiler front end applies features in order.
 
 The CPU and features affect the archive and PII, never the lock or source selection.
 
@@ -146,9 +148,10 @@ The compiler identifies the selected executable by running it twice, without a s
 1. `<cc> --version` must exit with status 0. The first line of standard output must contain a
    match for `clang version ([0-9]+(\.[0-9]+)*)`. The captured number is the Clang version. The
    prefix `Apple` and vendor prefixes are accepted.
-2. A probe compiles an empty C translation unit with the complete freestanding option set for the
-   triple, CPU, and features, and it must exit with status 0. This rejects `clang-cl` and Clang
-   builds that lack the target.
+2. A probe compiles a C translation unit that declares one type, because `-Wpedantic -Werror`
+   rejects an empty one, with the complete freestanding option set for the triple, CPU, and
+   features. It must exit with status 0. This rejects `clang-cl` and Clang builds that lack the
+   target.
 
 A failure of either step reports `FDN8008`, naming the executable and the step that failed. A
 configured compiler that is not Clang or AppleClang reports `FDN8008` when `--cc` is absent.
@@ -277,9 +280,10 @@ These rules apply:
 The allocation and handle counters are global, not per context, because owned values may be
 released on a different context than the one that allocated them. Per-context counts would report
 false underflows. The counters use C11 `<stdatomic.h>` operations with `memory_order_relaxed`,
-because contexts may run concurrently and the counters order no other memory. On triples without
-lock-free atomics, the compiler lowers these operations to the `__atomic_` support routines listed
-above. Single-threaded WebAssembly lowers them to plain operations.
+because contexts may run concurrently and the counters order no other memory. Freestanding handle
+counters are pointer-width, so they stay lock-free wherever pointer-width atomics are. On triples
+without lock-free atomics, the compiler lowers these operations to the `__atomic_` support routines
+listed above. Single-threaded WebAssembly lowers them to plain operations.
 
 Thread-local storage is not used, because bare-metal targets lack the TLS runtime that
 `_Thread_local` requires.
@@ -327,7 +331,7 @@ The front end checks every package in the graph after `@target` selection. With 
 | `task` declaration, `spawn`, `Task` operation | `FDN2186` |
 | channel construction, channel operation, `select` | `FDN2187` |
 | `@blocking` or `@callback` declaration | `FDN2188` |
-| workflow `retry` policy | `FDN2189` |
+| workflow `retry` policy that permits more than one attempt | `FDN2189` |
 | import of an SDK package outside the freestanding set | `FDN3011` |
 | `main` declaration | `FDN3012` |
 
@@ -336,11 +340,14 @@ declaration that introduced it. Services, actions, state machines, pipelines, an
 `retry` remain valid when their derived code contains none.
 
 The freestanding SDK set is `std.prelude`, `std.text`, `std.align`, `std.path`, `std.pattern`, and
-`std.json`. Every other `std` package and every `foundation` package is hosted. The set is a
-compiler table shared by the stage0 and self-hosted compilers. It grows only through a proposal
-that moves the package's natives into the core. The prelude moves `UUID.NewV4`, `UUID.NewV7`, and
-their two natives behind `@target(hosted)`. Under `freestanding`, calls to them report the existing
-unknown associated function diagnostic.
+`std.json`. Every other `std` package and every `foundation` package is hosted. Under
+`freestanding`, SDK packages outside the set leave the package graph, so their platform
+declarations and natives are never linked, and `std.path` provides `@target(freestanding)`
+declarations with the POSIX conventions of `linux` and `macos`. The set is a compiler table shared
+by the stage0 and self-hosted compilers. It grows only through a proposal that moves the package's
+natives into the core. The prelude moves `UUID.NewV4`, `UUID.NewV7`, and their two natives behind
+`@target(hosted)`. Under `freestanding`, calls to them report the existing unknown associated
+function diagnostic.
 
 The front end does not know the triple, so `usize` and `isize` use portable bounds. An integer
 literal of either type must fit 32 bits, and a violation reports `FDN2005`. A numeric conversion
@@ -395,23 +402,28 @@ all of these match:
 - the toolchain identity;
 - the triple, CPU, features, and other options.
 
-The archive writer zeroes timestamps, owners, and modes, and objects carry only mapped source
-paths. A different Clang version may change the archive bytes but never the headers or PII. The
-`--cc` path, the host platform, and the configured host compiler do not affect output.
+The archive writer zeroes timestamps and owners and writes mode 0644 for every member, so extracted
+members stay readable, and objects carry only mapped source paths. A different Clang version may
+change the archive bytes but never the headers or PII. The `--cc` path, the host platform, and the
+configured host compiler do not affect output.
 
 ## Compatibility
 
-A Language 1 program that does not select `freestanding` keeps its meaning. `@target(freestanding)`,
-`@target(hosted)`, and `@target` on a `methods` block previously reported `FDN1142` or `FDN1160`, so
-no valid program changes behavior. On `linux`, `macos`, and `windows`, `UUID` keeps the same method
-set and behavior. Every new diagnostic applies only to the `freestanding` target or to the new
-`build-library` and `emit-pii` options.
+A Language 1 program that does not select `freestanding` keeps its meaning. `@target(freestanding)`
+and `@target(hosted)` previously reported `FDN1142`, so no valid program changes behavior. Both
+compilers already accepted `@target` on a `methods` block; this proposal specifies that form. On
+`linux`, `macos`, and `windows`, `UUID` keeps the same method set and behavior. Every new
+diagnostic applies only to the `freestanding` target or to the new `build-library` and `emit-pii`
+options.
 
 `foundation.package/v1` and `foundation.lock/v1` keep their format identifiers. The new target and
 selector values are additive. Existing manifests, locks, and package digests are unchanged. A
 manifest or lock that uses the new values requires a toolchain that implements this proposal.
 
 Library ABI 1 hosted bundles, PII minor 3 and earlier, and plugin ABI 1 artifacts remain valid.
+The LLVM backend now returns an exported `String` through the C ABI result pointer that the
+generated header already declares. Earlier LLVM-built libraries returned it in registers, which C
+callers could not read, and must be rebuilt.
 Every hosted runtime entry point keeps its name, signature, and behavior. The runtime split only
 moves definitions between translation units. Hosted artifacts neither define nor reference
 `fdn_hook_` symbols, and they neither define nor use `fdn_context_init`.
@@ -434,7 +446,7 @@ excludes freestanding targets is replaced with the supported contract.
 - `FDN2186`: a task declaration, `spawn`, or `Task` operation under `freestanding`.
 - `FDN2187`: channel construction, a channel operation, or `select` under `freestanding`.
 - `FDN2188`: an `@blocking` or `@callback` declaration under `freestanding`.
-- `FDN2189`: a workflow `retry` policy under `freestanding`.
+- `FDN2189`: a workflow `retry` policy that permits more than one attempt under `freestanding`.
 - `FDN3011`: an import of an SDK package outside the freestanding set.
 - `FDN3012`: a `main` declaration under `freestanding`.
 - `FDN8005`: a freestanding triple whose pointer width is neither 32 nor 64 bits.
@@ -443,10 +455,10 @@ excludes freestanding targets is replaced with the supported contract.
   triple's LLVM target does not recognize.
 - `FDN8008`: a selected C compiler that fails Clang identification or the freestanding probe.
 
-`FDN1142` no longer reports `freestanding` or `hosted`. `FDN1160` no longer reports `@target` on a
-`methods` block. `FDN4022` also accepts `target freestanding` and rejects `target hosted`. Manifest
-target diagnostics accept both new spellings. `FDN2005` applies the portable `usize` and `isize`
-bounds under `freestanding`.
+`FDN1142` no longer reports `freestanding` or `hosted`. `FDN1160` continues to report any other
+attribute on a `methods` block. `FDN4022` also accepts `target freestanding` and rejects
+`target hosted`. Manifest target diagnostics accept both new spellings. `FDN2005` applies the
+portable `usize` and `isize` bounds under `freestanding`.
 
 ## Implementation
 
@@ -529,8 +541,11 @@ bounds under `freestanding`.
   - A nested export that panics on the second context delivers a location naming that export.
   - Nested re-entry without a context switch completes normally.
 - `compiler.run.freestanding-panic-*`: an out-of-bounds index delivers `index out of bounds` with
-  the expected function, file, and line. An arena that returns `NULL` delivers
-  `allocation failed`. A panic hook that returns terminates the harness abnormally.
+  the expected function, file, and line. The C backend reports the Foundation function and the
+  indexing statement. Optimized LLVM library code records only native boundary frames, as hosted
+  libraries do, so it reports the exported C symbol at its declaration. An arena that returns
+  `NULL` delivers `allocation failed`. A panic hook that returns terminates the harness
+  abnormally.
 - `compiler.build.freestanding-cpu`: when LLVM and the selected Clang register the targets:
   - `--triple thumbv7em-none-eabi --cpu cortex-m4`: `llvm-readelf --arch-specific` reports
     `Tag_CPU_name: cortex-m4` for every archive member;

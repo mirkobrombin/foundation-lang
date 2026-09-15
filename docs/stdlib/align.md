@@ -11,6 +11,8 @@ const pageStart = align.DownUsize(address, 4096)
 const nextPage = align.UpUsize(address, 4096)
 ```
 
+`std.align` is available on every target, including `freestanding`.
+
 The complete surface is:
 
 ```foundation

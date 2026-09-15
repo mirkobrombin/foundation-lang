@@ -2,6 +2,8 @@
 
 `std.json` parses RFC 8259 values in Foundation source. It does not call a host JSON library.
 
+`std.json` is available on every target, including `freestanding`.
+
 ```foundation
 fn Parse(source String) Result<Value, Error>
 fn Stringify($value Value) Result<String, WriteError>

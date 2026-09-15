@@ -4,6 +4,8 @@
 are explicit because protocol parsers and file formats address encoded bytes rather than Unicode
 scalar positions.
 
+`std.text` is available on every target, including `freestanding`.
+
 ```foundation
 fn Copy(value String) String
 fn ByteLen(value String) u64

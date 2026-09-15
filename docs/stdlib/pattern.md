@@ -2,6 +2,8 @@
 
 `std.pattern` provides a portable bounded matcher implemented in Foundation source.
 
+`std.pattern` is available on every target, including `freestanding`.
+
 ```foundation
 import std.pattern
 

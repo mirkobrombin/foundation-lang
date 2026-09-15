@@ -65,6 +65,14 @@ checked public layout, or changing ownership at the boundary is an incompatible 
 `native_soversion` records that package decision. Adding an export is compatible. PII minor
 versions may add metadata fields without changing ABI major 1.
 
+Freestanding libraries use the same ABI major. Library ABI minor 1 adds
+`foundation/freestanding.h`: the five `fdn_hook_` functions, `fdn_context` with its size,
+alignment, and all-zero initial state, `FDN_CONTEXT_INIT`, `fdn_context_init`,
+`fdn_panic_location`, and the set of symbols a freestanding archive may leave undefined. A later
+minor may give meaning to reserved context words only if zero stays their initial value, and may add
+a hook only as an optional requirement. PII minor 4 records the freestanding triple, CPU,
+features, and required hooks. Hosted artifacts neither define nor reference the hooks.
+
 If Foundation needs an incompatible native boundary, it receives a new ABI major and new symbols.
 ABI major 1 remains available to future toolchains so an existing precompiled library does not
 need rebuilding merely because the compiler changed.

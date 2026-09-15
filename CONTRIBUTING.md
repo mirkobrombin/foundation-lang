@@ -188,6 +188,7 @@ Use the narrowest matching command while developing:
 | Package model and resolver | `ctest --preset dev -R '^packages\.'` |
 | Native plugin ABI | `ctest --preset dev -R '^runtime\.plugin$'` |
 | Library and PII artifacts | `ctest --preset dev -R '^compiler\.build\.library-artifacts$'` |
+| Freestanding target | `ctest --preset dev -R freestanding` |
 | VS Code client and grammars | `ctest --preset dev -R '^tools\.vscode$'` |
 | Self-hosted compiler | `cmake --build --preset dev --target foundation_selfhost_verify` |
 | One named regression | `ctest --preset dev -R '<exact-test-expression>'` |

@@ -14,7 +14,8 @@ and checked in source instead of split across framework metadata and generated w
 
 Foundation has no garbage collector. Ownership transfers appear at call sites, and owned values
 are destroyed deterministically. Programs link the Foundation runtime for allocation, I/O, tasks,
-and platform access; freestanding targets are not supported.
+and platform access. The `freestanding` target builds static libraries for firmware, kernels, and
+WebAssembly hosts that supply allocation, panic, and output through link-time hooks.
 
 ## Why Foundation became a language
 
