@@ -9,7 +9,7 @@ fn linkProjectAttributeArguments(
     &arguments collections.List<attributeArgument>,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -38,7 +38,7 @@ fn linkProjectAttributes(
     &attributes collections.List<attributeApplication>,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -111,7 +111,7 @@ fn linkProjectWorkflowFunction(
     span sourceSpan,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &diagnostics diagnostics
 ) String {
     match text.Find(name, ".") {
@@ -161,7 +161,7 @@ fn linkProjectParameters(
     &parameters collections.List<parameter>,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -216,7 +216,7 @@ fn linkProjectConstraints(
     &constraints collections.List<Option<typeSyntax>>,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -250,7 +250,7 @@ fn linkProjectWorkflow(
     &workflow workflowFunction,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -303,7 +303,7 @@ fn linkProjectAttributeDeclarations(
     &source program,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &diagnostics diagnostics
 ) void {
     var index u64 = 0
@@ -328,7 +328,7 @@ fn linkProjectStructs(
     currentPackage String,
     sourcePath String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &diagnostics diagnostics
 ) void {
     var index u64 = 0
@@ -380,7 +380,7 @@ fn linkProjectEnums(
     &source program,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &diagnostics diagnostics
 ) void {
     var index u64 = 0
@@ -428,7 +428,7 @@ fn linkProjectContracts(
     &source program,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &diagnostics diagnostics
 ) void {
     var index u64 = 0
@@ -474,7 +474,7 @@ fn linkProjectFunctions(
     currentPackage String,
     sourcePath String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &diagnostics diagnostics,
     foundMain bool,
     target targetPlatform
@@ -568,7 +568,7 @@ fn linkProjectFunctions(
 
 fn linkProjectFile(
     &file parsedProjectFile,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &diagnostics diagnostics,
     foundMain bool,
     target targetPlatform,

@@ -80,54 +80,112 @@ fn projectListContains(
     found
 }
 
-fn projectPackageKnown(
-    &symbols arena<projectDeclaration>,
-    packageName String
-) bool {
+// Project declarations in insertion order, hashed by package, name, and
+// kind so that each lookup visits only the entries of one bucket. Each key is
+// stored once.
+struct projectSymbolTable {
+    entries own arena<projectDeclaration>
+    buckets own arena<own arena<u64>>
+    packages own arena<String>
+    lastPackage String
+}
+
+fn newProjectSymbolTable() own projectSymbolTable {
+    var buckets = newArena<own arena<u64>>()
+    while buckets.len() < 4096 {
+        discard buckets.add($newArena<u64>())
+    }
+    own projectSymbolTable {
+        entries = newArena<projectDeclaration>()
+        buckets = buckets
+        packages = newArena<String>()
+        lastPackage = ""
+    }
+}
+
+// Hashes text into a running value kept below 1000003, so no step overflows.
+fn projectHashText(seed u64, value String) u64 {
+    var hash = seed
     var index u64 = 0
-    while index < symbols.len() {
-        const value = match symbols.take(index) {
-            None: panic("project symbol slot is empty")
-            Some(value): value
-        }
-        const found = value.packageName == packageName
-        symbols.restore(index, $value)
-        if found return true
+    while index < text.ByteLen(value) {
+        hash = (hash * 31 + applicationByteAt(value, index) + 1) % 1000003
         index += 1
     }
-    false
+    (hash * 31 + 1) % 1000003
+}
+
+fn projectSymbolBucket(
+    packageName String,
+    name String,
+    function bool,
+    attributeDeclaration bool
+) u64 {
+    var kind u64 = 0
+    if function {
+        kind += 1
+    }
+    if attributeDeclaration {
+        kind += 2
+    }
+    const hash = projectHashText(projectHashText(7, packageName), name)
+    ((hash * 31 + kind) % 1000003) % 4096
+}
+
+fn projectPackageKnown(
+    &symbols projectSymbolTable,
+    packageName String
+) bool {
+    arenaContainsString(&symbols.packages, packageName)
+}
+
+fn projectBucketEntry(&slot arena<u64>, index u64) u64 {
+    const value = match slot.take(index) {
+        None: panic("project symbol bucket slot is empty")
+        Some(found): found
+    }
+    slot.restore(index, value)
+    value
 }
 
 fn findProjectDeclaration(
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     packageName String,
     name String,
     function bool,
     attributeDeclaration bool
 ) projectDeclarationLookup {
+    const bucket = projectSymbolBucket(packageName, name, function, attributeDeclaration)
+    var slot = match symbols.buckets.take(bucket) {
+        None: panic("project symbol bucket is empty")
+        Some(found): found
+    }
+    var result = projectDeclarationLookup {
+        found = false internalName = "" packageName = "" exported = false
+    }
     var index u64 = 0
-    while index < symbols.len() {
-        const value = match symbols.take(index) {
+    while index < slot.len() {
+        const entry = projectBucketEntry(&slot, index)
+        const value = match symbols.entries.take(entry) {
             None: panic("project symbol slot is empty")
-            Some(value): value
+            Some(found): found
         }
         const found = value.packageName == packageName && value.name == name &&
             value.function == function &&
             value.attributeDeclaration == attributeDeclaration
-        var result = projectDeclarationLookup {
-            found = found
-            internalName = text.Copy(value.internalName)
-            packageName = text.Copy(value.packageName)
-            exported = value.exported
+        if found {
+            result = projectDeclarationLookup {
+                found = true
+                internalName = text.Copy(value.internalName)
+                packageName = text.Copy(value.packageName)
+                exported = value.exported
+            }
         }
-        symbols.restore(index, $value)
-        if found return result
-        discard result
+        symbols.entries.restore(entry, $value)
+        if found break
         index += 1
     }
-    projectDeclarationLookup {
-        found = false internalName = "" packageName = "" exported = false
-    }
+    symbols.buckets.restore(bucket, $slot)
+    result
 }
 
 fn findProjectAlias(
@@ -152,7 +210,7 @@ fn findProjectAlias(
 }
 
 fn addProjectSymbol(
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     packageName String,
     name String,
     exported bool,
@@ -162,7 +220,7 @@ fn addProjectSymbol(
     const existing = findProjectDeclaration(
         &symbols, packageName, name, function, attributeDeclaration)
     if existing.found return
-    discard symbols.add(projectDeclaration {
+    const entry = symbols.entries.add(projectDeclaration {
         packageName = text.Copy(packageName)
         name = text.Copy(name)
         internalName = "main" if function && name == "main" else
@@ -171,12 +229,25 @@ fn addProjectSymbol(
         function = function
         attributeDeclaration = attributeDeclaration
     })
+    const bucket = projectSymbolBucket(packageName, name, function, attributeDeclaration)
+    var slot = match symbols.buckets.take(bucket) {
+        None: panic("project symbol bucket is empty")
+        Some(found): found
+    }
+    discard slot.add(entry)
+    symbols.buckets.restore(bucket, $slot)
+    if symbols.lastPackage != packageName {
+        if !arenaContainsString(&symbols.packages, packageName) {
+            discard symbols.packages.add(text.Copy(packageName))
+        }
+        symbols.lastPackage = text.Copy(packageName)
+    }
 }
 
 fn collectProjectSymbols(
     &files arena<own parsedProjectFile>
-) own arena<projectDeclaration> {
-    var result = newArena<projectDeclaration>()
+) own projectSymbolTable {
+    var result = newProjectSymbolTable()
     var fileIndex u64 = 0
     while fileIndex < files.len() {
         var file = match files.take(fileIndex) {
@@ -290,7 +361,7 @@ fn linkProjectType(
     &syntax typeSyntax,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -355,7 +426,7 @@ fn linkProjectType(
 
 fn validateProjectImports(
     &source program,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     target targetPlatform,
     sdkRoot String,
     &diagnostics diagnostics
@@ -410,7 +481,7 @@ fn linkProjectTypeList(
     &values collections.List<typeSyntax>,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -438,7 +509,7 @@ fn linkProjectExpressionList(
     &values collections.List<u64>,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -557,7 +628,7 @@ fn linkProjectExpression(
     expression u64,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -729,7 +800,7 @@ fn linkProjectOptionalExpression(
     expression Option<u64>,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -747,7 +818,7 @@ fn linkProjectMemberExpression(
     span sourceSpan,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) expressionValue {
@@ -837,7 +908,7 @@ fn linkProjectBlock(
     block u64,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -869,7 +940,7 @@ fn linkProjectStatement(
     statement u64,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) void {
@@ -1025,7 +1096,7 @@ fn linkProjectSelectStatement(
     $payload selectStatement,
     currentPackage String,
     &aliases arena<projectImportAlias>,
-    &symbols arena<projectDeclaration>,
+    &symbols projectSymbolTable,
     &typeParameters collections.List<String>,
     &diagnostics diagnostics
 ) selectStatement {
