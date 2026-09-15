@@ -32,10 +32,18 @@ enum {
 #define FDN_CHANNEL_THREAD_LOCAL _Thread_local
 #endif
 
+/* MSVC for arm64 reports the C11 flexible array member below as warning C4200. */
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4200)
+#endif
 typedef struct fdn_channel_message {
     struct fdn_channel_message *next;
     unsigned char value[];
 } fdn_channel_message;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 typedef struct fdn_channel_select_wait {
     struct fdn_channel_select_wait *next;
