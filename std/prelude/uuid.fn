@@ -90,7 +90,10 @@ methods UUID {
         }
         .Ok(UUID { high = high low = low })
     }
+}
 
+@target(hosted)
+methods UUID {
     // Generates a random RFC 9562 version 4 UUID.
     fn NewV4() UUID {
         var high u64 = 0
@@ -108,7 +111,10 @@ methods UUID {
     }
 }
 
+@target(hosted)
 extern c fn uuidV4Native(&high u64, &low u64) void as foundation_runtime_uuid_v4
+
+@target(hosted)
 extern c fn uuidV7Native(&high u64, &low u64) void as foundation_runtime_uuid_v7
 
 fn isSeparator(offset u64) bool {

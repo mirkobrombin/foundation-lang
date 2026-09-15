@@ -131,6 +131,74 @@ fn main() i32 { 0 }
            "duplicate target attributes have a stable diagnostic");
 }
 
+void hostedAndFreestandingSelectorsSelectDeclarations() {
+    constexpr std::string_view source = R"(
+struct Board {
+    id i32
+}
+
+@target(hosted)
+methods Board {
+    fn Make() Board {
+        Board { id = 11 }
+    }
+}
+
+@target(freestanding)
+methods Board {
+    fn Make() Board {
+        Board { id = 22 }
+    }
+}
+
+@target(hosted)
+fn selected() i32 {
+    Board.Make().id
+}
+
+@target(freestanding)
+fn selected() i32 {
+    Board.Make().id + 1
+}
+
+fn main() i32 {
+    selected()
+}
+)";
+    const auto linux = check(source, foundation::TargetPlatform::Linux);
+    const auto macos = check(source, foundation::TargetPlatform::MacOS);
+    const auto freestanding = check(source, foundation::TargetPlatform::Freestanding);
+    expect(!linux.diagnostics.hasErrors() && !macos.diagnostics.hasErrors(),
+           "hosted selector activates declarations on every hosted platform");
+    expect(!freestanding.diagnostics.hasErrors(),
+           "freestanding selector activates freestanding declarations");
+    expect(linux.program.functions.size() == 3 && freestanding.program.functions.size() == 3,
+           "an inactive methods block is removed with its members");
+
+    constexpr std::string_view inactiveMethods = R"(
+struct Board {
+    id i32
+}
+
+@target(freestanding)
+methods Board {
+    fn Make() Board {
+        Board { id = 1 }
+    }
+}
+
+fn main() i32 {
+    Board.Make().id
+}
+)";
+    expect(hasCode(check(inactiveMethods, foundation::TargetPlatform::Linux).diagnostics,
+                   "FDN2190"),
+           "members of an inactive methods block are unknown");
+    expect(!check(inactiveMethods, foundation::TargetPlatform::Freestanding)
+                .diagnostics.hasErrors(),
+           "members of an active methods block are available");
+}
+
 void typedAttributesEmitMetadataWithoutRuntimeCode() {
     constexpr std::string_view annotated = R"(
 enum Method {
@@ -3254,6 +3322,7 @@ fn main() i32 { 0 }
 int main() {
     llvmIsTheDefaultNativeBackend();
     targetAttributesSelectOneDeclaration();
+    hostedAndFreestandingSelectorsSelectDeclarations();
     typedAttributesEmitMetadataWithoutRuntimeCode();
     typedProgramLowersToDeterministicC();
     llvmIntegerArithmeticUsesOverflowIntrinsics();

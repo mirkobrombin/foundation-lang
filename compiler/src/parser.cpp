@@ -399,7 +399,7 @@ Parser::ParsedAttributes Parser::attributes(bool allowTarget) {
             } else {
                 foundTarget = true;
                 const auto requested = targetArgument(argument);
-                result.selected = requested != TargetPlatform::Unknown && requested == target_;
+                result.selected = requested.has_value() && targetSelected(*requested, target_);
             }
             continue;
         }
@@ -476,13 +476,12 @@ std::optional<AttributeTarget> Parser::attributeTarget() {
     return std::nullopt;
 }
 
-TargetPlatform Parser::targetArgument(const Token &argument) {
-    const auto target = parseTargetPlatform(argument.text);
-    if (target.has_value()) {
-        return *target;
+std::optional<TargetSelector> Parser::targetArgument(const Token &argument) {
+    const auto selector = parseTargetSelector(argument.text);
+    if (!selector.has_value()) {
+        diagnostics_.error("FDN1142", "unknown target " + argument.text, argument.span);
     }
-    diagnostics_.error("FDN1142", "unknown target " + argument.text, argument.span);
-    return TargetPlatform::Unknown;
+    return selector;
 }
 
 void Parser::restoreProgram(std::size_t expressions, std::size_t statements,

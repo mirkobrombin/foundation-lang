@@ -46,7 +46,7 @@ class Parser {
     [[nodiscard]] bool startsTailIfExpression() const;
     [[nodiscard]] ParsedAttributes attributes(bool allowTarget = true);
     [[nodiscard]] std::optional<AttributeTarget> attributeTarget();
-    [[nodiscard]] TargetPlatform targetArgument(const Token &argument);
+    [[nodiscard]] std::optional<TargetSelector> targetArgument(const Token &argument);
     void restoreProgram(std::size_t expressions, std::size_t statements,
                         std::size_t blocks, std::size_t functions);
     bool match(TokenKind kind);

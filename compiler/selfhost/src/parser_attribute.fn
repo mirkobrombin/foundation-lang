@@ -50,8 +50,10 @@ methods parser {
                     if allowTarget && !foundTarget {
                         foundTarget = true
                         const requested = self.parseTargetArgument($argument)
-                        selected = !sameTarget(requested, .Unknown) &&
-                            sameTarget(requested, self.target)
+                        selected = match requested {
+                            None: false
+                            Some(selector): targetSelected(selector, self.target)
+                        }
                     }
                 } else {
                     var arguments = collections.NewList<attributeArgument>()
@@ -122,13 +124,16 @@ methods parser {
         .None
     }
 
-    fn parseTargetArgument(&self, $argument tokenSnapshot) targetPlatform {
-        if argument.text == "linux" return .Linux
-        if argument.text == "macos" return .MacOS
-        if argument.text == "windows" return .Windows
-        self.diagnostics.reportError(
-            "FDN1142", "unknown target " + argument.text, argument.span)
-        .Unknown
+    fn parseTargetArgument(&self, $argument tokenSnapshot) Option<targetSelector> {
+        const selector = parseTargetSelectorText(argument.text)
+        match selector {
+            None: {
+                self.diagnostics.reportError(
+                    "FDN1142", "unknown target " + argument.text, argument.span)
+                .None
+            }
+            Some(value): .Some(value)
+        }
     }
 }
 

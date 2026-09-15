@@ -16,6 +16,11 @@ fn Separator() String {
     "/"
 }
 
+@target(freestanding)
+fn Separator() String {
+    "/"
+}
+
 @target(windows)
 fn Separator() String {
     "\\"
@@ -27,6 +32,11 @@ fn SeparatorFor(left String) String {
 }
 
 @target(macos)
+fn SeparatorFor(left String) String {
+    Separator()
+}
+
+@target(freestanding)
 fn SeparatorFor(left String) String {
     Separator()
 }
@@ -46,6 +56,11 @@ fn isSeparator(value u64) bool {
 }
 
 @target(macos)
+fn isSeparator(value u64) bool {
+    value == 47
+}
+
+@target(freestanding)
 fn isSeparator(value u64) bool {
     value == 47
 }
@@ -77,6 +92,11 @@ fn volumeLength(value String) u64 {
 }
 
 @target(macos)
+fn volumeLength(value String) u64 {
+    0
+}
+
+@target(freestanding)
 fn volumeLength(value String) u64 {
     0
 }
@@ -118,6 +138,14 @@ fn rootLength(value String) u64 {
 }
 
 @target(macos)
+fn rootLength(value String) u64 {
+    if text.ByteLen(value) > 0 && isSeparator(byteAt(value, 0)) {
+        return 1
+    }
+    0
+}
+
+@target(freestanding)
 fn rootLength(value String) u64 {
     if text.ByteLen(value) > 0 && isSeparator(byteAt(value, 0)) {
         return 1
@@ -336,6 +364,11 @@ fn rootsEqual(left String, right String) bool {
     IsAbsolute(left) == IsAbsolute(right)
 }
 
+@target(freestanding)
+fn rootsEqual(left String, right String) bool {
+    IsAbsolute(left) == IsAbsolute(right)
+}
+
 fn asciiUpper(value u64) u64 {
     if value >= 97 && value <= 122 return value - 32
     value
@@ -360,6 +393,11 @@ fn segmentsEqual(left String, right String) bool {
 }
 
 @target(macos)
+fn segmentsEqual(left String, right String) bool {
+    text.Equal(left, right)
+}
+
+@target(freestanding)
 fn segmentsEqual(left String, right String) bool {
     text.Equal(left, right)
 }
