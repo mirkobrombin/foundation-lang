@@ -769,6 +769,8 @@ func TestTranslatedReportMatchesFoundationBackends(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The Windows C runtime writes text-mode newlines; the translated Report writes plain ones.
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
