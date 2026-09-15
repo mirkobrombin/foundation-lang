@@ -21,6 +21,7 @@
 #include <llvm/IR/Verifier.h>
 #include <llvm/MC/MCSubtargetInfo.h>
 #include <llvm/MC/TargetRegistry.h>
+#include <llvm/Object/ArchiveWriter.h>
 #include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/CodeGen.h>
@@ -6577,6 +6578,36 @@ std::optional<LlvmModule> buildModule(const FirProgram &program, std::string_vie
 
 std::string defaultLlvmTargetTriple() {
     return llvm::Triple::normalize(llvm::sys::getDefaultTargetTriple());
+}
+
+bool writeDeterministicArchive(const std::filesystem::path &output,
+                               const std::vector<ArchiveMember> &members,
+                               Diagnostics &diagnostics) {
+    std::vector<llvm::NewArchiveMember> entries;
+    entries.reserve(members.size());
+    for (const auto &member : members) {
+        auto entry = llvm::NewArchiveMember::getFile(member.path.string(), true);
+        if (!entry) {
+            diagnostics.error("FDN8004",
+                              "cannot read archive member " + member.name + ": " +
+                                  llvm::toString(entry.takeError()),
+                              {});
+            return false;
+        }
+        entry->MemberName = member.name;
+        entry->UID = 0;
+        entry->GID = 0;
+        entry->Perms = 0644;
+        entries.push_back(std::move(*entry));
+    }
+    if (auto error = llvm::writeArchive(output.string(), entries,
+                                        llvm::SymtabWritingMode::NormalSymtab,
+                                        llvm::object::Archive::K_GNU, true, false)) {
+        diagnostics.error("FDN8004",
+                          "cannot write static archive: " + llvm::toString(std::move(error)), {});
+        return false;
+    }
+    return true;
 }
 
 std::string llvmFeatureString(const std::vector<std::string> &features) {

@@ -42,6 +42,26 @@ void replayOutput(std::FILE *stream) {
     std::fflush(stderr);
 }
 
+void readOutput(std::FILE *stream, std::string &text) {
+    std::rewind(stream);
+    text.clear();
+    char buffer[4096];
+    while (const auto length = std::fread(buffer, 1, sizeof(buffer), stream)) {
+        text.append(buffer, length);
+    }
+}
+
+void finishCapture(std::FILE *stream, ProcessOutput output, bool failed, std::string *captured) {
+    if (output == ProcessOutput::Capture) {
+        if (captured != nullptr) {
+            readOutput(stream, *captured);
+        }
+    } else if (failed) {
+        replayOutput(stream);
+    }
+    std::fclose(stream);
+}
+
 #ifdef _WIN32
 std::FILE *openOutputCapture() {
     wchar_t directory[MAX_PATH + 1];
@@ -111,7 +131,10 @@ std::string quoteWindowsArgument(const std::string &argument) {
 
 } // namespace
 
-int runProcess(const std::vector<std::string> &arguments, ProcessOutput output) {
+int runProcess(const std::vector<std::string> &arguments, ProcessOutput output,
+               std::string *captured) {
+    const auto captureOutput =
+        output == ProcessOutput::StdoutToStderrOnFailure || output == ProcessOutput::Capture;
     if (arguments.empty()) {
         std::cerr << "foundationc: process requires an executable\n";
         return 1;
@@ -144,13 +167,11 @@ int runProcess(const std::vector<std::string> &arguments, ProcessOutput output) 
         std::cout.flush();
         std::fflush(stdout);
         savedStdout = _dup(_fileno(stdout));
-        if (output == ProcessOutput::StdoutToStderrOnFailure) {
+        if (captureOutput) {
             capturedStdout = openOutputCapture();
         }
         const auto destination = capturedStdout == nullptr ? stderr : capturedStdout;
-        if (savedStdout == -1 ||
-            (output == ProcessOutput::StdoutToStderrOnFailure &&
-             capturedStdout == nullptr) ||
+        if (savedStdout == -1 || (captureOutput && capturedStdout == nullptr) ||
             _dup2(_fileno(destination), _fileno(stdout)) != 0) {
             const auto error = errno;
             if (savedStdout != -1) {
@@ -182,10 +203,7 @@ int runProcess(const std::vector<std::string> &arguments, ProcessOutput output) 
         _close(savedStdout);
     }
     if (capturedStdout != nullptr) {
-        if (status != 0) {
-            replayOutput(capturedStdout);
-        }
-        std::fclose(capturedStdout);
+        finishCapture(capturedStdout, output, status != 0, captured);
     }
     if (status == -1) {
         std::cerr << "foundationc: cannot start " << arguments.front() << ": "
@@ -216,7 +234,7 @@ int runProcess(const std::vector<std::string> &arguments, ProcessOutput output) 
                       << errorMessage(initError) << '\n';
             return 1;
         }
-        if (output == ProcessOutput::StdoutToStderrOnFailure) {
+        if (captureOutput) {
             capturedStdout = std::tmpfile();
             if (capturedStdout == nullptr) {
                 const auto error = errno;
@@ -273,10 +291,7 @@ int runProcess(const std::vector<std::string> &arguments, ProcessOutput output) 
         result = 128 + WTERMSIG(status);
     }
     if (capturedStdout != nullptr) {
-        if (result != 0) {
-            replayOutput(capturedStdout);
-        }
-        std::fclose(capturedStdout);
+        finishCapture(capturedStdout, output, result != 0, captured);
     }
     return result;
 #endif

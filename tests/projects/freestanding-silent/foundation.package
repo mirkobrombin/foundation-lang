@@ -1,0 +1,7 @@
+format foundation.package/v1
+name test.freestanding_silent
+version 1.0.0
+language 1
+source src
+native_library c
+native_name freestanding_silent

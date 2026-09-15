@@ -49,6 +49,15 @@ enum class LibraryKind {
     Shared,
 };
 
+// Selects freestanding code generation for build-library and emit-pii. Only build-library
+// accepts a C compiler.
+struct FreestandingOptions {
+    std::string triple;
+    std::optional<std::string> cpu;
+    std::optional<std::string> features;
+    std::optional<std::filesystem::path> cCompiler;
+};
+
 [[nodiscard]] ProjectAnalysis analyzeProject(
     const std::filesystem::path &path,
     const std::vector<SourceOverlay> &overlays = {},
@@ -79,8 +88,9 @@ enum class LibraryKind {
 [[nodiscard]] int emitMetadataFile(const std::filesystem::path &source,
                                    const std::filesystem::path &output,
                                    TargetPlatform target = hostTargetPlatform());
-[[nodiscard]] int emitPackageInterfaceFile(const std::filesystem::path &source,
-                                           const std::filesystem::path &output);
+[[nodiscard]] int emitPackageInterfaceFile(
+    const std::filesystem::path &source, const std::filesystem::path &output,
+    const std::optional<FreestandingOptions> &freestanding = std::nullopt);
 [[nodiscard]] int emitStateMachineDiagramFile(
     const std::filesystem::path &source, const std::filesystem::path &output,
     const std::optional<std::string> &machine, StateMachineDiagramFormat format);
@@ -106,7 +116,8 @@ enum class LibraryKind {
     LibraryKind kind,
     const std::vector<std::filesystem::path> &nativeInputs = {},
     BackendKind backend = defaultBackendKind(),
-    bool positionIndependent = false);
+    bool positionIndependent = false,
+    const std::optional<FreestandingOptions> &freestanding = std::nullopt);
 [[nodiscard]] int exportPackage(
     const std::filesystem::path &source,
     const std::filesystem::path &outputDirectory,

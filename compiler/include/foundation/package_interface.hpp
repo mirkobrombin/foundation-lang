@@ -139,6 +139,15 @@ struct ForeignProvenance {
     PiiAbi abi{PiiAbi::C11};
 };
 
+// Freestanding code generation facts recorded by PII minor 4.
+struct PiiFreestanding {
+    std::string triple;
+    std::string cpu;
+    std::vector<std::string> features;
+    // The sorted link-time hooks the archive requires.
+    std::vector<std::string> hooks;
+};
+
 struct PiiLinkLibrary {
     std::string name;
     std::optional<TargetSelector> target;
@@ -155,6 +164,7 @@ struct PackageInterface {
     std::string library;
     unsigned int soVersion{};
     TargetPlatform target{TargetPlatform::Linux};
+    std::optional<PiiFreestanding> freestanding;
     std::vector<PiiLinkLibrary> links;
     std::vector<PiiStructLayout> layouts;
     std::vector<PiiFunction> imports;
@@ -166,6 +176,11 @@ struct PackageInterface {
 [[nodiscard]] bool validateCAbiV1(const PiiType& type, PiiOwnership ownership, bool result,
                                   std::string& reason);
 [[nodiscard]] std::string renderPackageInterfaceJson(PackageInterface value);
+// fdn_hook_write is required only when an emitted function prints.
+[[nodiscard]] PiiFreestanding freestandingInterface(const FirProgram& program,
+                                                   std::string_view packageName,
+                                                   std::string triple, std::string cpu,
+                                                   std::vector<std::string> features);
 [[nodiscard]] std::optional<PackageInterface> buildPackageInterface(const FirProgram& program,
                                                                     const PackageManifest& manifest,
                                                                     const PackageLock& lock,

@@ -1,0 +1,45 @@
+package test.freestanding_library
+
+import std.text
+
+// Implemented by the integrator. It switches the current context before calling back.
+extern c fn harnessSwitchContext(value i32) i32 as harness_switch_context
+
+// Implemented by the integrator. It calls back on the current context.
+extern c fn harnessReenter(value i32) i32 as harness_reenter
+
+extern c fn FreestandingGreeting(name String) String as freestanding_greeting {
+    "hello " + name
+}
+
+extern c fn FreestandingPrint() void as freestanding_print {
+    print("hello")
+}
+
+extern c fn FreestandingIndex(index usize) i32 as freestanding_index {
+    const values = [1, 2, 3]
+    values[index]
+}
+
+extern c fn FreestandingByteLength(value String) u64 as freestanding_byte_length {
+    text.ByteLen(value)
+}
+
+extern c fn FreestandingOuter(value i32) i32 as freestanding_outer {
+    harnessSwitchContext(value) + 1
+}
+
+extern c fn FreestandingNested(value i32) i32 as freestanding_nested {
+    value * 2
+}
+
+extern c fn FreestandingNestedPanic(value i32) i32 as freestanding_nested_panic {
+    if value > 0 {
+        panic("nested panic")
+    }
+    value
+}
+
+extern c fn FreestandingReenter(value i32) i32 as freestanding_reenter {
+    harnessReenter(value) + 1
+}

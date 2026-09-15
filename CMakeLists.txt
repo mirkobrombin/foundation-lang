@@ -323,6 +323,7 @@ if(LLVM_LINK_LLVM_DYLIB AND TARGET LLVM)
 else()
     llvm_map_components_to_libnames(FOUNDATION_LLVM_LIBRARIES
         Core
+        Object
         Passes
         Support
         Target
@@ -4688,6 +4689,110 @@ if(BUILD_TESTING)
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/freestanding-selection-test
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-freestanding-selection.cmake
     )
+    # Freestanding libraries are compiled by Clang: the configured compiler when it is Clang,
+    # otherwise the Clang used by the WebAssembly guest tests through --cc.
+    set(FOUNDATION_FREESTANDING_CC "")
+    set(FOUNDATION_FREESTANDING_CLANG_AVAILABLE OFF)
+    if(CMAKE_C_COMPILER_ID STREQUAL "Clang" OR CMAKE_C_COMPILER_ID STREQUAL "AppleClang")
+        set(FOUNDATION_FREESTANDING_CLANG_AVAILABLE ON)
+    elseif(FOUNDATION_WASM_CLANG)
+        set(FOUNDATION_FREESTANDING_CC "${FOUNDATION_WASM_CLANG}")
+        set(FOUNDATION_FREESTANDING_CLANG_AVAILABLE ON)
+    endif()
+    find_program(FOUNDATION_LLVM_NM NAMES llvm-nm llvm-nm-21 HINTS ${LLVM_TOOLS_BINARY_DIR})
+    find_program(FOUNDATION_LLVM_READELF
+        NAMES llvm-readelf llvm-readelf-21
+        HINTS ${LLVM_TOOLS_BINARY_DIR}
+    )
+    if(FOUNDATION_FREESTANDING_CLANG_AVAILABLE AND FOUNDATION_LLVM_NM)
+        set(FOUNDATION_FREESTANDING_ARGUMENTS
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DCC=${FOUNDATION_FREESTANDING_CC}
+            -DNM=${FOUNDATION_LLVM_NM}
+            -DREADELF=${FOUNDATION_LLVM_READELF}
+            -DC_COMPILER=${CMAKE_C_COMPILER}
+            -DTRIPLE=${LLVM_HOST_TRIPLE}
+            -DHARNESS_DIRECTORY=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures
+            -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+        )
+        set(FOUNDATION_FREESTANDING_LIBRARY
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/freestanding-library)
+        set(FOUNDATION_FREESTANDING_SILENT
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/freestanding-silent)
+        set(FOUNDATION_FREESTANDING_TESTS)
+        foreach(backend IN ITEMS llvm c)
+            add_test(
+                NAME compiler.build.freestanding-symbols-${backend}
+                COMMAND ${CMAKE_COMMAND} ${FOUNDATION_FREESTANDING_ARGUMENTS}
+                    -DMODE=symbols -DBACKEND=${backend}
+                    -DPROJECT=${FOUNDATION_FREESTANDING_LIBRARY}
+                    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/freestanding-symbols-${backend}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-freestanding-library.cmake
+            )
+            list(APPEND FOUNDATION_FREESTANDING_TESTS
+                compiler.build.freestanding-symbols-${backend})
+            if(NOT WIN32)
+                foreach(run IN ITEMS hooks contexts panic-index)
+                    add_test(
+                        NAME compiler.run.freestanding-${run}-${backend}
+                        COMMAND ${CMAKE_COMMAND} ${FOUNDATION_FREESTANDING_ARGUMENTS}
+                            -DMODE=run -DRUN=${run} -DBACKEND=${backend}
+                            -DPROJECT=${FOUNDATION_FREESTANDING_LIBRARY}
+                            -DSILENT_PROJECT=${FOUNDATION_FREESTANDING_SILENT}
+                            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/freestanding-${run}-${backend}
+                            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-freestanding-library.cmake
+                    )
+                    list(APPEND FOUNDATION_FREESTANDING_TESTS
+                        compiler.run.freestanding-${run}-${backend})
+                endforeach()
+            endif()
+            if(FOUNDATION_WASM_CLANG AND FOUNDATION_WASM_LINKER)
+                add_test(
+                    NAME compiler.build.freestanding-wasm32-${backend}
+                    COMMAND ${CMAKE_COMMAND} ${FOUNDATION_FREESTANDING_ARGUMENTS}
+                        -DMODE=wasm -DBACKEND=${backend}
+                        -DCLANG=${FOUNDATION_WASM_CLANG}
+                        -DLINKER=${FOUNDATION_WASM_LINKER}
+                        -DPROJECT=${FOUNDATION_FREESTANDING_SILENT}
+                        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/freestanding-wasm32-${backend}
+                        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-freestanding-library.cmake
+                )
+                list(APPEND FOUNDATION_FREESTANDING_TESTS
+                    compiler.build.freestanding-wasm32-${backend})
+            endif()
+        endforeach()
+        set(FOUNDATION_FREESTANDING_MODES deterministic cli-reject cpu-reject)
+        if(FOUNDATION_LLVM_READELF)
+            list(APPEND FOUNDATION_FREESTANDING_MODES cpu)
+        endif()
+        if(NOT WIN32)
+            list(APPEND FOUNDATION_FREESTANDING_MODES cc)
+            foreach(run IN ITEMS panic-allocation panic-return)
+                add_test(
+                    NAME compiler.run.freestanding-${run}
+                    COMMAND ${CMAKE_COMMAND} ${FOUNDATION_FREESTANDING_ARGUMENTS}
+                        -DMODE=run -DRUN=${run}
+                        -DPROJECT=${FOUNDATION_FREESTANDING_LIBRARY}
+                        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/freestanding-${run}
+                        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-freestanding-library.cmake
+                )
+                list(APPEND FOUNDATION_FREESTANDING_TESTS compiler.run.freestanding-${run})
+            endforeach()
+        endif()
+        foreach(mode IN LISTS FOUNDATION_FREESTANDING_MODES)
+            add_test(
+                NAME compiler.build.freestanding-${mode}
+                COMMAND ${CMAKE_COMMAND} ${FOUNDATION_FREESTANDING_ARGUMENTS}
+                    -DMODE=${mode}
+                    -DPROJECT=${FOUNDATION_FREESTANDING_LIBRARY}
+                    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/freestanding-${mode}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-freestanding-library.cmake
+            )
+            list(APPEND FOUNDATION_FREESTANDING_TESTS compiler.build.freestanding-${mode})
+        endforeach()
+        set_tests_properties(${FOUNDATION_FREESTANDING_TESTS}
+            PROPERTIES TIMEOUT ${FOUNDATION_COMPILE_RUN_TIMEOUT})
+    endif()
     add_test(
         NAME compiler.run.environment
         COMMAND ${CMAKE_COMMAND}

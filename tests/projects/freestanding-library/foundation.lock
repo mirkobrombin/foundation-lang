@@ -1,0 +1,4 @@
+format foundation.lock/v1
+root test.freestanding_library 1.0.0
+target freestanding
+native c freestanding_library - sha256:8a8c27cd56e61615da7bc97f3ead0a3d0a85fe38d834191029f890e404ee988e

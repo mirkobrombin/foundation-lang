@@ -24,6 +24,7 @@
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -899,12 +900,12 @@ void appendNativeLink(std::vector<std::string> &links, const std::string &link) 
 std::optional<NativeBuildInputs>
 nativeBuildInputs(const std::filesystem::path &source, ProjectMode mode,
                   const std::vector<std::filesystem::path> &explicitSources,
-                  const std::vector<std::string> &explicitLinks) {
+                  const std::vector<std::string> &explicitLinks,
+                  TargetPlatform target = hostTargetPlatform()) {
     NativeBuildInputs result;
     const auto manifestPath = discoverPackageManifest(source);
     if (manifestPath.has_value()) {
         const auto sdk = *parsePackageVersion("0.1.0");
-        const auto target = hostTargetPlatform();
         const auto project = loadLockedPackageProject(
             *manifestPath, sdk, target, defaultPackageCachePath(), mode == ProjectMode::Test);
         if (!project.value.has_value()) {
@@ -1358,7 +1359,8 @@ int emitMetadataFile(const std::filesystem::path &source, const std::filesystem:
 }
 
 int emitPackageInterfaceFile(const std::filesystem::path &source,
-                             const std::filesystem::path &output) {
+                             const std::filesystem::path &output,
+                             const std::optional<FreestandingOptions> &freestanding) {
     const auto manifestPath = discoverPackageManifest(source);
     if (!manifestPath.has_value()) {
         std::cerr << "foundationc: emit-pii requires a package project\n";
@@ -1381,7 +1383,29 @@ int emitPackageInterfaceFile(const std::filesystem::path &source,
         return 1;
     }
 
-    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false});
+    const auto freestandingLock = lock.value->target == TargetPlatform::Freestanding;
+    if (freestandingLock && !freestanding.has_value()) {
+        std::cerr << "foundationc: emit-pii requires --triple for a freestanding lock\n";
+        return 2;
+    }
+    if (!freestandingLock && freestanding.has_value()) {
+        std::cerr << "foundationc: --triple, --cpu, and --features require a freestanding lock\n";
+        return 2;
+    }
+    std::optional<LlvmTargetSelection> selection;
+    if (freestanding.has_value()) {
+        Diagnostics targetDiagnostics;
+        selection = selectLlvmTarget(freestanding->triple, freestanding->cpu,
+                                     freestanding->features, targetDiagnostics);
+        if (!selection.has_value()) {
+            std::cerr << renderDiagnostics(source.string(), {}, targetDiagnostics);
+            return 1;
+        }
+    }
+
+    auto analysis = analyzeProject(
+        source, {}, AnalyzeOptions{.requireMain = false}, ProjectMode::Production,
+        freestandingLock ? TargetPlatform::Freestanding : hostTargetPlatform());
     std::optional<PackageInterface> packageInterface;
     if (analysis.semantic.has_value()) {
         const auto fir = lower(analysis.program, *analysis.semantic);
@@ -1392,6 +1416,12 @@ int emitPackageInterfaceFile(const std::filesystem::path &source,
                                        "native library exports no C ABI functions",
                                        {0, 0, 1, 1});
             packageInterface.reset();
+        }
+        if (packageInterface.has_value() && selection.has_value()) {
+            packageInterface->abiMinor = 4;
+            packageInterface->freestanding = freestandingInterface(
+                fir, manifest.value->name, selection->triple, selection->cpu,
+                selection->features);
         }
     }
     Compilation result;
@@ -1655,12 +1685,334 @@ int buildFile(const std::filesystem::path &source, const std::filesystem::path &
                             backend);
 }
 
+namespace {
+
+std::vector<ArchiveMember> runtimeCoreSources() {
+    return {
+        {"core.o", sdkAsset("runtime/src/core.c",
+                            std::filesystem::path{FOUNDATION_RUNTIME_CORE_SOURCE})},
+        {"core_print.o", sdkAsset("runtime/src/core_print.c",
+                                  std::filesystem::path{FOUNDATION_RUNTIME_CORE_PRINT_SOURCE})},
+    };
+}
+
+// Every freestanding C compilation uses this option set. The CPU and feature options follow
+// every option the Clang driver derives from the triple, so explicit entries take precedence.
+// Without --cpu, Clang keeps its default CPU for the triple.
+std::vector<std::string> freestandingCompilerArguments(
+    const std::string &compiler, const LlvmTargetSelection &target, bool positionIndependent,
+    const std::filesystem::path &source, const std::filesystem::path &output,
+    const std::filesystem::path &generatedInclude) {
+    const auto runtimeInclude = runtimeIncludeDirectory();
+    std::vector<std::string> arguments{compiler,
+                                       "--target=" + target.triple,
+                                       "-std=c11",
+                                       "-ffreestanding",
+                                       "-nostdlibinc",
+                                       "-O2",
+                                       "-Wall",
+                                       "-Wextra",
+                                       "-Wpedantic",
+                                       "-Werror",
+                                       "-ffunction-sections",
+                                       "-fdata-sections",
+                                       "-DFOUNDATION_FREESTANDING=1"};
+    if (target.cpuSelected) {
+        arguments.insert(arguments.end(), {"-Xclang", "-target-cpu", "-Xclang", target.cpu});
+    }
+    for (const auto &feature : target.features) {
+        arguments.insert(arguments.end(), {"-Xclang", "-target-feature", "-Xclang", feature});
+    }
+    appendSourcePathMap(arguments, "Clang", runtimeInclude.parent_path().parent_path(),
+                        "foundation-sdk");
+    appendSourcePathMap(arguments, "Clang", source.parent_path(), "source");
+    if (positionIndependent) {
+        arguments.push_back("-fPIC");
+    }
+    arguments.insert(arguments.end(), {"-I", runtimeInclude.string(), "-I",
+                                       generatedInclude.string(), "-c", source.string(), "-o",
+                                       output.string()});
+    return arguments;
+}
+
+// Identifies the selected C compiler as Clang, then compiles a probe with the complete option
+// set. Reports FDN8008 when either step fails.
+std::optional<std::string> selectFreestandingCompiler(const FreestandingOptions &options,
+                                                      const LlvmTargetSelection &target,
+                                                      bool positionIndependent,
+                                                      const std::filesystem::path &directory,
+                                                      Diagnostics &diagnostics) {
+    std::string compiler;
+    if (options.cCompiler.has_value()) {
+        compiler = options.cCompiler->string();
+    } else {
+        const std::string compilerId = FOUNDATION_C_COMPILER_ID;
+        if (compilerId != "Clang" && compilerId != "AppleClang") {
+            diagnostics.error("FDN8008",
+                              "configured C compiler " + std::string(FOUNDATION_C_COMPILER) +
+                                  " is " + compilerId + ", not Clang; pass --cc <clang>",
+                              {});
+            return std::nullopt;
+        }
+        compiler = FOUNDATION_C_COMPILER;
+    }
+    std::string version;
+    const auto versionStatus = runProcess({compiler, "--version"}, ProcessOutput::Capture,
+                                          &version);
+    static const std::regex clangVersion("clang version ([0-9]+(\\.[0-9]+)*)");
+    if (versionStatus != 0 ||
+        !std::regex_search(version.substr(0, version.find('\n')), clangVersion)) {
+        diagnostics.error("FDN8008",
+                          "C compiler " + compiler +
+                              " failed Clang identification: --version did not report a clang "
+                              "version",
+                          {});
+        return std::nullopt;
+    }
+    // -Wpedantic rejects an empty translation unit, so the probe declares one type.
+    const auto probe = directory / "probe.c";
+    if (!writeFile(probe, "typedef int foundation_freestanding_probe;\n") ||
+        runProcess(freestandingCompilerArguments(compiler, target, positionIndependent, probe,
+                                                 directory / "probe.o", directory),
+                   ProcessOutput::StdoutToStderrOnFailure) != 0) {
+        diagnostics.error("FDN8008",
+                          "C compiler " + compiler + " failed the freestanding probe for " +
+                              target.triple,
+                          {});
+        return std::nullopt;
+    }
+    return compiler;
+}
+
+int buildFreestandingLibrary(const std::filesystem::path &source,
+                             const std::filesystem::path &outputDirectory,
+                             const std::vector<std::filesystem::path> &nativeInputs,
+                             BackendKind backend, bool positionIndependent,
+                             const FreestandingOptions &options) {
+    const auto manifestPath = discoverPackageManifest(source);
+    if (!manifestPath.has_value()) {
+        std::cerr << "foundationc: build-library requires a package project\n";
+        return 2;
+    }
+    const auto manifest = readPackageManifest(*manifestPath);
+    if (!manifest.value.has_value()) {
+        for (const auto &error : manifest.errors) {
+            std::cerr << renderPackageError(error);
+        }
+        return 1;
+    }
+    if (!manifest.value->nativeLibrary || !manifest.value->nativeName.has_value()) {
+        std::cerr << "foundationc: build-library requires native_library c and native_name\n";
+        return 2;
+    }
+    const auto lock = readPackageLock(manifestPath->parent_path() / "foundation.lock");
+    if (!lock.value.has_value()) {
+        for (const auto &error : lock.errors) {
+            std::cerr << renderPackageError(error);
+        }
+        return 1;
+    }
+    if (lock.value->target != TargetPlatform::Freestanding) {
+        std::cerr << "foundationc: build-library --target freestanding requires a freestanding "
+                     "lock\n";
+        return 2;
+    }
+    Diagnostics toolchainDiagnostics;
+    const auto target = selectLlvmTarget(options.triple, options.cpu, options.features,
+                                         toolchainDiagnostics);
+    if (!target.has_value()) {
+        std::cerr << renderDiagnostics(source.string(), {}, toolchainDiagnostics);
+        return 1;
+    }
+    auto temporary = createTempDirectory();
+    if (!temporary.has_value()) {
+        return 1;
+    }
+    const auto compiler = selectFreestandingCompiler(options, *target, positionIndependent,
+                                                     temporary->path(), toolchainDiagnostics);
+    if (!compiler.has_value()) {
+        std::cerr << renderDiagnostics(source.string(), {}, toolchainDiagnostics);
+        return 1;
+    }
+    const auto native = nativeBuildInputs(source, ProjectMode::Production, nativeInputs, {},
+                                          TargetPlatform::Freestanding);
+    if (!native.has_value()) {
+        return 1;
+    }
+
+    auto analysis = analyzeProject(source, {}, AnalyzeOptions{.requireMain = false},
+                                   ProjectMode::Production, TargetPlatform::Freestanding);
+    std::optional<FirProgram> fir;
+    std::optional<PackageInterface> packageInterface;
+    if (analysis.semantic.has_value()) {
+        fir = lower(analysis.program, *analysis.semantic);
+        packageInterface = buildPackageInterface(*fir, *manifest.value, *lock.value,
+                                                 analysis.diagnostics);
+        if (packageInterface.has_value() && packageInterface->exports.empty()) {
+            analysis.diagnostics.error("FDN2122", "native library exports no C ABI functions",
+                                       {0, 0, 1, 1});
+            packageInterface.reset();
+        }
+    }
+    Compilation result;
+    result.sources = analysis.sources;
+    result.diagnostics = analysis.diagnostics;
+    if (const auto status = report(source, result); status != 0) {
+        return status;
+    }
+    if (!fir.has_value() || !packageInterface.has_value()) {
+        return 1;
+    }
+    for (const auto &input : native->sources) {
+        const auto extension = input.extension();
+        if (extension != ".c" && extension != ".o" && extension != ".obj") {
+            std::cerr << "foundationc: native library inputs must be C sources or objects\n";
+            return 2;
+        }
+    }
+    packageInterface->abiMinor = 4;
+    packageInterface->freestanding = freestandingInterface(
+        *fir, manifest.value->name, target->triple, target->cpu, target->features);
+
+    const auto headerContents = emitPackageCHeader(*fir, manifest.value->name,
+                                                   packageInterface->library);
+    const auto interfaceContents = renderPackageInterfaceJson(*packageInterface);
+    if (!writeFile(temporary->path() / "foundation_abi.h", headerContents)) {
+        return 1;
+    }
+
+    std::vector<ArchiveMember> members;
+    const auto generatedObject = temporary->path() / "foundation.o";
+    const auto librarySourceIdentity = manifestPath->filename().generic_string();
+    if (backend == BackendKind::Llvm) {
+        Diagnostics diagnostics;
+        if (!emitLlvmObject(*fir, generatedObject, librarySourceIdentity,
+                            LlvmCodegenOptions{
+                                .targetTriple = target->triple,
+                                .optimize = true,
+                                .verifyAllocations = false,
+                                .sourcePaths = llvmReproducibleSourcePaths(analysis.sources),
+                                .entry = std::nullopt,
+                                .libraryPackage = manifest.value->name,
+                                .cpu = target->cpu,
+                                .features = target->features,
+                                .positionIndependent = positionIndependent,
+                                .freestanding = true,
+                            },
+                            diagnostics)) {
+            std::cerr << renderDiagnostics(source.string(), {}, diagnostics);
+            return 1;
+        }
+    } else {
+        const auto generatedSource = temporary->path() / "foundation.c";
+        if (!writeFile(generatedSource, emitPackageC(*fir, manifest.value->name,
+                                                     librarySourceIdentity, true)) ||
+            runProcess(freestandingCompilerArguments(*compiler, *target, positionIndependent,
+                                                     generatedSource, generatedObject,
+                                                     temporary->path()),
+                       ProcessOutput::StdoutToStderrOnFailure) != 0) {
+            return 1;
+        }
+    }
+    members.push_back({"foundation.o", generatedObject});
+    for (const auto &core : runtimeCoreSources()) {
+        const auto object = temporary->path() / core.name;
+        if (runProcess(freestandingCompilerArguments(*compiler, *target, positionIndependent,
+                                                     core.path, object, temporary->path()),
+                       ProcessOutput::StdoutToStderrOnFailure) != 0) {
+            return 1;
+        }
+        members.push_back({core.name, object});
+    }
+    for (std::size_t index = 0; index < native->sources.size(); ++index) {
+        const auto &input = native->sources[index];
+        const auto name = "native-" + std::to_string(index) + ".o";
+        if (input.extension() != ".c") {
+            members.push_back({name, input});
+            continue;
+        }
+        const auto object = temporary->path() / name;
+        if (runProcess(freestandingCompilerArguments(*compiler, *target, positionIndependent,
+                                                     input, object, temporary->path()),
+                       ProcessOutput::StdoutToStderrOnFailure) != 0) {
+            return 1;
+        }
+        members.push_back({name, object});
+    }
+    const auto artifactName = "lib" + packageInterface->library + ".a";
+    const auto artifact = temporary->path() / artifactName;
+    Diagnostics archiveDiagnostics;
+    if (!writeDeterministicArchive(artifact, members, archiveDiagnostics)) {
+        std::cerr << renderDiagnostics(source.string(), {}, archiveDiagnostics);
+        return 1;
+    }
+
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(outputDirectory, error);
+    if (!error && std::filesystem::is_symlink(status)) {
+        std::cerr << "foundationc: refusing symbolic-link output directory\n";
+        return 1;
+    }
+    error.clear();
+    const auto includeDirectory = outputDirectory / "include";
+    const auto runtimeHeaderDirectory = includeDirectory / "foundation";
+    const auto libraryDirectory = outputDirectory / "lib";
+    const auto metadataDirectory = outputDirectory / "share" / "foundation";
+    std::filesystem::create_directories(runtimeHeaderDirectory, error);
+    if (!error) {
+        std::filesystem::create_directories(libraryDirectory, error);
+    }
+    if (!error) {
+        std::filesystem::create_directories(metadataDirectory, error);
+    }
+    if (error) {
+        std::cerr << "foundationc: cannot create library output directories: "
+                  << error.message() << '\n';
+        return 1;
+    }
+    const auto libraryHeader =
+        readSourceFile(runtimeIncludeDirectory() / "foundation" / "library.h");
+    const auto hookHeader =
+        readSourceFile(runtimeIncludeDirectory() / "foundation" / "freestanding.h");
+    if (!libraryHeader.has_value() || !hookHeader.has_value() ||
+        !writeFile(includeDirectory / (packageInterface->library + ".h"), headerContents) ||
+        !writeFile(runtimeHeaderDirectory / "library.h", *libraryHeader) ||
+        !writeFile(runtimeHeaderDirectory / "freestanding.h", *hookHeader) ||
+        !writeFile(metadataDirectory / (packageInterface->library + ".pii.json"),
+                   interfaceContents)) {
+        return 1;
+    }
+    const auto publishedArtifact = libraryDirectory / artifactName;
+    std::filesystem::copy_file(artifact, publishedArtifact,
+                               std::filesystem::copy_options::overwrite_existing, error);
+    if (error) {
+        std::cerr << "foundationc: cannot publish " << publishedArtifact.string() << ": "
+                  << error.message() << '\n';
+        return 1;
+    }
+    std::cout << "library " << publishedArtifact.generic_string() << '\n'
+              << "header "
+              << (includeDirectory / (packageInterface->library + ".h")).generic_string()
+              << '\n'
+              << "interface "
+              << (metadataDirectory / (packageInterface->library + ".pii.json")).generic_string()
+              << '\n';
+    return 0;
+}
+
+} // namespace
+
 int buildLibrary(const std::filesystem::path &source,
                  const std::filesystem::path &outputDirectory,
                  LibraryKind kind,
                  const std::vector<std::filesystem::path> &nativeInputs,
                  BackendKind backend,
-                 bool positionIndependent) {
+                 bool positionIndependent,
+                 const std::optional<FreestandingOptions> &freestanding) {
+    if (freestanding.has_value()) {
+        return buildFreestandingLibrary(source, outputDirectory, nativeInputs, backend,
+                                        positionIndependent, *freestanding);
+    }
     const auto manifestPath = discoverPackageManifest(source);
     if (!manifestPath.has_value()) {
         std::cerr << "foundationc: build-library requires a package project\n";
@@ -1939,6 +2291,10 @@ int exportPackage(const std::filesystem::path &source,
             std::cerr << renderPackageError(error);
         }
         return 1;
+    }
+    if (lock.value->target == TargetPlatform::Freestanding) {
+        std::cerr << "foundationc: package export does not support the freestanding target\n";
+        return 2;
     }
     if (lock.value->target != hostTargetPlatform()) {
         std::cerr << "foundationc: package export requires a lock for the host target\n";

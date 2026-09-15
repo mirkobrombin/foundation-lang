@@ -1,0 +1,5 @@
+package test.freestanding_silent
+
+extern c fn SilentGreeting(name String) String as silent_greeting {
+    "quiet " + name
+}

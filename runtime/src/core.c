@@ -207,8 +207,13 @@ _Noreturn void fdn_panic(fdn_string message) {
         location.column = frame->column;
         innermost = &location;
     }
-    fdn_hook_panic(message, innermost);
-    /* The hook contract forbids returning. Trap instead of resuming the panicked frames. */
+    /* The hook contract forbids returning, but the declaration says so too, and a compiler would
+       delete the trap after a direct call. The call goes through a pointer the compiler cannot
+       prove noreturn, so a hook that returns reaches the trap instead of the panicked frames. */
+    {
+        void (*volatile hook)(fdn_string, const fdn_panic_location *) = fdn_hook_panic;
+        hook(message, innermost);
+    }
     __builtin_trap();
 }
 #else

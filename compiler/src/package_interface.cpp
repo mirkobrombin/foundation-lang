@@ -541,7 +541,24 @@ std::string renderPackageInterfaceJson(PackageInterface value) {
         << ",\"language\":" << value.language
         << ",\"sdk\":" << quote(value.sdk.string()) << ",\"library\":" << quote(value.library)
         << ",\"soversion\":" << value.soVersion
-        << ",\"target\":" << quote(targetPlatformName(value.target)) << ",\"links\":[";
+        << ",\"target\":" << quote(targetPlatformName(value.target));
+    if (value.freestanding.has_value()) {
+        out << ",\"triple\":" << quote(value.freestanding->triple)
+            << ",\"cpu\":" << quote(value.freestanding->cpu) << ",\"features\":[";
+        for (std::size_t index{}; index < value.freestanding->features.size(); ++index) {
+            if (index)
+                out << ',';
+            out << quote(value.freestanding->features[index]);
+        }
+        out << "],\"freestanding_hooks\":[";
+        for (std::size_t index{}; index < value.freestanding->hooks.size(); ++index) {
+            if (index)
+                out << ',';
+            out << quote(value.freestanding->hooks[index]);
+        }
+        out << ']';
+    }
+    out << ",\"links\":[";
     for (std::size_t index{}; index < value.links.size(); ++index) {
         if (index)
             out << ',';
@@ -575,6 +592,28 @@ std::string renderPackageInterfaceJson(PackageInterface value) {
     const auto canonical = out.str();
     return canonical.substr(0, canonical.size() - 1) +
            ",\"canonical_sha256\":" + quote("sha256:" + sha256Hex(canonical)) + "}";
+}
+
+PiiFreestanding freestandingInterface(const FirProgram& source, std::string_view packageName,
+                                      std::string triple, std::string cpu,
+                                      std::vector<std::string> features) {
+    const auto program = specializePackageInterface(source, packageName);
+    const auto prints = std::any_of(
+        program.functions.begin(), program.functions.end(), [](const FirFunction& function) {
+            return function.hasBody &&
+                   std::any_of(function.expressions.begin(), function.expressions.end(),
+                               [](const FirExpression& expression) {
+                                   const auto* call =
+                                       std::get_if<FirCallExpression>(&expression.value);
+                                   return call != nullptr && call->kind == FirCallKind::Print;
+                               });
+        });
+    PiiFreestanding result{std::move(triple), std::move(cpu), std::move(features),
+                           {"fdn_hook_alloc", "fdn_hook_context", "fdn_hook_free",
+                            "fdn_hook_panic"}};
+    if (prints)
+        result.hooks.push_back("fdn_hook_write");
+    return result;
 }
 
 std::optional<PackageInterface> buildPackageInterface(const FirProgram& source,

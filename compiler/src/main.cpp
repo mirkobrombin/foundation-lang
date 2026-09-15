@@ -28,7 +28,8 @@ void printUsage(std::ostream& output) {
            << "  foundationc emit-llvm <source-or-project> -o <output.ll>\n"
            << "  foundationc emit-metadata <source-or-project> -o <output.json>"
               " [--target <platform>]\n"
-           << "  foundationc emit-pii <project> -o <output.json>\n"
+           << "  foundationc emit-pii <project> -o <output.json> [--triple <llvm-triple>]"
+              " [--cpu <name>] [--features <list>]\n"
            << "  foundationc emit-fsm <source-or-project> -o <output>"
               " --format <mermaid|graphviz> [--machine <name>]\n"
            << "  foundationc documentation <source-or-project> -o <output.md>"
@@ -42,6 +43,9 @@ void printUsage(std::ostream& output) {
            << "  foundationc build-library <project> -o <directory>"
               " --kind <static|shared> [--pic] [--backend <llvm|c>]"
               " [--native <input>]...\n"
+           << "  foundationc build-library <project> -o <directory> --kind static"
+              " --target freestanding --triple <llvm-triple> [--cpu <name>]"
+              " [--features <list>] [--cc <clang>] [--backend <llvm|c>] [--pic]\n"
            << "  foundationc run <source-or-project> [--backend <llvm|c>]"
               " [--native <input>] [--native-link <library>]... [-- <argument>...]\n"
            << "  foundationc test <source-or-project> [--backend <llvm|c>]"
@@ -229,14 +233,50 @@ bool parseBuildArguments(int argc, char** argv, int start, std::filesystem::path
     return outputSeen;
 }
 
+bool parseInterfaceArguments(int argc, char** argv,
+                             std::optional<foundation::FreestandingOptions>& freestanding) {
+    if (argc < 5 || std::string_view(argv[3]) != "-o") {
+        return false;
+    }
+    std::optional<std::string> triple;
+    std::optional<std::string> cpu;
+    std::optional<std::string> features;
+    for (auto index = 5; index < argc; index += 2) {
+        if (index + 1 >= argc) {
+            return false;
+        }
+        const std::string_view option = argv[index];
+        if (option == "--triple" && !triple.has_value()) {
+            triple = argv[index + 1];
+        } else if (option == "--cpu" && !cpu.has_value()) {
+            cpu = argv[index + 1];
+        } else if (option == "--features" && !features.has_value()) {
+            features = argv[index + 1];
+        } else {
+            return false;
+        }
+    }
+    if (!triple.has_value()) {
+        return !cpu.has_value() && !features.has_value();
+    }
+    freestanding = foundation::FreestandingOptions{*triple, cpu, features, std::nullopt};
+    return true;
+}
+
 bool parseLibraryArguments(int argc, char** argv, int start, std::filesystem::path& output,
                            foundation::LibraryKind& kind,
                            std::vector<std::filesystem::path>& nativeInputs,
-                           foundation::BackendKind& backend, bool& positionIndependent) {
+                           foundation::BackendKind& backend, bool& positionIndependent,
+                           std::optional<foundation::FreestandingOptions>& freestanding) {
     auto outputSeen = false;
     auto kindSeen = false;
     auto backendSeen = false;
     auto picSeen = false;
+    auto targetSeen = false;
+    std::optional<std::string> triple;
+    std::optional<std::string> cpu;
+    std::optional<std::string> features;
+    std::optional<std::string> compiler;
     for (auto index = start; index < argc;) {
         const std::string_view option = argv[index];
         if (option == "--pic" && !picSeen) {
@@ -270,13 +310,36 @@ bool parseLibraryArguments(int argc, char** argv, int start, std::filesystem::pa
             }
             backend = *parsed;
             backendSeen = true;
+        } else if (option == "--target" && !targetSeen && value == "freestanding") {
+            targetSeen = true;
+        } else if (option == "--triple" && !triple.has_value()) {
+            triple = value;
+        } else if (option == "--cpu" && !cpu.has_value()) {
+            cpu = value;
+        } else if (option == "--features" && !features.has_value()) {
+            features = value;
+        } else if (option == "--cc" && !compiler.has_value()) {
+            compiler = value;
         } else {
             return false;
         }
         index += 2;
     }
-    return outputSeen && kindSeen &&
-           !(positionIndependent && kind == foundation::LibraryKind::Shared);
+    if (!outputSeen || !kindSeen ||
+        (positionIndependent && kind == foundation::LibraryKind::Shared && !targetSeen)) {
+        return false;
+    }
+    if (!targetSeen) {
+        return !triple.has_value() && !cpu.has_value() && !features.has_value() &&
+               !compiler.has_value();
+    }
+    if (!triple.has_value() || kind != foundation::LibraryKind::Static) {
+        return false;
+    }
+    freestanding = foundation::FreestandingOptions{
+        *triple, cpu, features,
+        compiler.has_value() ? std::optional<std::filesystem::path>{*compiler} : std::nullopt};
+    return true;
 }
 
 bool parseRunArguments(int argc, char** argv, int start,
@@ -415,9 +478,15 @@ int main(int argc, char** argv) {
             return foundation::emitMetadataFile(std::filesystem::path(argv[2]),
                                                 std::filesystem::path(argv[4]), *target);
         }
-        if (command == "emit-pii" && outputArgumentsAreValid(argc, argv)) {
+        if (command == "emit-pii") {
+            std::optional<foundation::FreestandingOptions> freestanding;
+            if (!parseInterfaceArguments(argc, argv, freestanding)) {
+                printUsage(std::cerr);
+                return 2;
+            }
             return foundation::emitPackageInterfaceFile(std::filesystem::path(argv[2]),
-                                                        std::filesystem::path(argv[4]));
+                                                        std::filesystem::path(argv[4]),
+                                                        freestanding);
         }
         if (command == "emit-fsm") {
             std::optional<std::string> machine;
@@ -474,13 +543,15 @@ int main(int argc, char** argv) {
             std::vector<std::filesystem::path> nativeInputs;
             auto backend = foundation::defaultBackendKind();
             auto positionIndependent = false;
+            std::optional<foundation::FreestandingOptions> freestanding;
             if (!parseLibraryArguments(argc, argv, 3, output, kind, nativeInputs, backend,
-                                       positionIndependent)) {
+                                       positionIndependent, freestanding)) {
                 printUsage(std::cerr);
                 return 2;
             }
             return foundation::buildLibrary(std::filesystem::path(argv[2]), output, kind,
-                                            nativeInputs, backend, positionIndependent);
+                                            nativeInputs, backend, positionIndependent,
+                                            freestanding);
         }
         if (command == "run" && argc >= 3) {
             std::vector<std::filesystem::path> nativeInputs;

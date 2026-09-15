@@ -1,0 +1,4 @@
+format foundation.lock/v1
+root test.freestanding_silent 1.0.0
+target freestanding
+native c freestanding_silent - sha256:76ab193f0b00d295efa7a81fcd4c321eefada142a99a21bd13b03bc0d44fadfa
