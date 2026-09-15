@@ -150,10 +150,10 @@ jobs:
       - name: Restore LLVM 21 build
         id: llvm-cache
         if: matrix.llvm-source != ''
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/llvm-21.1.8
-          key: llvm-21.1.8-static-${{ runner.os }}-${{ runner.arch }}-v1
+          key: llvm-21.1.8-static-${{ runner.os }}-${{ runner.arch }}-v2
 
       - name: Build LLVM 21 from source
         if: matrix.llvm-source != '' && steps.llvm-cache.outputs.cache-hit != 'true'
@@ -174,7 +174,7 @@ jobs:
           cmake -S "$source/llvm" -B "$RUNNER_TEMP/llvm-build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             "-DCMAKE_INSTALL_PREFIX=$RUNNER_TEMP/llvm-21.1.8" \
-            -DLLVM_ENABLE_PROJECTS=lld \
+            "-DLLVM_ENABLE_PROJECTS=clang;lld" \
             -DLLVM_ENABLE_ZLIB=OFF \
             -DLLVM_ENABLE_ZSTD=OFF \
             -DLLVM_ENABLE_LIBXML2=OFF \
@@ -187,6 +187,13 @@ jobs:
             -DLLVM_INCLUDE_DOCS=OFF
           cmake --build "$RUNNER_TEMP/llvm-build" --target install
           rm -rf "$source" "$RUNNER_TEMP/llvm-build"
+
+      - name: Save LLVM 21 build
+        if: matrix.llvm-source != '' && steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/llvm-21.1.8
+          key: llvm-21.1.8-static-${{ runner.os }}-${{ runner.arch }}-v2
 
       - name: Use LLVM 21 built from source
         if: matrix.llvm-source != ''
