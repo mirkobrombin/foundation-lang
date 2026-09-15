@@ -69,7 +69,7 @@ std::optional<PackageManifest> normalizeManifest(
     TargetPlatform target, std::vector<PackageError> &errors) {
     for (auto &dependency : manifest.dependencies) {
         if (dependency.kind != PackageLocationKind::Path ||
-            (dependency.target.has_value() && *dependency.target != target)) {
+            (dependency.target.has_value() && !targetSelected(*dependency.target, target))) {
             continue;
         }
         std::error_code error;
@@ -104,7 +104,7 @@ std::string catalogKey(const PackageDependency &dependency) {
 }
 
 bool active(const PackageDependency &dependency, TargetPlatform target) {
-    return !dependency.target.has_value() || *dependency.target == target;
+    return !dependency.target.has_value() || targetSelected(*dependency.target, target);
 }
 
 } // namespace

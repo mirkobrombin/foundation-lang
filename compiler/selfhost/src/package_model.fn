@@ -56,18 +56,18 @@ struct packageDependency {
     requirement packageRequirement
     kind packageLocationKind
     location String
-    target Option<targetPlatform>
+    target Option<targetSelector>
     scope packageDependencyScope
 }
 
 struct packageNativeLink {
     library String
-    target Option<targetPlatform>
+    target Option<targetSelector>
 }
 
 struct packageNativeSource {
     path String
-    target Option<targetPlatform>
+    target Option<targetSelector>
 }
 
 struct packageForeign {

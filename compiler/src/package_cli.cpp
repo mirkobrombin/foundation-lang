@@ -225,7 +225,7 @@ int requirementsCommand(const PackageOptions& options) {
     const auto collect = [&](const PackageManifest& value) {
         for (const auto& dependency : value.dependencies) {
             if (dependency.kind != PackageLocationKind::Registry ||
-                (dependency.target.has_value() && *dependency.target != target)) {
+                (dependency.target.has_value() && !targetSelected(*dependency.target, target))) {
                 continue;
             }
             requirements.emplace(dependency.location, dependency.name,

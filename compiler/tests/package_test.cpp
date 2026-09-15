@@ -420,7 +420,7 @@ void packageInterfacesRenderCanonically() {
     packageInterface.sdk = *foundation::parsePackageRequirement("^0.1.0");
     packageInterface.library = "sample_native";
     packageInterface.target = foundation::TargetPlatform::Linux;
-    packageInterface.links.push_back({"m", foundation::TargetPlatform::Linux});
+    packageInterface.links.push_back({"m", foundation::TargetSelector::Linux});
     packageInterface.foreign.push_back(
         {foundation::PiiEcosystem::C, "libfuse", "2.9.9", "path", "native/libfuse",
          "sha256:test", foundation::TargetPlatform::Linux, foundation::PiiAbi::C11});

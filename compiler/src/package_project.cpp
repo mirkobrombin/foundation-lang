@@ -22,7 +22,7 @@ void addError(std::vector<PackageError> &errors, const std::filesystem::path &pa
 }
 
 bool active(const PackageDependency &dependency, TargetPlatform target) {
-    return !dependency.target.has_value() || *dependency.target == target;
+    return !dependency.target.has_value() || targetSelected(*dependency.target, target);
 }
 
 std::optional<std::filesystem::path> canonicalDirectory(

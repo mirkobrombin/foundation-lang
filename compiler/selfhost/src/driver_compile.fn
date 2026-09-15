@@ -304,12 +304,12 @@ fn reportCompilerPackageErrors(&errors arena<packageError>) void {
 }
 
 fn compilerNativeTargetActive(
-    selected Option<targetPlatform>,
+    selected Option<targetSelector>,
     target targetPlatform
 ) bool {
     match selected {
         None: true
-        Some(value): sameTarget(value, target)
+        Some(value): targetSelected(value, target)
     }
 }
 

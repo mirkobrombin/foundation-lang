@@ -5,14 +5,14 @@ import std.fs
 import std.path
 import std.text
 
-fn copyTargetOption(value Option<targetPlatform>) Option<targetPlatform> {
+fn copyTargetOption(value Option<targetSelector>) Option<targetSelector> {
     match value {
         None: .None
         Some(target): .Some(target)
     }
 }
 
-fn sameTargetOption(left Option<targetPlatform>, right Option<targetPlatform>) bool {
+fn sameTargetOption(left Option<targetSelector>, right Option<targetSelector>) bool {
     match left {
         None: {
             match right {
@@ -26,7 +26,7 @@ fn sameTargetOption(left Option<targetPlatform>, right Option<targetPlatform>) b
         Some(leftValue): {
             match right {
                 None: false
-                Some(rightValue): sameTarget(leftValue, rightValue)
+                Some(rightValue): targetSelectorCode(leftValue) == targetSelectorCode(rightValue)
             }
         }
     }
@@ -289,7 +289,7 @@ fn manifestHasRule(&manifest packageManifest, code String) bool {
 fn manifestHasDependency(
     &manifest packageManifest,
     name String,
-    target Option<targetPlatform>
+    target Option<targetSelector>
 ) bool {
     var index u64 = 0
     while index < manifest.dependencies.len() {
@@ -308,7 +308,7 @@ fn manifestHasDependency(
 fn manifestHasNativeLink(
     &manifest packageManifest,
     library String,
-    target Option<targetPlatform>
+    target Option<targetSelector>
 ) bool {
     var index u64 = 0
     while index < manifest.nativeLinks.len() {
@@ -327,7 +327,7 @@ fn manifestHasNativeLink(
                         overlaps = true
                     }
                     Some(candidate): {
-                        overlaps = sameTarget(existing, candidate)
+                        overlaps = targetSelectorsOverlap(existing, candidate)
                     }
                 }
             }
@@ -343,7 +343,7 @@ fn manifestHasNativeLink(
 fn manifestHasNativeSource(
     &manifest packageManifest,
     source String,
-    target Option<targetPlatform>
+    target Option<targetSelector>
 ) bool {
     var index u64 = 0
     while index < manifest.nativeSources.len() {
@@ -362,7 +362,7 @@ fn manifestHasNativeSource(
                         overlaps = true
                     }
                     Some(candidate): {
-                        overlaps = sameTarget(existing, candidate)
+                        overlaps = targetSelectorsOverlap(existing, candidate)
                     }
                 }
             }
@@ -670,10 +670,10 @@ fn parsePackageManifest(
                         const library = if tokens.values.len() >= 2 {
                             packageToken(&tokens.values, 1)
                         } else { "" }
-                        var linkTarget Option<targetPlatform> = .None
+                        var linkTarget Option<targetSelector> = .None
                         if tokens.values.len() == 4 {
                             valid = valid && packageToken(&tokens.values, 2) == "target"
-                            linkTarget = parseTargetPlatformText(packageToken(&tokens.values, 3))
+                            linkTarget = parseTargetSelectorText(packageToken(&tokens.values, 3))
                             match linkTarget {
                                 None: {
                                     valid = false
@@ -700,10 +700,10 @@ fn parsePackageManifest(
                         const sourcePath = if tokens.values.len() >= 2 {
                             path.Normalize(packageToken(&tokens.values, 1))
                         } else { "" }
-                        var sourceTarget Option<targetPlatform> = .None
+                        var sourceTarget Option<targetSelector> = .None
                         if tokens.values.len() == 4 {
                             valid = valid && packageToken(&tokens.values, 2) == "target"
-                            sourceTarget = parseTargetPlatformText(packageToken(&tokens.values, 3))
+                            sourceTarget = parseTargetSelectorText(packageToken(&tokens.values, 3))
                             match sourceTarget {
                                 None: {
                                     valid = false
@@ -898,7 +898,7 @@ fn parseManifestDependency(
     const requirement = parsePackageRequirement(packageToken(&tokens, 2))
     const kind = packageLocationKindFor(packageToken(&tokens, 3))
     const location = packageToken(&tokens, 4)
-    var dependencyTarget Option<targetPlatform> = .None
+    var dependencyTarget Option<targetSelector> = .None
     var dependencyScope packageDependencyScope = .Runtime
     var validQualifiers = true
     var scopeSeen = false
@@ -913,7 +913,7 @@ fn parseManifestDependency(
                     validQualifiers = false
                 }
                 None: {
-                    dependencyTarget = parseTargetPlatformText(value)
+                    dependencyTarget = parseTargetSelectorText(value)
                     match dependencyTarget {
                         None: {
                             validQualifiers = false
@@ -1009,7 +1009,7 @@ fn isTestScope(scope packageDependencyScope) bool {
     }
 }
 
-fn compareTargetOption(left Option<targetPlatform>, right Option<targetPlatform>) i32 {
+fn compareTargetOption(left Option<targetSelector>, right Option<targetSelector>) i32 {
     match left {
         None: {
             match right {
@@ -1023,7 +1023,7 @@ fn compareTargetOption(left Option<targetPlatform>, right Option<targetPlatform>
         Some(leftValue): {
             match right {
                 None: 1
-                Some(rightValue): targetPlatformCode(leftValue) - targetPlatformCode(rightValue)
+                Some(rightValue): targetSelectorCode(leftValue) - targetSelectorCode(rightValue)
             }
         }
     }
@@ -1158,7 +1158,7 @@ fn renderPackageManifest(&source packageManifest) String {
         match value.target {
             None: {}
             Some(target): {
-                line = line + " target " + targetPlatformName(target)
+                line = line + " target " + targetSelectorName(target)
             }
         }
         discard packageBuilderWrite(&builder, line + "\n")
@@ -1175,7 +1175,7 @@ fn renderPackageManifest(&source packageManifest) String {
         match value.target {
             None: {}
             Some(target): {
-                line = line + " target " + targetPlatformName(target)
+                line = line + " target " + targetSelectorName(target)
             }
         }
         discard packageBuilderWrite(&builder, line + "\n")
@@ -1207,7 +1207,7 @@ fn renderPackageManifest(&source packageManifest) String {
         match value.target {
             None: {}
             Some(target): {
-                line = line + " target " + targetPlatformName(target)
+                line = line + " target " + targetSelectorName(target)
             }
         }
         if isTestScope(value.scope) {

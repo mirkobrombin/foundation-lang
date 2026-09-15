@@ -277,5 +277,6 @@ fn parseTargetPlatformText(value String) Option<targetPlatform> {
     if value == "linux" return .Some(.Linux)
     if value == "macos" return .Some(.MacOS)
     if value == "windows" return .Some(.Windows)
+    if value == "freestanding" return .Some(.Freestanding)
     .None
 }

@@ -44,7 +44,7 @@ struct Failure {
 };
 
 bool active(const PackageDependency &dependency, TargetPlatform target) {
-    return !dependency.target.has_value() || *dependency.target == target;
+    return !dependency.target.has_value() || targetSelected(*dependency.target, target);
 }
 
 std::string nativeDigest(const PackageManifest &manifest, TargetPlatform target) {

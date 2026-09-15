@@ -67,7 +67,7 @@ struct PackageDependency {
     PackageRequirement requirement;
     PackageLocationKind kind{PackageLocationKind::Registry};
     std::string location;
-    std::optional<TargetPlatform> target;
+    std::optional<TargetSelector> target;
     PackageDependencyScope scope{PackageDependencyScope::Runtime};
 };
 
@@ -88,13 +88,13 @@ struct PackageManifest {
     std::optional<std::uint32_t> nativeSOVersion;
     struct NativeLink {
         std::string library;
-        std::optional<TargetPlatform> target;
+        std::optional<TargetSelector> target;
 
         bool operator==(const NativeLink &) const = default;
     };
     struct NativeSource {
         std::filesystem::path path;
-        std::optional<TargetPlatform> target;
+        std::optional<TargetSelector> target;
 
         bool operator==(const NativeSource &) const = default;
     };

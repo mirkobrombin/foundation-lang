@@ -10,7 +10,7 @@ fn packageDependencyActive(
 ) bool {
     match dependency.target {
         None: true
-        Some(value): sameTarget(value, target)
+        Some(value): targetSelected(value, target)
     }
 }
 

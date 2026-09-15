@@ -40,10 +40,7 @@ fn compilerArgument(args [String], index usize) String {
 }
 
 fn parseCompilerTarget(value String) Option<targetPlatform> {
-    if value == "linux" return .Some(.Linux)
-    if value == "macos" return .Some(.MacOS)
-    if value == "windows" return .Some(.Windows)
-    .None
+    parseTargetPlatformText(value)
 }
 
 fn parseCompilerBackend(value String) Option<compilerBackend> {

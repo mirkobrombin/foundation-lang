@@ -830,7 +830,8 @@ bool linkSharedLibrary(const std::filesystem::path &output,
             arguments.push_back(object.string());
         }
         for (const auto &link : packageInterface.links) {
-            if (!link.target.has_value() || *link.target == packageInterface.target) {
+            if (!link.target.has_value() ||
+                targetSelected(*link.target, packageInterface.target)) {
                 arguments.push_back(link.name + ".lib");
             }
         }
@@ -863,7 +864,7 @@ bool linkSharedLibrary(const std::filesystem::path &output,
                                        "-pthread", "-ldl"});
 #endif
     for (const auto &link : packageInterface.links) {
-        if (!link.target.has_value() || *link.target == packageInterface.target) {
+        if (!link.target.has_value() || targetSelected(*link.target, packageInterface.target)) {
             arguments.push_back("-l" + link.name);
         }
     }
@@ -912,7 +913,7 @@ nativeBuildInputs(const std::filesystem::path &source, ProjectMode mode,
         }
         for (const auto &package : project.value->sources) {
             for (const auto &native : package.manifest.nativeSources) {
-                if (native.target.has_value() && *native.target != target) {
+                if (native.target.has_value() && !targetSelected(*native.target, target)) {
                     continue;
                 }
                 const auto path = package.packageRoot / native.path;
@@ -927,7 +928,7 @@ nativeBuildInputs(const std::filesystem::path &source, ProjectMode mode,
                 appendNativeSource(result.sources, path);
             }
             for (const auto &link : package.manifest.nativeLinks) {
-                if (!link.target.has_value() || *link.target == target) {
+                if (!link.target.has_value() || targetSelected(*link.target, target)) {
                     appendNativeLink(result.links, link.library);
                 }
             }

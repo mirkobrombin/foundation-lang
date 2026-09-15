@@ -164,7 +164,7 @@ void foreignJson(std::ostream& out, const ForeignProvenance& foreign) {
 void linkJson(std::ostream& out, const PiiLinkLibrary& link) {
     out << "{\"name\":" << quote(link.name);
     if (link.target.has_value())
-        out << ",\"target\":" << quote(targetPlatformName(*link.target));
+        out << ",\"target\":" << quote(targetSelectorName(*link.target));
     out << '}';
 }
 void layoutJson(std::ostream& out, const PiiStructLayout& layout) {

@@ -7,6 +7,17 @@ enum targetPlatform {
     Linux
     MacOS
     Windows
+    Freestanding
+}
+
+// Names the platforms one `@target` attribute or manifest qualifier activates. `Hosted` matches
+// every operating-system platform and is never a build or lock target.
+enum targetSelector {
+    Linux
+    MacOS
+    Windows
+    Freestanding
+    Hosted
 }
 
 fn hostTargetPlatform() targetPlatform {
@@ -23,6 +34,7 @@ fn targetPlatformName(target targetPlatform) String {
         Linux: "linux"
         MacOS: "macos"
         Windows: "windows"
+        Freestanding: "freestanding"
     }
 }
 
@@ -36,5 +48,61 @@ fn targetPlatformCode(target targetPlatform) i32 {
         Linux: 1
         MacOS: 2
         Windows: 3
+        Freestanding: 4
     }
+}
+
+fn hostedTargetPlatform(target targetPlatform) bool {
+    match target {
+        Linux: true
+        MacOS: true
+        Windows: true
+        _: false
+    }
+}
+
+fn parseTargetSelectorText(value String) Option<targetSelector> {
+    if value == "linux" return .Some(.Linux)
+    if value == "macos" return .Some(.MacOS)
+    if value == "windows" return .Some(.Windows)
+    if value == "freestanding" return .Some(.Freestanding)
+    if value == "hosted" return .Some(.Hosted)
+    .None
+}
+
+fn targetSelectorName(selector targetSelector) String {
+    match selector {
+        Linux: "linux"
+        MacOS: "macos"
+        Windows: "windows"
+        Freestanding: "freestanding"
+        Hosted: "hosted"
+    }
+}
+
+fn targetSelectorCode(selector targetSelector) i32 {
+    match selector {
+        Linux: 1
+        MacOS: 2
+        Windows: 3
+        Freestanding: 4
+        Hosted: 5
+    }
+}
+
+fn targetSelected(selector targetSelector, target targetPlatform) bool {
+    match selector {
+        Linux: sameTarget(target, .Linux)
+        MacOS: sameTarget(target, .MacOS)
+        Windows: sameTarget(target, .Windows)
+        Freestanding: sameTarget(target, .Freestanding)
+        Hosted: hostedTargetPlatform(target)
+    }
+}
+
+fn targetSelectorsOverlap(left targetSelector, right targetSelector) bool {
+    (targetSelected(left, .Linux) && targetSelected(right, .Linux)) ||
+        (targetSelected(left, .MacOS) && targetSelected(right, .MacOS)) ||
+        (targetSelected(left, .Windows) && targetSelected(right, .Windows)) ||
+        (targetSelected(left, .Freestanding) && targetSelected(right, .Freestanding))
 }

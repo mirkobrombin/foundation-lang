@@ -40,7 +40,7 @@ foundation::PackageManifest manifest(std::string name, std::string_view version)
 }
 
 foundation::PackageDependency dependency(std::string name, std::string_view version,
-                                         std::optional<foundation::TargetPlatform> target = {}) {
+                                         std::optional<foundation::TargetSelector> target = {}) {
     return {std::move(name), requirement(version), foundation::PackageLocationKind::Registry,
             "default", target};
 }
@@ -97,9 +97,9 @@ void resolutionBacktracksAndIsDeterministic() {
 void targetDependenciesAndConflictsAreChecked() {
     auto root = manifest("sample.app", "1.0.0");
     root.dependencies.push_back(
-        dependency("sample.linux", "1.0.0", foundation::TargetPlatform::Linux));
+        dependency("sample.linux", "1.0.0", foundation::TargetSelector::Linux));
     root.dependencies.push_back(
-        dependency("sample.windows", "1.0.0", foundation::TargetPlatform::Windows));
+        dependency("sample.windows", "1.0.0", foundation::TargetSelector::Windows));
     std::vector<foundation::PackageCandidate> catalog{
         candidate(manifest("sample.linux", "1.0.0"), "sha256:linux")};
     const auto sdk = *foundation::parsePackageVersion("0.1.0");

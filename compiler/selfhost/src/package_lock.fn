@@ -241,7 +241,8 @@ fn parsePackageLock(
                         }
                         if !valid {
                             addPackageError(&result.errors, filePath, lineNumber, 1,
-                                "FDN4022", "expected one target linux, macos, or windows")
+                                "FDN4022",
+                                "expected one target linux, macos, windows, or freestanding")
                         }
                         targetSeen = true
                     }

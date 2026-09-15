@@ -141,7 +141,7 @@ struct ForeignProvenance {
 
 struct PiiLinkLibrary {
     std::string name;
-    std::optional<TargetPlatform> target;
+    std::optional<TargetSelector> target;
 };
 
 struct PackageInterface {

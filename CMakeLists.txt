@@ -1919,6 +1919,17 @@ if(BUILD_TESTING)
         endif()
     endif()
     add_test(NAME packages.unit COMMAND foundation_package_tests)
+    add_executable(foundation_package_target_tests compiler/tests/package_target_test.cpp)
+    target_link_libraries(foundation_package_target_tests PRIVATE foundation_compiler)
+    if(MSVC)
+        target_compile_options(foundation_package_target_tests PRIVATE /W4 /permissive- /EHsc)
+    else()
+        target_compile_options(foundation_package_target_tests PRIVATE -Wall -Wextra -Wpedantic)
+        if(FOUNDATION_WARNINGS_AS_ERRORS)
+            target_compile_options(foundation_package_target_tests PRIVATE -Werror)
+        endif()
+    endif()
+    add_test(NAME packages.target-freestanding COMMAND foundation_package_target_tests)
     add_test(
         NAME packages.workflow
         COMMAND ${CMAKE_COMMAND}

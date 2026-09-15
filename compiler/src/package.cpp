@@ -308,17 +308,9 @@ bool nestedSource(const std::filesystem::path &left, const std::filesystem::path
     return leftPart == normalizedLeft.end() || rightPart == normalizedRight.end();
 }
 
-std::optional<TargetPlatform> target(std::string_view value) {
-    if (value == "linux") {
-        return TargetPlatform::Linux;
-    }
-    if (value == "macos") {
-        return TargetPlatform::MacOS;
-    }
-    if (value == "windows") {
-        return TargetPlatform::Windows;
-    }
-    return std::nullopt;
+bool overlappingTargets(const std::optional<TargetSelector> &left,
+                        const std::optional<TargetSelector> &right) {
+    return !left.has_value() || !right.has_value() || targetSelectorsOverlap(*left, *right);
 }
 
 std::optional<std::string> readPackageFile(const std::filesystem::path &path,
@@ -741,8 +733,8 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
             nativeSOVersionSeen = true;
         } else if (directive == "native_source") {
             const auto sourceTarget = tokens.size() == 4 && tokens[2] == "target"
-                                          ? target(tokens[3])
-                                          : std::optional<TargetPlatform>{};
+                                          ? parseTargetSelector(tokens[3])
+                                          : std::optional<TargetSelector>{};
             const auto sourcePath = tokens.size() >= 2
                                         ? std::filesystem::path(tokens[1]).lexically_normal()
                                         : std::filesystem::path{};
@@ -754,9 +746,8 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                                                 manifest.nativeSources.end(),
                                                 [&](const auto &entry) {
                                                     return entry.path == sourcePath &&
-                                                           (!entry.target.has_value() ||
-                                                            !sourceTarget.has_value() ||
-                                                            entry.target == sourceTarget);
+                                                           overlappingTargets(entry.target,
+                                                                              sourceTarget);
                                                 }) != manifest.nativeSources.end();
             if (!valid || duplicate) {
                 addError(result.errors, path, line, 1, "FDN4015",
@@ -766,8 +757,8 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
             }
         } else if (directive == "native_link") {
             const auto linkTarget = tokens.size() == 4 && tokens[2] == "target"
-                                        ? target(tokens[3])
-                                        : std::optional<TargetPlatform>{};
+                                        ? parseTargetSelector(tokens[3])
+                                        : std::optional<TargetSelector>{};
             const auto valid = (tokens.size() == 2 || tokens.size() == 4) &&
                                identifier(tokens[1]) &&
                                (tokens.size() == 2 || linkTarget.has_value());
@@ -776,9 +767,8 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
                                                 manifest.nativeLinks.end(),
                                                 [&](const auto &entry) {
                                                     return entry.library == tokens[1] &&
-                                                           (!entry.target.has_value() ||
-                                                            !linkTarget.has_value() ||
-                                                            entry.target == linkTarget);
+                                                           overlappingTargets(entry.target,
+                                                                              linkTarget);
                                                 }) != manifest.nativeLinks.end();
             if (!valid || duplicate) {
                 addError(result.errors, path, line, 1, "FDN4015",
@@ -819,13 +809,13 @@ parsePackageManifest(const std::filesystem::path &path, std::string_view source)
             }
             const auto requirement = parsePackageRequirement(tokens[2]);
             const auto kind = locationKind(tokens[3]);
-            std::optional<TargetPlatform> dependencyTarget;
+            std::optional<TargetSelector> dependencyTarget;
             auto dependencyScope = PackageDependencyScope::Runtime;
             auto validQualifiers = true;
             auto scopeSeen = false;
             for (std::size_t index = 5; index < tokens.size(); index += 2) {
                 if (tokens[index] == "target" && !dependencyTarget.has_value()) {
-                    dependencyTarget = target(tokens[index + 1]);
+                    dependencyTarget = parseTargetSelector(tokens[index + 1]);
                     validQualifiers = validQualifiers && dependencyTarget.has_value();
                 } else if (tokens[index] == "scope" && !scopeSeen &&
                            tokens[index + 1] == "test") {
@@ -1000,7 +990,7 @@ std::string renderPackageManifest(const PackageManifest &manifest) {
     for (const auto &source : nativeSources) {
         output << "native_source " << quote(source.path.generic_string());
         if (source.target.has_value()) {
-            output << " target " << targetPlatformName(*source.target);
+            output << " target " << targetSelectorName(*source.target);
         }
         output << '\n';
     }
@@ -1011,7 +1001,7 @@ std::string renderPackageManifest(const PackageManifest &manifest) {
     for (const auto &link : nativeLinks) {
         output << "native_link " << quote(link.library);
         if (link.target.has_value()) {
-            output << " target " << targetPlatformName(*link.target);
+            output << " target " << targetSelectorName(*link.target);
         }
         output << '\n';
     }
@@ -1035,7 +1025,7 @@ std::string renderPackageManifest(const PackageManifest &manifest) {
         output << "dependency " << dependency.name << ' ' << dependency.requirement.string()
                << ' ' << locationName(dependency.kind) << ' ' << quote(dependency.location);
         if (dependency.target.has_value()) {
-            output << " target " << targetPlatformName(*dependency.target);
+            output << " target " << targetSelectorName(*dependency.target);
         }
         if (dependency.scope == PackageDependencyScope::Test) {
             output << " scope " << scopeName(dependency.scope);
@@ -1074,10 +1064,11 @@ parsePackageLock(const std::filesystem::path &path, std::string_view source) {
             }
             rootSeen = true;
         } else if (directive == "target") {
-            const auto parsed = tokens.size() == 2 ? target(tokens[1]) : std::nullopt;
+            const auto parsed = tokens.size() == 2 ? parseTargetPlatform(tokens[1])
+                                                   : std::nullopt;
             if (!parsed.has_value() || targetSeen) {
                 addError(result.errors, path, line, 1, "FDN4022",
-                         "expected one target linux, macos, or windows");
+                         "expected one target linux, macos, windows, or freestanding");
             } else {
                 lock.target = *parsed;
             }
