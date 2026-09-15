@@ -16,14 +16,14 @@ fn twice(value i32) i32 {
     value * 2
 }
 
-fn RejectedStatements(flag bool) i32 {
+fn RejectedStatements(value Option<i32>) i32 {
     const Token { Value } = makeToken()
-    const escaped = if flag {
-        if flag return 1
-        2
-    } else {
-        3
-    }
+    const escaped = twice(match value {
+        None: {
+            return 1
+        }
+        Some(inner): inner
+    })
     Value + escaped
 }
 

@@ -1660,6 +1660,12 @@ class GoSourceEmitter {
     }
 
   private:
+    enum class ValueSink {
+        Return,
+        Assign,
+        Discard,
+    };
+
     static SourceSpan sourceSpan(const PiiFunction &function) {
         if (!function.source.has_value()) {
             return {0, 0, 1, 1};
@@ -2229,6 +2235,9 @@ class GoSourceEmitter {
         return valid;
     }
 
+    // Reports whether control can leave the enclosing expression from this block through a return
+    // or through a break or continue that targets an outer loop, including one nested in a
+    // statement value or in the else block of a Result binding.
     bool blockEscapesExpression(const FirFunction &function, FirBlockId id,
                                 unsigned int loopDepth = 0) const {
         if (id >= function.blocks.size()) {
@@ -2245,6 +2254,38 @@ class GoSourceEmitter {
             if ((std::holds_alternative<FirBreakStatement>(statement) ||
                  std::holds_alternative<FirContinueStatement>(statement)) &&
                 loopDepth == 0) {
+                return true;
+            }
+            if (const auto *binding = std::get_if<FirLetElseStatement>(&statement);
+                binding != nullptr &&
+                (expressionEscapes(function, binding->initializer, loopDepth) ||
+                 blockEscapesExpression(function, binding->elseBlock, loopDepth))) {
+                return true;
+            }
+            if (const auto *binding = std::get_if<FirResultElseStatement>(&statement);
+                binding != nullptr &&
+                (expressionEscapes(function, binding->expression, loopDepth) ||
+                 blockEscapesExpression(function, binding->elseBlock, loopDepth))) {
+                return true;
+            }
+            if (const auto *variable = std::get_if<FirVariableStatement>(&statement);
+                variable != nullptr &&
+                expressionEscapes(function, variable->initializer, loopDepth)) {
+                return true;
+            }
+            if (const auto *assignment = std::get_if<FirAssignmentStatement>(&statement);
+                assignment != nullptr &&
+                expressionEscapes(function, assignment->value, loopDepth)) {
+                return true;
+            }
+            if (const auto *expression = std::get_if<FirExpressionStatement>(&statement);
+                expression != nullptr &&
+                expressionEscapes(function, expression->expression, loopDepth)) {
+                return true;
+            }
+            if (const auto *discarded = std::get_if<FirDiscardStatement>(&statement);
+                discarded != nullptr &&
+                expressionEscapes(function, discarded->expression, loopDepth)) {
                 return true;
             }
             if (const auto *branch = std::get_if<FirIfStatement>(&statement)) {
@@ -2266,10 +2307,54 @@ class GoSourceEmitter {
         return false;
     }
 
+    bool expressionEscapes(const FirFunction &function, FirExpressionId id,
+                           unsigned int loopDepth) const {
+        if (id >= function.expressions.size()) {
+            return false;
+        }
+        const auto &value = function.expressions[id].value;
+        if (const auto *match = std::get_if<FirMatchExpression>(&value)) {
+            return std::ranges::any_of(match->arms, [&](const FirMatchArm &arm) {
+                return blockEscapesExpression(function, arm.block, loopDepth) ||
+                       (arm.expression.has_value() &&
+                        expressionEscapes(function, *arm.expression, loopDepth));
+            });
+        }
+        if (const auto *conditional = std::get_if<FirConditionalExpression>(&value)) {
+            return blockEscapesExpression(function, conditional->thenBlock, loopDepth) ||
+                   blockEscapesExpression(function, conditional->elseBlock, loopDepth) ||
+                   expressionEscapes(function, conditional->thenValue, loopDepth) ||
+                   expressionEscapes(function, conditional->elseValue, loopDepth);
+        }
+        return false;
+    }
+
+    // Follows the Go terminating-statement rule for the last statement of a translated block.
+    bool blockTerminates(const FirFunction &function, FirBlockId id) const {
+        if (id >= function.blocks.size() || function.blocks[id].statements.empty() ||
+            function.blocks[id].statements.back() >= function.statements.size()) {
+            return false;
+        }
+        const auto &statement = function.statements[function.blocks[id].statements.back()].value;
+        if (std::holds_alternative<FirReturnStatement>(statement) ||
+            std::holds_alternative<FirBreakStatement>(statement) ||
+            std::holds_alternative<FirContinueStatement>(statement)) {
+            return true;
+        }
+        if (const auto *expression = std::get_if<FirExpressionStatement>(&statement)) {
+            return panicCall(function, expression->expression);
+        }
+        if (const auto *branch = std::get_if<FirIfStatement>(&statement)) {
+            return branch->elseBlock.has_value() && blockTerminates(function, branch->thenBlock) &&
+                   blockTerminates(function, *branch->elseBlock);
+        }
+        return false;
+    }
+
     bool scanStatement(const FirFunction &function, const FirStatement &statement) {
         if (const auto *variable = std::get_if<FirVariableStatement>(&statement.value)) {
             return variable->local < function.locals.size() &&
-                   scanExpression(function, variable->initializer);
+                   scanStatementValue(function, variable->initializer);
         }
         if (const auto *binding = std::get_if<FirLetElseStatement>(&statement.value)) {
             if (binding->local >= function.locals.size() ||
@@ -2339,15 +2424,20 @@ class GoSourceEmitter {
             return true;
         }
         if (const auto *assignment = std::get_if<FirAssignmentStatement>(&statement.value)) {
-            if (!scanExpression(function, assignment->target) ||
-                !scanExpression(function, assignment->value)) {
+            if (!scanExpression(function, assignment->target)) {
                 return false;
             }
             const auto &target = function.expressions[assignment->target].value;
-            if (!std::holds_alternative<FirLocalExpression>(target) &&
-                !std::holds_alternative<FirReadExpression>(target) &&
-                !std::holds_alternative<FirMoveExpression>(target) &&
-                !std::holds_alternative<FirFieldExpression>(target) &&
+            const auto local = std::holds_alternative<FirLocalExpression>(target) ||
+                               std::holds_alternative<FirReadExpression>(target) ||
+                               std::holds_alternative<FirMoveExpression>(target);
+            const auto value = local && assignment->operation == FirAssignmentOperator::Assign
+                                   ? scanStatementValue(function, assignment->value)
+                                   : scanExpression(function, assignment->value);
+            if (!value) {
+                return false;
+            }
+            if (!local && !std::holds_alternative<FirFieldExpression>(target) &&
                 !std::holds_alternative<FirIndexExpression>(target)) {
                 fail("go-source supports assignment to locals, fields, and sequence elements",
                      statement.span);
@@ -2373,13 +2463,13 @@ class GoSourceEmitter {
             return true;
         }
         if (const auto *expression = std::get_if<FirExpressionStatement>(&statement.value)) {
-            return scanValue(function, expression->expression);
+            return scanValue(function, expression->expression, true);
         }
         if (const auto *discarded = std::get_if<FirDiscardStatement>(&statement.value)) {
-            return scanExpression(function, discarded->expression);
+            return scanStatementValue(function, discarded->expression);
         }
         if (const auto *returned = std::get_if<FirReturnStatement>(&statement.value)) {
-            return !returned->value.has_value() || scanValue(function, *returned->value);
+            return !returned->value.has_value() || scanValue(function, *returned->value, true);
         }
         if (const auto *branch = std::get_if<FirIfStatement>(&statement.value)) {
             const auto condition = scanExpression(function, branch->condition);
@@ -2453,10 +2543,11 @@ class GoSourceEmitter {
         return call != nullptr && call->kind == FirCallKind::Panic;
     }
 
-    // Accepts panic only where Go can end the control path with a terminating statement.
-    bool scanValue(const FirFunction &function, FirExpressionId id) {
+    // Accepts panic only where Go can end the control path with a terminating statement. A
+    // statement value may also be a match or conditional whose branches escape.
+    bool scanValue(const FirFunction &function, FirExpressionId id, bool statement = false) {
         if (!panicCall(function, id)) {
-            return scanExpression(function, id);
+            return statement ? scanStatementValue(function, id) : scanExpression(function, id);
         }
         const auto &expression = function.expressions[id];
         const auto &call = std::get<FirCallExpression>(expression.value);
@@ -2465,6 +2556,76 @@ class GoSourceEmitter {
             return false;
         }
         return scanExpression(function, call.arguments.front());
+    }
+
+    // Values that initialize or assign a local, are discarded, or are returned lower to Go
+    // statements when a branch escapes, so the escape reaches the translated function or loop.
+    bool scanStatementValue(const FirFunction &function, FirExpressionId id) {
+        if (expressionEscapes(function, id, 0)) {
+            return scanBranches(function, id, true);
+        }
+        return scanExpression(function, id);
+    }
+
+    bool scanBranches(const FirFunction &function, FirExpressionId id, bool statement) {
+        const auto &expression = function.expressions[id];
+        if (!sourceType(expression.type).has_value()) {
+            fail("go-source reached an unsupported expression type", expression.span);
+            return false;
+        }
+        if (const auto *value = std::get_if<FirMatchExpression>(&expression.value)) {
+            if (!scanType(value->type, expression.span) ||
+                !scanExpression(function, value->value)) {
+                return false;
+            }
+            for (const auto &arm : value->arms) {
+                if (arm.pattern.has_value()) {
+                    if (*arm.pattern >= function.expressions.size()) {
+                        fail("go-source found an invalid match pattern", expression.span);
+                        return false;
+                    }
+                    const auto &pattern = function.expressions[*arm.pattern].value;
+                    if (!std::holds_alternative<FirIntegerExpression>(pattern) &&
+                        !std::holds_alternative<FirFloatingExpression>(pattern) &&
+                        !std::holds_alternative<FirBooleanExpression>(pattern) &&
+                        !std::holds_alternative<FirStringExpression>(pattern)) {
+                        fail("go-source match patterns must be literals", expression.span);
+                        return false;
+                    }
+                    if (!scanExpression(function, *arm.pattern)) {
+                        return false;
+                    }
+                }
+                if ((arm.guard.has_value() && !scanExpression(function, *arm.guard)) ||
+                    !scanBlock(function, arm.block) ||
+                    (arm.expression.has_value() &&
+                     !scanValue(function, *arm.expression, statement))) {
+                    return false;
+                }
+                if (statement && !arm.expression.has_value() && expression.type != voidType &&
+                    !blockTerminates(function, arm.block)) {
+                    fail("go-source requires a match arm without a value to end in return, break, "
+                         "continue, or panic",
+                         expression.span);
+                    return false;
+                }
+            }
+            return true;
+        }
+        const auto &value = std::get<FirConditionalExpression>(expression.value);
+        const auto rejections = rejections_;
+        if (!scanExpression(function, value.condition) ||
+            function.expressions[value.condition].type != boolType ||
+            !scanBlock(function, value.thenBlock) ||
+            !scanValue(function, value.thenValue, statement) ||
+            !scanBlock(function, value.elseBlock) ||
+            !scanValue(function, value.elseValue, statement)) {
+            if (rejections_ == rejections) {
+                fail("go-source found an invalid conditional expression", expression.span);
+            }
+            return false;
+        }
+        return true;
     }
 
     bool scanExpression(const FirFunction &function, FirExpressionId id) {
@@ -2568,60 +2729,16 @@ class GoSourceEmitter {
             return scanType(value->type, expression.span) &&
                    (!value->payload.has_value() || scanExpression(function, *value->payload));
         }
-        if (const auto *value = std::get_if<FirMatchExpression>(&expression.value)) {
-            if (!scanType(value->type, expression.span) ||
-                !scanExpression(function, value->value)) {
-                return false;
-            }
-            for (const auto &arm : value->arms) {
-                if (arm.pattern.has_value()) {
-                    if (*arm.pattern >= function.expressions.size()) {
-                        fail("go-source found an invalid match pattern", expression.span);
-                        return false;
-                    }
-                    const auto &pattern = function.expressions[*arm.pattern].value;
-                    if (!std::holds_alternative<FirIntegerExpression>(pattern) &&
-                        !std::holds_alternative<FirFloatingExpression>(pattern) &&
-                        !std::holds_alternative<FirBooleanExpression>(pattern) &&
-                        !std::holds_alternative<FirStringExpression>(pattern)) {
-                        fail("go-source match patterns must be literals", expression.span);
-                        return false;
-                    }
-                    if (!scanExpression(function, *arm.pattern)) {
-                        return false;
-                    }
-                }
-                if ((arm.guard.has_value() && !scanExpression(function, *arm.guard)) ||
-                    !scanBlock(function, arm.block) ||
-                    (arm.expression.has_value() && !scanValue(function, *arm.expression))) {
-                    return false;
-                }
-                if (blockEscapesExpression(function, arm.block)) {
-                    fail("go-source match arms cannot return or escape an outer loop",
-                         expression.span);
-                    return false;
-                }
-            }
-            return true;
-        }
-        if (const auto *value = std::get_if<FirConditionalExpression>(&expression.value)) {
-            const auto rejections = rejections_;
-            if (!scanExpression(function, value->condition) ||
-                function.expressions[value->condition].type != boolType ||
-                !scanBlock(function, value->thenBlock) || !scanValue(function, value->thenValue) ||
-                !scanBlock(function, value->elseBlock) || !scanValue(function, value->elseValue)) {
-                if (rejections_ == rejections) {
-                    fail("go-source found an invalid conditional expression", expression.span);
-                }
-                return false;
-            }
-            if (blockEscapesExpression(function, value->thenBlock) ||
-                blockEscapesExpression(function, value->elseBlock)) {
-                fail("go-source conditional branches cannot return or escape an outer loop",
+        if (std::holds_alternative<FirMatchExpression>(expression.value) ||
+            std::holds_alternative<FirConditionalExpression>(expression.value)) {
+            if (expressionEscapes(function, id, 0)) {
+                fail("go-source supports return, break, and continue in match arms and "
+                     "conditional branches only when the expression initializes or assigns a "
+                     "local, is discarded, or is returned",
                      expression.span);
                 return false;
             }
-            return true;
+            return scanBranches(function, id, false);
         }
         if (const auto *value = std::get_if<FirStructExpression>(&expression.value)) {
             if (!scanType(value->type, expression.span)) {
@@ -3154,59 +3271,12 @@ class GoSourceEmitter {
         output << " {\n" << indentation(depth + 1) << temporary << " := " << *inspected << "\n";
 
         for (const auto &arm : match.arms) {
-            std::optional<Type> payload;
-            std::string armCondition = "true";
-            if (!arm.wildcard) {
-                if (arm.variant >= program_.enums[match.type.declaration].variants.size()) {
-                    fail("go-source cannot render an invalid match variant", span);
-                    return std::nullopt;
-                }
-                payload = enumPayloadType(match.type, arm.variant);
-                armCondition = temporary + ".tag == " + std::to_string(arm.variant);
-                if (arm.pattern.has_value()) {
-                    if (!payload.has_value()) {
-                        fail("go-source cannot render a pattern for a unit variant", span);
-                        return std::nullopt;
-                    }
-                    const auto pattern = renderExpression(function, *arm.pattern, depth + 1);
-                    if (!pattern.has_value()) {
-                        return std::nullopt;
-                    }
-                    armCondition += " && " + temporary + '.' +
-                                    enumFieldName(match.type, arm.variant) + " == " + *pattern;
-                }
+            const auto opened =
+                openMatchArm(output, function, match, arm, temporary, span, depth + 1);
+            if (!opened.has_value()) {
+                return std::nullopt;
             }
-            output << indentation(depth + 1) << "if " << armCondition << " {\n";
-            auto armDepth = depth + 2;
-            if (arm.guardBinding.has_value()) {
-                if (!payload.has_value()) {
-                    fail("go-source cannot bind a unit match variant", span);
-                    return std::nullopt;
-                }
-                const auto local = currentLocals_[*arm.guardBinding];
-                output << indentation(armDepth) << local << " := " << temporary << '.'
-                       << enumFieldName(match.type, arm.variant) << "\n"
-                       << indentation(armDepth) << "_ = " << local << "\n";
-            }
-            const auto guarded = arm.guard.has_value();
-            if (guarded) {
-                const auto guard = renderExpression(function, *arm.guard, armDepth);
-                if (!guard.has_value()) {
-                    return std::nullopt;
-                }
-                output << indentation(armDepth) << "if " << condition(*guard) << " {\n";
-                ++armDepth;
-            }
-            if (arm.binding.has_value()) {
-                if (!payload.has_value()) {
-                    fail("go-source cannot bind a unit match variant", span);
-                    return std::nullopt;
-                }
-                const auto local = currentLocals_[*arm.binding];
-                output << indentation(armDepth) << local << " := " << temporary << '.'
-                       << enumFieldName(match.type, arm.variant) << "\n"
-                       << indentation(armDepth) << "_ = " << local << "\n";
-            }
+            const auto armDepth = *opened;
             renderBlock(output, function, arm.block, armDepth);
             if (failed_) {
                 return std::nullopt;
@@ -3232,15 +3302,202 @@ class GoSourceEmitter {
                 }
             }
             output << "\n";
-            if (guarded) {
-                --armDepth;
-                output << indentation(armDepth) << "}\n";
-            }
-            output << indentation(depth + 1) << "}\n";
+            closeMatchArm(output, arm, depth + 1);
         }
         output << indentation(depth + 1) << "panic(\"invalid enum tag\")\n"
                << indentation(depth) << "}()";
         return output.str();
+    }
+
+    // Opens the Go block of one match arm at depth and binds its guard and payload locals. The
+    // result is the depth of the arm body, one deeper when the arm has a guard.
+    std::optional<unsigned int> openMatchArm(std::ostringstream &output,
+                                             const FirFunction &function,
+                                             const FirMatchExpression &match,
+                                             const FirMatchArm &arm, const std::string &temporary,
+                                             SourceSpan span, unsigned int depth) {
+        const auto indentation = [](unsigned int value) { return std::string(value, '\t'); };
+        std::optional<Type> payload;
+        std::string armCondition = "true";
+        if (!arm.wildcard) {
+            if (arm.variant >= program_.enums[match.type.declaration].variants.size()) {
+                fail("go-source cannot render an invalid match variant", span);
+                return std::nullopt;
+            }
+            payload = enumPayloadType(match.type, arm.variant);
+            armCondition = temporary + ".tag == " + std::to_string(arm.variant);
+            if (arm.pattern.has_value()) {
+                if (!payload.has_value()) {
+                    fail("go-source cannot render a pattern for a unit variant", span);
+                    return std::nullopt;
+                }
+                const auto pattern = renderExpression(function, *arm.pattern, depth);
+                if (!pattern.has_value()) {
+                    return std::nullopt;
+                }
+                armCondition += " && " + temporary + '.' + enumFieldName(match.type, arm.variant) +
+                                " == " + *pattern;
+            }
+        }
+        output << indentation(depth) << "if " << armCondition << " {\n";
+        auto armDepth = depth + 1;
+        const auto bind = [&](FirLocalId binding) {
+            if (!payload.has_value()) {
+                fail("go-source cannot bind a unit match variant", span);
+                return false;
+            }
+            const auto local = currentLocals_[binding];
+            output << indentation(armDepth) << local << " := " << temporary << '.'
+                   << enumFieldName(match.type, arm.variant) << "\n"
+                   << indentation(armDepth) << "_ = " << local << "\n";
+            return true;
+        };
+        if (arm.guardBinding.has_value() && !bind(*arm.guardBinding)) {
+            return std::nullopt;
+        }
+        if (arm.guard.has_value()) {
+            const auto guard = renderExpression(function, *arm.guard, armDepth);
+            if (!guard.has_value()) {
+                return std::nullopt;
+            }
+            output << indentation(armDepth) << "if " << condition(*guard) << " {\n";
+            ++armDepth;
+        }
+        if (arm.binding.has_value() && !bind(*arm.binding)) {
+            return std::nullopt;
+        }
+        return armDepth;
+    }
+
+    static void closeMatchArm(std::ostringstream &output, const FirMatchArm &arm,
+                              unsigned int depth) {
+        if (arm.guard.has_value()) {
+            output << std::string(depth + 1, '\t') << "}\n";
+        }
+        output << std::string(depth, '\t') << "}\n";
+    }
+
+    // Lowers a value whose branches escape into Go statements that return the selected value,
+    // assign it to target, or discard it. The result reports whether the emitted statements end
+    // in a Go terminating statement.
+    bool renderValueStatement(std::ostringstream &output, const FirFunction &function,
+                              FirExpressionId id, ValueSink sink, const std::string &target,
+                              unsigned int depth) {
+        const auto indentation = std::string(depth, '\t');
+        const auto &expression = function.expressions[id];
+        if (panicCall(function, id)) {
+            const auto value = renderPanic(function, id, depth);
+            if (value.has_value()) {
+                output << indentation << *value << "\n";
+            }
+            return true;
+        }
+        if (expressionEscapes(function, id, 0)) {
+            if (const auto *match = std::get_if<FirMatchExpression>(&expression.value)) {
+                return renderMatchStatement(output, function, *match, expression.span, sink, target,
+                                            depth);
+            }
+            return renderConditionalStatement(output, function,
+                                              std::get<FirConditionalExpression>(expression.value),
+                                              sink, target, depth);
+        }
+        const auto value = renderExpression(function, id, depth);
+        if (!value.has_value()) {
+            return false;
+        }
+        const auto voidValue = expression.type == voidType;
+        if (sink == ValueSink::Return) {
+            if (voidValue) {
+                output << indentation << *value << "\n" << indentation << "return\n";
+            } else {
+                output << indentation << "return " << *value << "\n";
+            }
+            return true;
+        }
+        if (sink == ValueSink::Assign) {
+            output << indentation << target << " = " << *value << "\n";
+        } else if (voidValue) {
+            output << indentation << *value << "\n";
+        } else {
+            output << indentation << "_ = " << *value << "\n";
+        }
+        return false;
+    }
+
+    // Arms run in source order. A completed arm jumps past the later arms because a false guard
+    // must still fall through to them.
+    bool renderMatchStatement(std::ostringstream &output, const FirFunction &function,
+                              const FirMatchExpression &match, SourceSpan span, ValueSink sink,
+                              const std::string &target, unsigned int depth) {
+        if (match.type.kind != TypeKind::Enum || match.type.declaration >= program_.enums.size()) {
+            fail("go-source cannot render an invalid match", span);
+            return false;
+        }
+        const auto inspected = renderExpression(function, match.value, depth);
+        if (!inspected.has_value()) {
+            return false;
+        }
+        const auto indentation = [](unsigned int value) { return std::string(value, '\t'); };
+        const auto temporary = temporaryLocal("match");
+        const auto end = temporaryLocal("matchEnd");
+        auto reachesEnd = false;
+        output << indentation(depth) << temporary << " := " << *inspected << "\n";
+        for (const auto &arm : match.arms) {
+            const auto armDepth =
+                openMatchArm(output, function, match, arm, temporary, span, depth);
+            if (!armDepth.has_value()) {
+                return false;
+            }
+            renderBlock(output, function, arm.block, *armDepth);
+            if (failed_) {
+                return false;
+            }
+            auto terminated = blockTerminates(function, arm.block);
+            if (!terminated && arm.expression.has_value()) {
+                terminated = renderValueStatement(output, function, *arm.expression, sink, target,
+                                                  *armDepth);
+            } else if (!terminated && sink == ValueSink::Return) {
+                output << indentation(*armDepth) << "return\n";
+                terminated = true;
+            }
+            if (failed_) {
+                return false;
+            }
+            if (!terminated) {
+                output << indentation(*armDepth) << "goto " << end << "\n";
+                reachesEnd = true;
+            }
+            closeMatchArm(output, arm, depth);
+        }
+        output << indentation(depth) << "panic(\"invalid enum tag\")\n";
+        if (reachesEnd) {
+            output << indentation(depth - 1) << end << ":\n";
+        }
+        return !reachesEnd;
+    }
+
+    bool renderConditionalStatement(std::ostringstream &output, const FirFunction &function,
+                                    const FirConditionalExpression &conditional, ValueSink sink,
+                                    const std::string &target, unsigned int depth) {
+        const auto rendered = renderExpression(function, conditional.condition, depth);
+        if (!rendered.has_value()) {
+            return false;
+        }
+        const auto indentation = std::string(depth, '\t');
+        const auto branch = [&](FirBlockId block, FirExpressionId value) {
+            renderBlock(output, function, block, depth + 1);
+            if (failed_) {
+                return false;
+            }
+            return blockTerminates(function, block) ||
+                   renderValueStatement(output, function, value, sink, target, depth + 1);
+        };
+        output << indentation << "if " << condition(*rendered) << " {\n";
+        const auto thenTerminates = branch(conditional.thenBlock, conditional.thenValue);
+        output << indentation << "} else {\n";
+        const auto elseTerminates = branch(conditional.elseBlock, conditional.elseValue);
+        output << indentation << "}\n";
+        return thenTerminates && elseTerminates;
     }
 
     std::optional<std::string>
@@ -3887,6 +4144,14 @@ class GoSourceEmitter {
                          const FirStatement &statement, unsigned int depth) {
         const auto indentation = std::string(depth, '\t');
         if (const auto *variable = std::get_if<FirVariableStatement>(&statement.value)) {
+            if (expressionEscapes(function, variable->initializer, 0)) {
+                const auto name = currentLocals_[variable->local];
+                output << indentation << "var " << name << ' '
+                       << *sourceType(function.locals[variable->local].type) << "\n";
+                renderValueStatement(output, function, variable->initializer, ValueSink::Assign,
+                                     name, depth);
+                return;
+            }
             const auto value = renderExpression(function, variable->initializer, depth);
             if (value.has_value()) {
                 output << indentation << currentLocals_[variable->local] << " := " << *value
@@ -3960,6 +4225,11 @@ class GoSourceEmitter {
                 return;
             }
             if (assignment->operation == FirAssignmentOperator::Assign) {
+                if (expressionEscapes(function, assignment->value, 0)) {
+                    renderValueStatement(output, function, assignment->value, ValueSink::Assign,
+                                         *target, depth);
+                    return;
+                }
                 const auto value = renderExpression(function, assignment->value, depth);
                 if (value.has_value()) {
                     output << indentation << *target << " = " << *value << "\n";
@@ -3991,6 +4261,11 @@ class GoSourceEmitter {
             return;
         }
         if (const auto *expression = std::get_if<FirExpressionStatement>(&statement.value)) {
+            if (expressionEscapes(function, expression->expression, 0)) {
+                renderValueStatement(output, function, expression->expression, ValueSink::Discard,
+                                     {}, depth);
+                return;
+            }
             const auto panic = panicCall(function, expression->expression);
             const auto value = panic ? renderPanic(function, expression->expression, depth)
                                      : renderExpression(function, expression->expression, depth);
@@ -4004,6 +4279,11 @@ class GoSourceEmitter {
             return;
         }
         if (const auto *discarded = std::get_if<FirDiscardStatement>(&statement.value)) {
+            if (expressionEscapes(function, discarded->expression, 0)) {
+                renderValueStatement(output, function, discarded->expression, ValueSink::Discard,
+                                     {}, depth);
+                return;
+            }
             const auto value = renderExpression(function, discarded->expression, depth);
             if (value.has_value()) {
                 output << indentation << "_ = " << *value << "\n";
@@ -4011,6 +4291,11 @@ class GoSourceEmitter {
             return;
         }
         if (const auto *returned = std::get_if<FirReturnStatement>(&statement.value)) {
+            if (returned->value.has_value() && expressionEscapes(function, *returned->value, 0)) {
+                renderValueStatement(output, function, *returned->value, ValueSink::Return, {},
+                                     depth);
+                return;
+            }
             if (returned->value.has_value() && panicCall(function, *returned->value)) {
                 const auto value = renderPanic(function, *returned->value, depth);
                 if (value.has_value()) {

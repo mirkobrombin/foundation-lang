@@ -595,6 +595,71 @@ func TestTranslatedNumericConversionsMatchFoundation(t *testing.T) {
 	}
 }
 
+func TestTranslatedEscapesKeepFoundationControlFlow(t *testing.T) {
+	tests := []struct {
+		name string
+		got  int32
+		want int32
+	}{
+		{"classify empty", Classify(NewShapeEmpty()), -1},
+		{"classify large", Classify(NewShapeSquare(200)), 100},
+		{"classify square", Classify(NewShapeSquare(3)), 10},
+		{"classify named", Classify(NewShapeNamed("x")), 8},
+		{"sum stop", SumUntilStop([]int32{1, 2, -2, 3, -1, 50}), 6},
+		{"sum all", SumUntilStop([]int32{4, -3, 5}), 9},
+		{"early return", EarlyConditional(true, 42), 42},
+		{"early value", EarlyConditional(true, 4), 10},
+		{"early else", EarlyConditional(false, 4), 0},
+		{"assign continue", AssignEscape([]int32{3, 0, 9, 0}), 9},
+		{"assign break", AssignEscape([]int32{3, 60, 9}), 3},
+		{"tail none", TailEscape(NewOptionI32None()), 0},
+		{"tail some", TailEscape(NewOptionI32Some(41)), 42},
+		{"discard", DiscardEscape([]int32{1, 2, 0, 40}), 3},
+		{"nested none", NestedEscape(NewOptionI32None(), 5), 1},
+		{"nested limit", NestedEscape(NewOptionI32Some(9), 5), 6},
+		{"nested return", NestedEscape(NewOptionI32Some(5000), 5), -1},
+		{"nested inner", NestedEscape(NewOptionI32Some(3), 5), 4},
+		{"guard high", GuardFallthrough(NewOptionI32Some(30)), 20},
+		{"guard middle", GuardFallthrough(NewOptionI32Some(15)), 15},
+		{"guard low", GuardFallthrough(NewOptionI32Some(1)), 101},
+		{"guard none", GuardFallthrough(NewOptionI32None()), -5},
+		{"let else ok", LetElseInArm(NewOptionI32Some(2), 40), 42},
+		{"let else failure", LetElseInArm(NewOptionI32Some(2), 5_000_000_000), -1},
+		{"let else none", LetElseInArm(NewOptionI32None(), 5_000_000_000), 0},
+	}
+	for _, test := range tests {
+		if test.got != test.want {
+			t.Errorf("%s = %d, want %d", test.name, test.got, test.want)
+		}
+	}
+}
+
+// behavior.out holds the output of the same Report function compiled by the C backend.
+func TestTranslatedReportMatchesFoundationBackends(t *testing.T) {
+	want, err := os.ReadFile("behavior.out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = writer
+	Report()
+	os.Stdout = stdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Report wrote\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestTranslatedIteratorLoopsKeepFoundationOrder(t *testing.T) {
 	if got := SumCountdown(4); got != 10 {
 		t.Fatalf("SumCountdown(4) = %d, want 10", got)

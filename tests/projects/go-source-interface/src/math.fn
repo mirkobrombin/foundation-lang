@@ -755,3 +755,176 @@ fn DrainCountdown(&source Countdown) i32 {
     }
     total
 }
+
+enum Shape {
+    Empty
+    Square(i32)
+    Named(String)
+}
+
+fn maybeNumber(value i32) Option<i32> {
+    if value == 0 return .None
+    .Some(value)
+}
+
+fn Classify(shape Shape) i32 {
+    const size = match shape {
+        Empty: {
+            return -1
+        }
+        Square(side) if side > 100: {
+            return 100
+        }
+        Square(side): side * side
+        _: 7
+    }
+    size + 1
+}
+
+fn SumUntilStop(values [i32]) i32 {
+    var total = 0
+    for value in values {
+        const step = if value < 0 {
+            if value == -1 break
+            if value == -2 continue
+            0
+        } else {
+            value
+        }
+        total = total + step
+    }
+    total
+}
+
+fn EarlyConditional(flag bool, value i32) i32 {
+    const result = if flag {
+        if value > 10 return value
+        value + 1
+    } else {
+        0
+    }
+    result * 2
+}
+
+fn AssignEscape(values [i32]) i32 {
+    var last = 0
+    for value in values {
+        last = match maybeNumber(value) {
+            None: {
+                continue
+            }
+            Some(inner) if inner > 50: {
+                break
+            }
+            Some(inner): inner
+        }
+    }
+    last
+}
+
+fn TailEscape(value Option<i32>) i32 {
+    match value {
+        None: {
+            return 0
+        }
+        Some(inner): inner + 1
+    }
+}
+
+fn DiscardEscape(values [i32]) i32 {
+    var count = 0
+    for value in values {
+        match maybeNumber(value) {
+            None: {
+                break
+            }
+            Some(inner): {
+                count = count + inner
+            }
+        }
+    }
+    count
+}
+
+fn NestedEscape(value Option<i32>, limit i32) i32 {
+    const result = match value {
+        None: 0
+        Some(inner): if inner > limit {
+            if inner > 1000 return -1
+            limit
+        } else {
+            inner
+        }
+    }
+    result + 1
+}
+
+fn GuardFallthrough(value Option<i32>) i32 {
+    const result = match value {
+        Some(inner) if inner > 10: {
+            if inner > 20 return 20
+            inner
+        }
+        Some(inner): inner + 100
+        None: {
+            return -5
+        }
+    }
+    result
+}
+
+fn LetElseInArm(value Option<i32>, wide i64) i32 {
+    const result = match value {
+        None: 0
+        Some(inner): {
+            const narrow = i32.From(wide) else {
+                return -1
+            }
+            inner + narrow
+        }
+    }
+    result
+}
+
+fn check(name String, actual i32, expected i32) void {
+    if actual == expected {
+        print(name + " ok")
+    } else {
+        print(name + " FAIL")
+    }
+}
+
+// Prints one line per behavior check. The export test compares this output across the C, LLVM,
+// and Go translations.
+fn Report() void {
+    check("classify empty", Classify(.Empty), -1)
+    check("classify large", Classify(.Square(200)), 100)
+    check("classify square", Classify(.Square(3)), 10)
+    check("classify named", Classify(.Named("x")), 8)
+    check("sum stop", SumUntilStop([1, 2, -2, 3, -1, 50]), 6)
+    check("sum all", SumUntilStop([4, -3, 5]), 9)
+    check("early return", EarlyConditional(true, 42), 42)
+    check("early value", EarlyConditional(true, 4), 10)
+    check("early else", EarlyConditional(false, 4), 0)
+    check("assign continue", AssignEscape([3, 0, 9, 0]), 9)
+    check("assign break", AssignEscape([3, 60, 9]), 3)
+    check("tail none", TailEscape(.None), 0)
+    check("tail some", TailEscape(.Some(41)), 42)
+    check("discard", DiscardEscape([1, 2, 0, 40]), 3)
+    check("nested none", NestedEscape(.None, 5), 1)
+    check("nested limit", NestedEscape(.Some(9), 5), 6)
+    check("nested return", NestedEscape(.Some(5000), 5), -1)
+    check("nested inner", NestedEscape(.Some(3), 5), 4)
+    check("guard high", GuardFallthrough(.Some(30)), 20)
+    check("guard middle", GuardFallthrough(.Some(15)), 15)
+    check("guard low", GuardFallthrough(.Some(1)), 101)
+    check("guard none", GuardFallthrough(.None), -5)
+    check("let else ok", LetElseInArm(.Some(2), 40), 42)
+    check("let else failure", LetElseInArm(.Some(2), 5000000000), -1)
+    check("let else none", LetElseInArm(.None, 5000000000), 0)
+}
+
+fn main() i32 {
+    Report()
+    0
+}

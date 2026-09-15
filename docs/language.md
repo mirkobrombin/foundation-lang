@@ -1642,9 +1642,15 @@ instantiations become nominal Go value types. Each variant has an exported const
 concatenation, equality, inequality, empty tests, and UTF-8 byte length map to Go String operations.
 Generated checked arithmetic helpers detect the same overflow and division failures as the other
 backends and raise a Go panic that names the failure. Conditional
-expressions evaluate the condition once and only evaluate the selected branch. Match arms and
-conditional branches in this subset cannot return from the surrounding function or break or
-continue one of its loops.
+expressions evaluate the condition once and only evaluate the selected branch. A match or
+conditional expression becomes a Go function literal unless an arm or branch can return from the
+surrounding function or break or continue one of its loops, including through a nested statement or
+the else block of a `Result` binding. Such an expression is accepted when it initializes or assigns
+a local, is discarded, is returned, or is the value of an arm or branch of an expression accepted in
+one of those positions. It then lowers to Go statements, so the escape leaves the translated
+function or loop directly. Arms keep source order: a false guard continues with the next arm, and a
+completed arm skips the remaining arms. An escaping match or conditional in any other expression
+position, such as a call argument or an operand, is rejected.
 Foundation `fn(P) R` maps to Go `func(P) R`. A named non-generic Foundation function maps to its Go
 function declaration. An anonymous function maps to a Go closure. Copy and own captures are passed
 through a typed construction function, which snapshots them once when the closure is created. An

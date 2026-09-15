@@ -66,6 +66,28 @@ if(source_exports EQUAL -1)
     message(FATAL_ERROR "go-source fixture unexpectedly depends on a C ABI export")
 endif()
 
+foreach(backend IN ITEMS c llvm)
+    execute_process(
+        COMMAND "${COMPILER}" run "${WORK}/source" --backend ${backend}
+        RESULT_VARIABLE behavior_status
+        OUTPUT_VARIABLE behavior_output
+        ERROR_VARIABLE behavior_error
+    )
+    if(NOT behavior_status EQUAL 0)
+        message(FATAL_ERROR
+            "go-source fixture failed on the ${backend} backend:\n${behavior_output}${behavior_error}")
+    endif()
+    set(behavior_${backend} "${behavior_output}")
+endforeach()
+if(NOT behavior_c STREQUAL behavior_llvm)
+    message(FATAL_ERROR
+        "go-source fixture output differs between C and LLVM:\n${behavior_c}\n${behavior_llvm}")
+endif()
+if(behavior_c MATCHES "FAIL" OR NOT behavior_c MATCHES " ok\n")
+    message(FATAL_ERROR "go-source fixture reported a failed check:\n${behavior_c}")
+endif()
+file(WRITE "${WORK}/go-source/behavior.out" "${behavior_c}")
+
 file(COPY "${FIXTURE}" DESTINATION "${WORK}/go-source")
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env GOWORK=off CGO_ENABLED=0 GOPROXY=off
@@ -238,11 +260,11 @@ execute_process(
     ERROR_VARIABLE escape_error
 )
 if(escape_status EQUAL 0)
-    message(FATAL_ERROR "go-source accepted a conditional branch that escapes its outer scope")
+    message(FATAL_ERROR "go-source accepted a match arm that escapes from a call argument")
 endif()
 set(escape_diagnostics "${escape_output}${escape_error}")
 if(NOT escape_diagnostics MATCHES "FDN4120" OR
-   NOT escape_diagnostics MATCHES "conditional branches cannot return or escape an outer loop" OR
+   NOT escape_diagnostics MATCHES "only when the expression initializes or assigns a local" OR
    NOT escape_diagnostics MATCHES "go-cgo or go-dynamic")
     message(FATAL_ERROR
         "conditional escape rejection omitted its contract or alternatives:\n${escape_diagnostics}")
@@ -372,7 +394,7 @@ list(LENGTH multiple_codes multiple_count)
 if(NOT multiple_count EQUAL 6 OR
    NOT multiple_diagnostics MATCHES "consuming method receiver" OR
    NOT multiple_diagnostics MATCHES "cannot preserve owner destructuring" OR
-   NOT multiple_diagnostics MATCHES "conditional branches cannot return or escape an outer loop" OR
+   NOT multiple_diagnostics MATCHES "only when the expression initializes or assigns a local" OR
    NOT multiple_diagnostics MATCHES "panic only as a statement, return value, or branch value" OR
    NOT multiple_diagnostics MATCHES "function without a same-package body")
     message(FATAL_ERROR
