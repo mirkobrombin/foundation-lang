@@ -1714,8 +1714,8 @@ the slot is reached through delegation; a delegated method calls the method of t
 Dispatch therefore selects the same method as the other backends. Two contracts that give one
 struct different default or delegated methods with the same name are rejected, as is such a method
 beside a field with the same Go name.
-Custom-drop structs, raw pointers, callbacks, native imports, foreign metadata,
-native links, open generic exports, tasks, actions, and
+Custom-drop structs, also behind an owner, raw pointers, unsafe blocks, callbacks, native imports,
+foreign metadata, native links, open generic exports, tasks, channels, actions, and
 other runtime-backed FIR nodes are rejected with `FDN4120`. A rejection does not stop the scan: one
 run reports every native import, foreign declaration, and link requirement or, when the package has
 none, every open generic export or else every rejected function signature and statement, each as

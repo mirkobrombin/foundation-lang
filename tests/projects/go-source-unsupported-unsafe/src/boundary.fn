@@ -1,0 +1,31 @@
+package sample.unsafe
+
+struct Guard {
+    value i32
+
+    fn drop(&self) void {
+        return
+    }
+}
+
+fn FirstRaw(values [i32]) i32 {
+    // SAFETY: the caller passes a non-empty slice that stays live for this call.
+    unsafe {
+        return *values.pointer
+    }
+}
+
+fn IgnorePointer(pointer *const i32) i32 {
+    0
+}
+
+fn OpenChannel() i32 {
+    const Channel { sender receiver } = channel<String>(2)
+    discard sender
+    discard receiver
+    0
+}
+
+fn MakeGuard(value i32) own Guard {
+    own Guard { value = value }
+}

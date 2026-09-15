@@ -3,6 +3,7 @@ if(NOT DEFINED COMPILER OR NOT DEFINED SOURCE OR NOT DEFINED UNSUPPORTED_SOURCE 
    NOT DEFINED OWNER_CYCLE_SOURCE OR NOT DEFINED OPEN_GENERIC_SOURCE OR
    NOT DEFINED GENERIC_STRUCT_SOURCE OR NOT DEFINED MULTIPLE_SOURCE OR
    NOT DEFINED OWNED_CONTRACT_SOURCE OR NOT DEFINED CONTRACT_CONFLICT_SOURCE OR
+   NOT DEFINED UNSAFE_SOURCE OR
    NOT DEFINED FIXTURE OR NOT DEFINED WORK OR NOT DEFINED GO_EXECUTABLE)
     message(FATAL_ERROR "go-source export test requires compiler, sources, fixture, work, and Go")
 endif()
@@ -433,4 +434,40 @@ if(NOT contract_conflict_diagnostics MATCHES "FDN4120" OR
    NOT contract_conflict_diagnostics MATCHES "go-cgo or go-dynamic")
     message(FATAL_ERROR
         "contract conflict rejection omitted its contract or alternatives:\n${contract_conflict_diagnostics}")
+endif()
+
+file(MAKE_DIRECTORY "${WORK}/unsafe-source" "${WORK}/unsafe-output")
+file(COPY "${UNSAFE_SOURCE}/" DESTINATION "${WORK}/unsafe-source")
+execute_process(
+    COMMAND "${COMPILER}" package resolve "${WORK}/unsafe-source"
+    RESULT_VARIABLE unsafe_resolve_status
+    OUTPUT_VARIABLE unsafe_resolve_output
+    ERROR_VARIABLE unsafe_resolve_error
+)
+if(NOT unsafe_resolve_status EQUAL 0)
+    message(FATAL_ERROR
+        "cannot resolve unsafe fixture:\n${unsafe_resolve_output}${unsafe_resolve_error}")
+endif()
+execute_process(
+    COMMAND "${COMPILER}" package export "${WORK}/unsafe-source"
+        -o "${WORK}/unsafe-output"
+        --format go-source
+    RESULT_VARIABLE unsafe_status
+    OUTPUT_VARIABLE unsafe_output
+    ERROR_VARIABLE unsafe_error
+)
+if(unsafe_status EQUAL 0)
+    message(FATAL_ERROR "go-source accepted unsafe code, a channel, or an owned custom drop")
+endif()
+set(unsafe_diagnostics "${unsafe_output}${unsafe_error}")
+string(REGEX MATCHALL "error\\[FDN4120\\]" unsafe_codes "${unsafe_diagnostics}")
+list(LENGTH unsafe_codes unsafe_count)
+if(NOT unsafe_count EQUAL 4 OR
+   NOT unsafe_diagnostics MATCHES "cannot translate an unsafe block" OR
+   NOT unsafe_diagnostics MATCHES "cannot translate a raw pointer" OR
+   NOT unsafe_diagnostics MATCHES "cannot translate a task or channel value" OR
+   NOT unsafe_diagnostics MATCHES "cannot translate struct sample.unsafe.Guard" OR
+   NOT unsafe_diagnostics MATCHES "go-cgo or go-dynamic")
+    message(FATAL_ERROR
+        "unsafe rejection omitted a construct or its alternatives:\n${unsafe_diagnostics}")
 endif()

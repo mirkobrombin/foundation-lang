@@ -2191,6 +2191,15 @@ class GoSourceEmitter {
             reachableEnums_[key] = type;
             return true;
         }
+        if (type.kind == TypeKind::Raw || type.kind == TypeKind::RawConst) {
+            fail("go-source cannot translate a raw pointer", span);
+            return false;
+        }
+        if (type.kind == TypeKind::Task || type.kind == TypeKind::Channel ||
+            type.kind == TypeKind::Sender || type.kind == TypeKind::Receiver) {
+            fail("go-source cannot translate a task or channel value", span);
+            return false;
+        }
         if (type.kind != TypeKind::Struct || type.declaration >= program_.structs.size()) {
             fail("go-source reached an unsupported type", span);
             return false;
@@ -2880,6 +2889,14 @@ class GoSourceEmitter {
         if (std::holds_alternative<FirBreakStatement>(statement.value) ||
             std::holds_alternative<FirContinueStatement>(statement.value)) {
             return true;
+        }
+        if (std::holds_alternative<FirUnsafeStatement>(statement.value)) {
+            fail("go-source cannot translate an unsafe block", statement.span);
+            return false;
+        }
+        if (std::holds_alternative<FirSelectStatement>(statement.value)) {
+            fail("go-source cannot translate a channel select", statement.span);
+            return false;
         }
         fail("go-source reached an unsupported statement", statement.span);
         return false;
