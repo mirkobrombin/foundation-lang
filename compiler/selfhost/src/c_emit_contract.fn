@@ -283,19 +283,20 @@ fn cEmitContractAdapters(
         cEmitContractAdapterSignature(
             &builder, &declaration, adapter, false)
         cWrite(&builder, " {\n    ")
-        if !declaration.returnType.kind.Matches("Void") && !function.diverges {
-            cWrite(&builder, "return ")
-        }
+        const returns = !declaration.returnType.kind.Matches("Void") && !function.diverges
         if target.contractDefault {
             cWrite(&builder, "struct fdn_contract_" +
                 format.U64(target.defaultContract.declaration) +
                 " fdn_self = {fdn_data, &" +
                 cDefaultSelfVtableName(table, methodID) + "};\n    ")
-            if !declaration.returnType.kind.Matches("Void") && !function.diverges {
+            if returns {
                 cWrite(&builder, "return ")
             }
             cWrite(&builder, cFunctionName(&program, target.function) + "(fdn_self")
         } else {
+            if returns {
+                cWrite(&builder, "return ")
+            }
             const receiver = cU64At(&function.parameters, 0)
             var receiverType = cLocalTypeAt(&function, receiver)
             cWrite(&builder, cFunctionName(&program, target.function) + "((" +
