@@ -1200,7 +1200,7 @@ class Monomorphizer {
         if (const auto found = functions_.find(key); found != functions_.end()) {
             return found->second;
         }
-        if (functions_.size() >= 4096) {
+        if (functions_.size() >= 65536) {
             internalError("monomorphization function limit exceeded");
         }
 

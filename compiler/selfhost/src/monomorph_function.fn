@@ -916,7 +916,7 @@ fn instantiateMonomorphFunctionSpecialized(
     if function >= source.functions.len() {
         panic("function declaration is out of range")
     }
-    if state.functions.len() >= 4096 {
+    if state.functions.len() >= 65536 {
         panic("monomorphization function limit exceeded")
     }
     const id = state.result.functions.len()
