@@ -1,0 +1,253 @@
+package foundation.compiler
+
+import std.text
+
+// Exported top-level names by package, as "package\nname" keys. The prelude
+// is implicit and never inferred.
+struct importSymbols {
+    keys own arena<String>
+    packages own arena<String>
+}
+
+struct importAliasCandidates {
+    alias String
+    candidates own arena<String>
+}
+
+fn addImportSymbol(
+    &symbols importSymbols,
+    packageName String,
+    name String,
+    exported bool
+) void {
+    if !exported || text.IsEmpty(packageName) || packageName == "std.prelude" return
+    discard symbols.keys.add(packageName + "\n" + metadataShortName(name))
+    if !arenaContainsString(&symbols.packages, packageName) {
+        discard symbols.packages.add(text.Copy(packageName))
+    }
+}
+
+fn collectImportSymbols(&source program) own importSymbols {
+    var result = own importSymbols {
+        keys = newArena<String>()
+        packages = newArena<String>()
+    }
+    var index u64 = 0
+    while index < source.structs.len() {
+        const value = match source.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(found): found
+        }
+        addImportSymbol(&result, value.packageName, value.name, value.exported)
+        source.structs.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < source.enums.len() {
+        const value = match source.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(found): found
+        }
+        addImportSymbol(&result, value.packageName, value.name, value.exported)
+        source.enums.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < source.contracts.len() {
+        const value = match source.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(found): found
+        }
+        addImportSymbol(&result, value.packageName, value.name, value.exported)
+        source.contracts.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < source.attributeDeclarations.len() {
+        const value = match source.attributeDeclarations.take(index) {
+            None: panic("attribute declaration slot is empty")
+            Some(found): found
+        }
+        addImportSymbol(&result, value.packageName, value.name, value.exported)
+        source.attributeDeclarations.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < source.functions.len() {
+        const value = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        if text.IsEmpty(value.ownerType) && !value.closure &&
+            !optionStringPresent(value.testName) {
+            addImportSymbol(&result, value.packageName, value.name, value.exported)
+        }
+        source.functions.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+// Extracts the alias named by an unresolved-alias or unknown-binding error.
+fn importUnknownAlias(value diagnostic) Option<String> {
+    const unknownImport = "unknown import alias "
+    const unknownBinding = "unknown binding "
+    if value.code == "FDN3009" && text.StartsWith(value.message, unknownImport) {
+        return .Some(applicationSlice(
+                value.message, text.ByteLen(unknownImport), text.ByteLen(value.message)))
+    }
+    if value.code == "FDN2004" && text.StartsWith(value.message, unknownBinding) {
+        return .Some(applicationSlice(
+                value.message, text.ByteLen(unknownBinding), text.ByteLen(value.message)))
+    }
+    .None
+}
+
+// Finds the member that follows the alias inside the diagnostic span.
+fn importMemberAfterAlias(
+    &tokens arena<token>,
+    span sourceSpan,
+    alias String
+) Option<String> {
+    const end = span.offset + span.length
+    var index u64 = 0
+    while index + 2 < tokens.len() {
+        const offset = importTokenSpan(&tokens, index).offset
+        const selected = if span.length == 0 {
+            offset == span.offset
+        } else {
+            offset >= span.offset && offset < end
+        }
+        if selected && importTokenText(&tokens, index) == alias &&
+            importTokenKindIs(&tokens, index + 1, .Dot) &&
+            importTokenKindIs(&tokens, index + 2, .Identifier) {
+            return .Some(importTokenText(&tokens, index + 2))
+        }
+        index += 1
+    }
+    .None
+}
+
+fn importCandidates(
+    &symbols importSymbols,
+    &imported arena<String>,
+    currentPackage String,
+    alias String,
+    member String
+) own arena<String> {
+    var result = newArena<String>()
+    var index u64 = 0
+    while index < symbols.packages.len() {
+        const packageName = match symbols.packages.take(index) {
+            None: panic("package slot is empty")
+            Some(found): found
+        }
+        const matched = packageName != currentPackage &&
+            !arenaContainsString(&imported, packageName) &&
+            metadataShortName(packageName) == alias &&
+            arenaContainsString(&symbols.keys, packageName + "\n" + member)
+        if matched && !arenaContainsString(&result, packageName) {
+            discard result.add(text.Copy(packageName))
+        }
+        symbols.packages.restore(index, $packageName)
+        index += 1
+    }
+    result
+}
+
+fn intersectImportCandidates(
+    &entries arena<importAliasCandidates>,
+    alias String,
+    $candidates own arena<String>
+) void {
+    var pending = candidates
+    var index u64 = 0
+    while index < entries.len() {
+        var entry = match entries.take(index) {
+            None: panic("alias candidate slot is empty")
+            Some(found): found
+        }
+        if entry.alias == alias {
+            var kept = newArena<String>()
+            var candidate u64 = 0
+            while candidate < entry.candidates.len() {
+                const value = match entry.candidates.take(candidate) {
+                    None: panic("candidate slot is empty")
+                    Some(found): found
+                }
+                if arenaContainsString(&pending, value) {
+                    discard kept.add(text.Copy(value))
+                }
+                entry.candidates.restore(candidate, $value)
+                candidate += 1
+            }
+            entry.candidates = kept
+            entries.restore(index, $entry)
+            discard pending
+            return
+        }
+        entries.restore(index, $entry)
+        index += 1
+    }
+    discard entries.add(importAliasCandidates { alias = text.Copy(alias) candidates = pending })
+}
+
+// Infers the package of every unknown alias the source qualifies with a
+// member that exactly one visible, unimported package exports.
+fn inferImportPackages(
+    &analysis compilerAnalysis,
+    sourceId u64,
+    &tokens arena<token>,
+    &imported arena<String>,
+    currentPackage String
+) own arena<String> {
+    var symbols = collectImportSymbols(&analysis.loaded.program)
+    var entries = newArena<importAliasCandidates>()
+    var index u64 = 0
+    while index < analysis.diagnostics.len() {
+        const value = match analysis.diagnostics.take(index) {
+            None: panic("diagnostic slot is empty")
+            Some(found): found
+        }
+        const span = value.span
+        const alias = if span.source == sourceId { importUnknownAlias(value) } else { .None }
+        analysis.diagnostics.restore(index, $value)
+        index += 1
+        const name = match alias {
+            None: {
+                continue
+            }
+            Some(found): found
+        }
+        const member = match importMemberAfterAlias(&tokens, span, name) {
+            None: {
+                continue
+            }
+            Some(found): found
+        }
+        var candidates = importCandidates(&symbols, &imported, currentPackage, name, member)
+        intersectImportCandidates(&entries, name, $candidates)
+    }
+    var result = newArena<String>()
+    index = 0
+    while index < entries.len() {
+        var entry = match entries.take(index) {
+            None: panic("alias candidate slot is empty")
+            Some(found): found
+        }
+        if entry.candidates.len() == 1 {
+            const packageName = match entry.candidates.take(0) {
+                None: panic("candidate slot is empty")
+                Some(found): found
+            }
+            if !arenaContainsString(&result, packageName) {
+                discard result.add(text.Copy(packageName))
+            }
+            entry.candidates.restore(0, $packageName)
+        }
+        entries.restore(index, $entry)
+        index += 1
+    }
+    sortArena<String>(&result, compareCompilerSourcePath)
+    result
+}

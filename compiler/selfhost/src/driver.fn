@@ -7,6 +7,9 @@ fn compilerUsage() String {
     "usage:\n" +
         "  foundationc-selfhost check <source-or-project> " +
         "[--target <platform>]\n" +
+        "  foundationc-selfhost imports <source>\n" +
+        "  foundationc-selfhost imports --check <source-or-project>\n" +
+        "  foundationc-selfhost imports --write <source-or-project>\n" +
         "  foundationc-selfhost emit-c <source-or-project> -o <output.c> " +
         "[--target <platform>]\n" +
         "  foundationc-selfhost emit-c-header <source-or-project> -o <output.h> " +
@@ -226,6 +229,17 @@ fn runCompilerCommand(args [String]) Option<i32> {
     if command == "package" {
         var packageArguments = compilerPackageArguments(args)
         return .Some(runPackageCommand(&packageArguments))
+    }
+    if command == "imports" && len(args) == 2 {
+        return .Some(runCompilerImports(compilerArgument(args, 1), .Stdout))
+    }
+    if command == "imports" && len(args) == 3 {
+        match parseCompilerFormatMode(compilerArgument(args, 1)) {
+            None: {}
+            Some(mode): {
+                return .Some(runCompilerImports(compilerArgument(args, 2), mode))
+            }
+        }
     }
     if command == "check" && len(args) >= 2 {
         const target = parseCompilerTargetArguments(args, 2)

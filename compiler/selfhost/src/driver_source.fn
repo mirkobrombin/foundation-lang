@@ -1,0 +1,265 @@
+package foundation.compiler
+
+import std.fs
+import std.io
+import std.path
+import std.text
+
+enum compilerFormatMode {
+    Stdout
+    Check
+    Write
+}
+
+struct compilerChangedFile {
+    path String
+    contents String
+}
+
+fn parseCompilerFormatMode(value String) Option<compilerFormatMode> {
+    if value == "--check" return .Some(.Check)
+    if value == "--write" return .Some(.Write)
+    .None
+}
+
+fn compilerFormatModeIs(mode compilerFormatMode, name String) bool {
+    match mode {
+        Stdout: name == "stdout"
+        Check: name == "check"
+        Write: name == "write"
+    }
+}
+
+fn compareCompilerSourcePath(left String, right String) i32 {
+    text.Compare(left, right)
+}
+
+// Build output and hidden directories never contribute sources.
+fn compilerSourceEntryVisible(relative String) bool {
+    var start u64 = 0
+    var index u64 = 0
+    const length = text.ByteLen(relative)
+    while index < length {
+        if applicationByteAt(relative, index) == 47 {
+            const component = applicationSlice(relative, start, index)
+            if component == "build" || text.StartsWith(component, ".") return false
+            start = index + 1
+        }
+        index += 1
+    }
+    true
+}
+
+fn appendCompilerSourceRoot(root String, &sources arena<String>) bool {
+    const opened = fs.OpenTree(root, 100000, 4096) else error {
+        discard error
+        compilerProcessFailure("cannot walk " + root)
+        return false
+    }
+    var reader = opened
+    while true {
+        const selected = reader.Next() else error {
+            discard error
+            compilerProcessFailure("cannot walk " + root)
+            return false
+        }
+        const entry = match selected {
+            None: {
+                return true
+            }
+            Some(found): found
+        }
+        const candidate = match entry.Kind {
+            File: true
+            SymbolicLink: true
+            _: false
+        }
+        if candidate && path.Extension(entry.Path) == ".fn" &&
+            compilerSourceEntryVisible(entry.Path) {
+            discard sources.add(path.Join(root, entry.Path))
+        }
+    }
+    true
+}
+
+// Selects the source roots of a directory: the package source and test roots
+// when the directory is a package project, else the directory itself.
+fn compilerSourceRoots(input String) Option<own arena<String>> {
+    var roots = newArena<String>()
+    const manifestPath = match discoverPackageManifest(input) {
+        None: {
+            discard roots.add(text.Copy(input))
+            return .Some(roots)
+        }
+        Some(value): value
+    }
+    if projectSourceIdentity(input) != projectSourceIdentity(path.Parent(manifestPath)) {
+        discard roots.add(text.Copy(input))
+        return .Some(roots)
+    }
+    const sdk = match parsePackageVersion("0.1.0") {
+        None: panic("compiler SDK version invariant failed")
+        Some(value): value
+    }
+    var loaded = loadLockedPackageProject(
+        manifestPath, sdk, hostTargetPlatform(), defaultPackageCachePath(), false)
+    var project = match replace loaded.value with .None {
+        None: {
+            reportCompilerPackageErrors(&loaded.errors)
+            return .None
+        }
+        Some(value): value
+    }
+    const first = match project.sources.take(0) {
+        None: panic("locked package source slot is empty")
+        Some(value): value
+    }
+    discard roots.add(text.Copy(first.sourceRoot))
+    project.sources.restore(0, $first)
+    match copyPackageStringOption(project.manifest.testSource) {
+        None: {}
+        Some(testSource): {
+            discard roots.add(path.Join(project.projectRoot, testSource))
+        }
+    }
+    .Some(roots)
+}
+
+// Lists the source files a formatting command visits, in path order. Usage
+// errors are reported and yield no list.
+fn compilerFormatterSources(input String) Option<own arena<String>> {
+    const kind = match fs.Kind(input) {
+        Err(error): {
+            discard error
+            compilerProcessFailure("cannot inspect " + input)
+            return .None
+        }
+        Ok(found): found
+    }
+    var sources = newArena<String>()
+    const file = match kind {
+        File: true
+        SymbolicLink: true
+        _: false
+    }
+    if file {
+        if path.Extension(input) != ".fn" {
+            compilerProcessFailure("expected a .fn source file")
+            return .None
+        }
+        discard sources.add(text.Copy(input))
+        return .Some(sources)
+    }
+    if !projectEntryIsDirectory(kind) {
+        compilerProcessFailure("expected a Foundation source file or project directory")
+        return .None
+    }
+    var roots = match compilerSourceRoots(input) {
+        None: {
+            return .None
+        }
+        Some(value): value
+    }
+    var index u64 = 0
+    while index < roots.len() {
+        const root = match roots.take(index) {
+            None: panic("source root slot is empty")
+            Some(value): value
+        }
+        const walked = appendCompilerSourceRoot(root, &sources)
+        roots.restore(index, $root)
+        if !walked return .None
+        index += 1
+    }
+    sortArena<String>(&sources, compareCompilerSourcePath)
+    if sources.len() == 0 {
+        compilerProcessFailure("no .fn source files found under " + input)
+        return .None
+    }
+    .Some(sources)
+}
+
+fn compilerReplaceableFile(value String) bool {
+    const kind = match fs.Kind(value) {
+        Err(error): {
+            discard error
+            compilerProcessFailure("cannot inspect " + value)
+            return false
+        }
+        Ok(found): found
+    }
+    match kind {
+        File: true
+        SymbolicLink: {
+            compilerProcessFailure("refusing to replace symbolic link " + value)
+            false
+        }
+        _: {
+            compilerProcessFailure("refusing to replace non-regular file " + value)
+            false
+        }
+    }
+}
+
+fn compilerAllReplaceable(&sources arena<String>) bool {
+    var index u64 = 0
+    while index < sources.len() {
+        const source = match sources.take(index) {
+            None: panic("source path slot is empty")
+            Some(value): value
+        }
+        const replaceable = compilerReplaceableFile(source)
+        sources.restore(index, $source)
+        if !replaceable return false
+        index += 1
+    }
+    true
+}
+
+// Replaces one regular file atomically, keeping its permission bits.
+fn compilerReplaceFile(value String, contents String) bool {
+    if !compilerReplaceableFile(value) return false
+    match fs.WriteTextAtomic(value, contents, 1073741824) {
+        Ok: true
+        Err(error): {
+            discard error
+            compilerProcessFailure("cannot replace " + value)
+            false
+        }
+    }
+}
+
+fn compilerReadSource(value String) Option<String> {
+    match fs.ReadTextSync(value, 67108864) {
+        Ok(contents): .Some(contents)
+        Err(error): {
+            discard error
+            compilerProcessFailure("cannot read " + value)
+            .None
+        }
+    }
+}
+
+// Completes a check or write run over the changed files. Check lists every
+// changed path and fails when any exists.
+fn finishCompilerFormat(&changed arena<compilerChangedFile>, mode compilerFormatMode) i32 {
+    var index u64 = 0
+    while index < changed.len() {
+        const file = match changed.take(index) {
+            None: panic("changed file slot is empty")
+            Some(value): value
+        }
+        var written = true
+        if compilerFormatModeIs(mode, "check") {
+            discard io.WriteStdoutText(file.path + "\n")
+        }
+        if compilerFormatModeIs(mode, "write") {
+            written = compilerReplaceFile(file.path, file.contents)
+        }
+        changed.restore(index, $file)
+        if !written return 1
+        index += 1
+    }
+    if compilerFormatModeIs(mode, "check") && changed.len() != 0 return 1
+    0
+}

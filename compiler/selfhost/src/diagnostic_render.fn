@@ -1,0 +1,118 @@
+package foundation.compiler
+
+import std.format
+import std.io
+import std.text
+
+fn renderRepeated(value String, count u64) String {
+    var result = ""
+    var index u64 = 0
+    while index < count {
+        result += value
+        index += 1
+    }
+    result
+}
+
+fn renderDiagnosticHeader(path String, value diagnostic) String {
+    const severity = "error" if isErrorSeverity(value.severity) else "warning"
+    path + ":" + format.U64(value.span.line) + ":" + format.U64(value.span.column) + ": " +
+        severity + "[" + value.code + "]: " + value.message + "\n"
+}
+
+// Renders one diagnostic with its source line. The excerpt keeps at most 120
+// bytes, starting up to 40 bytes before the marker; elided ends print "...".
+fn renderSourceDiagnostic(path String, source String, value diagnostic) String {
+    const size = text.ByteLen(source)
+    const bounded = value.span.offset if value.span.offset < size else size
+    var lineStart u64 = bounded
+    while lineStart > 0 && applicationByteAt(source, lineStart - 1) != 10 {
+        lineStart -= 1
+    }
+    var lineEnd u64 = bounded
+    while lineEnd < size && applicationByteAt(source, lineEnd) != 10 {
+        lineEnd += 1
+    }
+    const line = applicationSlice(source, lineStart, lineEnd)
+    const lineLength = lineEnd - lineStart
+    const offset = bounded - lineStart
+    const excerptWidth u64 = 120
+    const markerContext u64 = 40
+    const markerLimit u64 = 80
+    var maximumStart u64 = 0
+    if lineLength > excerptWidth {
+        maximumStart = lineLength - excerptWidth
+    }
+    var excerptStart u64 = 0
+    if offset > markerContext {
+        excerptStart = offset - markerContext
+    }
+    if excerptStart > maximumStart {
+        excerptStart = maximumStart
+    }
+    var excerptLength = lineLength - excerptStart
+    if excerptLength > excerptWidth {
+        excerptLength = excerptWidth
+    }
+    const prefixed = excerptStart != 0
+    const suffixed = excerptStart + excerptLength != lineLength
+    var markerColumn = offset - excerptStart
+    if prefixed {
+        markerColumn += 3
+    }
+    var markerWidth = value.span.length
+    if markerWidth > markerLimit {
+        markerWidth = markerLimit
+    }
+    if markerWidth == 0 {
+        markerWidth = 1
+    }
+    renderDiagnosticHeader(path, value) + "  " + format.U64(value.span.line) + " | " +
+        ("..." if prefixed else "") +
+        applicationSlice(line, excerptStart, excerptStart + excerptLength) +
+        ("..." if suffixed else "") + "\n    | " + renderRepeated(" ", markerColumn) + "^" +
+        renderRepeated("~", markerWidth - 1) + "\n"
+}
+
+// Renders diagnostics against the sources they name; a diagnostic outside
+// the source list is attributed to the project.
+fn renderCompilerDiagnostics(
+    &sources arena<projectSource>,
+    &values arena<diagnostic>
+) String {
+    var result = ""
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("diagnostic slot is empty")
+            Some(found): found
+        }
+        const source = value.span.source
+        if source < sources.len() {
+            const selected = match sources.take(source) {
+                None: panic("project source slot is empty")
+                Some(found): found
+            }
+            result += renderSourceDiagnostic(selected.path, selected.contents, value)
+            sources.restore(source, $selected)
+        } else {
+            result += renderDiagnosticHeader("<project>", value)
+        }
+        values.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn writeCompilerSourceDiagnostics(
+    &sources arena<projectSource>,
+    &values arena<diagnostic>
+) void {
+    discard io.WriteStderrText(renderCompilerDiagnostics(&sources, &values))
+}
+
+fn writeCompilerFoundDiagnostics($found own diagnostics, &sources arena<projectSource>) void {
+    var values = newArena<diagnostic>()
+    collectCompilerDiagnostics($found, &values)
+    writeCompilerSourceDiagnostics(&sources, &values)
+}

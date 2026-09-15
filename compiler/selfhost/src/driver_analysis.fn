@@ -1,0 +1,206 @@
+package foundation.compiler
+
+import std.fs
+import std.io
+import std.path
+import std.text
+
+// A project analysis that keeps every diagnostic instead of reporting it, so
+// tooling can inspect sources and invalid programs. Sources stay empty only
+// when no project input could be collected.
+struct compilerAnalysis {
+    loaded own loadedProject
+    diagnostics own arena<diagnostic>
+    model Option<own semanticModel>
+}
+
+fn collectCompilerDiagnostics($found own diagnostics, &target arena<diagnostic>) void {
+    var values = $found.takeAll()
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("diagnostic list invariant failed")
+            Some(found): found
+        }
+        discard target.add($value)
+    }
+}
+
+fn compilerDiagnosticsHaveErrors(&values arena<diagnostic>) bool {
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("diagnostic slot is empty")
+            Some(found): found
+        }
+        const failed = isErrorSeverity(value.severity)
+        values.restore(index, $value)
+        if failed return true
+        index += 1
+    }
+    false
+}
+
+// Reports every retained diagnostic against the analyzed sources.
+fn writeCompilerAnalysisDiagnostics(&analysis compilerAnalysis) void {
+    var values = replace analysis.diagnostics with newArena<diagnostic>()
+    writeCompilerSourceDiagnostics(&analysis.loaded.sources, &values)
+    analysis.diagnostics = values
+}
+
+// Reports a failed analysis like compilation does: against the analyzed
+// sources, or against the input path when no source was loaded.
+fn writeCompilerReport(input String, &analysis compilerAnalysis) void {
+    if analysis.loaded.sources.len() != 0 {
+        writeCompilerAnalysisDiagnostics(&analysis)
+        return
+    }
+    var result = ""
+    var index u64 = 0
+    while index < analysis.diagnostics.len() {
+        const value = match analysis.diagnostics.take(index) {
+            None: panic("diagnostic slot is empty")
+            Some(found): found
+        }
+        result += renderSourceDiagnostic(input, "", value)
+        analysis.diagnostics.restore(index, $value)
+        index += 1
+    }
+    discard io.WriteStderrText(result)
+}
+
+fn newCompilerAnalysis() own compilerAnalysis {
+    own compilerAnalysis {
+        loaded = own loadedProject { program = newProgram() sources = newArena<projectSource>() }
+        diagnostics = newArena<diagnostic>()
+        model = .None
+    }
+}
+
+// Loads, derives, and analyzes a project the way compilation does, stopping
+// after the first phase that reports an error.
+fn analyzeCompilerProject(
+    input String,
+    requireMain bool,
+    retainInvalidModel bool,
+    mode projectMode,
+    target targetPlatform,
+    completeSdk bool
+) own compilerAnalysis {
+    var result = newCompilerAnalysis()
+    var found = newDiagnostics()
+    const selected = loadProjectScope(input, &found, mode, target, .None, completeSdk)
+    const loadFailed = found.hasErrors()
+    collectCompilerDiagnostics($found, &result.diagnostics)
+    var loaded = match selected {
+        None: {
+            return result
+        }
+        Some(value): value
+    }
+    if loadFailed {
+        result.loaded = loaded
+        return result
+    }
+    var derived = newDiagnostics()
+    var generated Option<String> = .None
+    if compilerDerivesApplication(&loaded.sources) {
+        generated = deriveApplicationSource(&loaded.program, &derived)
+    }
+    const derivationFailed = derived.hasErrors()
+    collectCompilerDiagnostics($derived, &result.diagnostics)
+    if derivationFailed {
+        result.loaded = loaded
+        return result
+    }
+    match generated {
+        None: {}
+        Some(source): {
+            var reloaded = newDiagnostics()
+            const complete = loadProjectScope(
+                input, &reloaded, mode, target, .Some(text.Copy(source)), completeSdk)
+            const reloadFailed = reloaded.hasErrors()
+            collectCompilerDiagnostics($reloaded, &result.diagnostics)
+            match complete {
+                None: {
+                    result.loaded = loaded
+                    return result
+                }
+                Some(value): {
+                    loaded = value
+                }
+            }
+            if reloadFailed {
+                result.loaded = loaded
+                return result
+            }
+        }
+    }
+    const analysis = analyzeProgram(
+        &loaded.program,
+        analyzeOptions {
+            requireMain = requireMain
+            retainInvalidModel = retainInvalidModel
+            target = target
+        }
+    )
+    const semanticAnalysis { model diagnostics as semanticDiagnostics } = analysis
+    collectCompilerDiagnostics($semanticDiagnostics, &result.diagnostics)
+    result.model = model
+    result.loaded = loaded
+    result
+}
+
+fn compilerSourceIndex(&sources arena<projectSource>, identity String) Option<u64> {
+    var index u64 = 0
+    while index < sources.len() {
+        const source = match sources.take(index) {
+            None: panic("project source slot is empty")
+            Some(found): found
+        }
+        const same = source.identity == identity
+        sources.restore(index, $source)
+        if same return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+// Selects the sources that belong to the analyzed root: the named file, or
+// every source beneath the named directory outside its package cache.
+fn compilerRootSources(input String, &sources arena<projectSource>) own arena<u64> {
+    var result = newArena<u64>()
+    const kind = match fs.Kind(input) {
+        Err(error): {
+            discard error
+            return result
+        }
+        Ok(found): found
+    }
+    const root = projectSourceIdentity(input)
+    if projectEntryIsFile(kind) {
+        match compilerSourceIndex(&sources, root) {
+            None: {}
+            Some(index): {
+                discard result.add(index)
+            }
+        }
+        return result
+    }
+    if !projectEntryIsDirectory(kind) return result
+    const prefix = root + path.Separator()
+    var index u64 = 0
+    while index < sources.len() {
+        const source = match sources.take(index) {
+            None: panic("project source slot is empty")
+            Some(found): found
+        }
+        const selected = !text.StartsWith(source.path, "packages/") &&
+            text.StartsWith(source.identity, prefix)
+        sources.restore(index, $source)
+        if selected {
+            discard result.add(index)
+        }
+        index += 1
+    }
+    result
+}

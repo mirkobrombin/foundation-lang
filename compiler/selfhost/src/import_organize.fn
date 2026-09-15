@@ -1,0 +1,180 @@
+package foundation.compiler
+
+import std.text
+
+struct importLine {
+    packageName String
+    alias String
+    prefix String
+    suffix String
+}
+
+struct organizedSource {
+    contents String
+    diagnostics own diagnostics
+}
+
+fn compareImportLine(left importLine, right importLine) i32 {
+    const name = text.Compare(left.packageName, right.packageName)
+    if name != 0 return name
+    text.Compare(left.alias, right.alias)
+}
+
+fn unchangedImportSource(contents String, $found own diagnostics) own organizedSource {
+    own organizedSource { contents = text.Copy(contents) diagnostics = found }
+}
+
+fn renderImportLines(&lines arena<importLine>, newline String) String {
+    var result = ""
+    var index u64 = 0
+    while index < lines.len() {
+        const line = match lines.take(index) {
+            None: panic("import line slot is empty")
+            Some(found): found
+        }
+        result += line.prefix + "import " + line.packageName
+        if !text.IsEmpty(line.alias) {
+            result += " as " + line.alias
+        }
+        if !text.IsEmpty(line.suffix) {
+            result += " " + line.suffix
+        }
+        result += newline
+        lines.restore(index, $line)
+        index += 1
+    }
+    result
+}
+
+// Rewrites the import block of one analyzed source: unused imports are
+// removed, uniquely inferable packages are added, and the block is sorted by
+// package and alias. Comments between imports move ahead of the next kept
+// import or after the block. A source that does not parse, or whose rewrite
+// would not parse, is returned unchanged with its diagnostics.
+fn organizeImports(&analysis compilerAnalysis, sourceId u64) own organizedSource {
+    const selected = match analysis.loaded.sources.take(sourceId) {
+        None: panic("project source slot is empty")
+        Some(found): found
+    }
+    const contents = text.Copy(selected.contents)
+    const currentPackage = text.Copy(selected.packageName)
+    analysis.loaded.sources.restore(sourceId, $selected)
+    var found = newDiagnostics()
+    var parsed = parseToolingProgram(contents, sourceId, &found)
+    if found.hasErrors() return unchangedImportSource(contents, $found)
+    var tokens = importTokens(contents, sourceId)
+    const size = text.ByteLen(contents)
+    var starts = importLineStarts(contents)
+    var ranges = match importRanges(&parsed, &tokens, &starts, size) {
+        None: {
+            return unchangedImportSource(contents, $found)
+        }
+        Some(value): value
+    }
+    var aliases = newArena<String>()
+    var imported = newArena<String>()
+    var index u64 = 0
+    while index < parsed.imports.len() {
+        const declaration = match parsed.imports.take(index) {
+            None: panic("import slot is empty")
+            Some(value): value
+        }
+        const alias = importAliasFor(declaration)
+        const duplicate = arenaContainsString(&aliases, alias) ||
+            arenaContainsString(&imported, declaration.packageName)
+        discard imported.add(text.Copy(declaration.packageName))
+        parsed.imports.restore(index, $declaration)
+        if duplicate return unchangedImportSource(contents, $found)
+        discard aliases.add($alias)
+        index += 1
+    }
+    var used = importUsedAliases(&tokens, &aliases, &ranges)
+    var lines = newArena<importLine>()
+    var previousEnd u64 = 0
+    if ranges.len() != 0 {
+        previousEnd = importRangeAt(&ranges, 0).start
+    }
+    var pendingPrefix = ""
+    index = 0
+    while index < parsed.imports.len() {
+        const declaration = match parsed.imports.take(index) {
+            None: panic("import slot is empty")
+            Some(value): value
+        }
+        const alias = importAliasFor(declaration)
+        const packageName = text.Copy(declaration.packageName)
+        const written = text.Copy(declaration.alias)
+        parsed.imports.restore(index, $declaration)
+        const range = importRangeAt(&ranges, index)
+        index += 1
+        const prefix = applicationSlice(contents, previousEnd, range.start)
+        if !importWhitespace(prefix) {
+            pendingPrefix += prefix
+        }
+        previousEnd = range.end
+        if !arenaContainsString(&used, alias) continue
+        const suffixEnd = importContentEnd(contents, range.syntaxEnd, range.end)
+        discard lines.add(importLine {
+            packageName = packageName
+            alias = written
+            prefix = replace pendingPrefix with ""
+            suffix = importTrim(applicationSlice(contents, range.syntaxEnd, suffixEnd))
+        })
+    }
+    var inferred = inferImportPackages(
+        &analysis, sourceId, &tokens, &imported, currentPackage)
+    if parsed.imports.len() == 0 && inferred.len() == 0 {
+        return unchangedImportSource(contents, $found)
+    }
+    index = 0
+    while index < inferred.len() {
+        const packageName = match inferred.take(index) {
+            None: panic("inferred package slot is empty")
+            Some(value): value
+        }
+        discard lines.add(importLine {
+            packageName = text.Copy(packageName)
+            alias = ""
+            prefix = ""
+            suffix = ""
+        })
+        inferred.restore(index, $packageName)
+        index += 1
+    }
+    sortArena<importLine>(&lines, compareImportLine)
+    const newline = "\r\n" if text.Contains(contents, "\r\n") else "\n"
+    var replacement = renderImportLines(&lines, newline)
+    if lines.len() != 0 && !text.IsEmpty(pendingPrefix) {
+        replacement += newline
+    }
+    replacement += pendingPrefix
+    const packageEnd = importPackageLineEnd(&parsed, &tokens, &starts, size)
+    var replaceStart = packageEnd
+    var replaceEnd = packageEnd
+    if ranges.len() != 0 {
+        replaceStart = importRangeAt(&ranges, 0).start
+        if packageEnd <= replaceStart &&
+            importWhitespace(applicationSlice(contents, packageEnd, replaceStart)) {
+            replaceStart = packageEnd
+        }
+        const last = ranges.len() - 1
+        replaceEnd = importRangeAt(&ranges, last).end
+    }
+    replaceEnd = importSkipSpace(contents, replaceEnd)
+    if packageEnd != 0 && replaceStart == packageEnd {
+        replacement = newline + replacement
+    }
+    if lines.len() != 0 || !text.IsEmpty(pendingPrefix) {
+        replacement += newline
+    }
+    const result = applicationSlice(contents, 0, replaceStart) + replacement +
+        applicationSlice(contents, replaceEnd, size)
+    var validation = newDiagnostics()
+    discard parseToolingProgram(result, sourceId, &validation)
+    if validation.hasErrors() {
+        discard found
+        return unchangedImportSource(contents, $validation)
+    }
+    discard validation
+    own organizedSource { contents = result diagnostics = found }
+}

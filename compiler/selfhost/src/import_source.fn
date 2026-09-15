@@ -1,0 +1,282 @@
+package foundation.compiler
+
+import std.text
+
+struct importRange {
+    start u64
+    end u64
+    syntaxEnd u64
+}
+
+// Scans one source into indexed tokens. Lexical errors are left to the
+// parse of the same source.
+fn importTokens(source String, sourceID u64) own arena<token> {
+    var contents = text.Copy(source)
+    const scanResult { tokens diagnostics } = scan($contents, sourceID)
+    discard diagnostics
+    var pending = tokens
+    var result = newArena<token>()
+    while !pending.IsEmpty() {
+        match pending.PopFront() {
+            None: panic("token list invariant failed")
+            Some(value): {
+                discard result.add($value)
+            }
+        }
+    }
+    result
+}
+
+fn parseToolingProgram(source String, sourceID u64, &found diagnostics) own program {
+    var contents = text.Copy(source)
+    const scanResult { tokens diagnostics } = scan($contents, sourceID)
+    var parsed = parse($tokens, $diagnostics, false, hostTargetPlatform())
+    const parsedDiagnostics = replace parsed.diagnostics with newDiagnostics()
+    mergeProjectDiagnostics($parsedDiagnostics, &found)
+    const result = replace parsed.program with newProgram()
+    result
+}
+
+fn importTokenKindIs(&tokens arena<token>, index u64, kind tokenKind) bool {
+    const value = match tokens.take(index) {
+        None: panic("token slot is empty")
+        Some(found): found
+    }
+    const same = sameTokenKind(value.kind, kind)
+    tokens.restore(index, $value)
+    same
+}
+
+fn importTokenSpan(&tokens arena<token>, index u64) sourceSpan {
+    const value = match tokens.take(index) {
+        None: panic("token slot is empty")
+        Some(found): found
+    }
+    const span = value.span
+    tokens.restore(index, $value)
+    span
+}
+
+fn importTokenText(&tokens arena<token>, index u64) String {
+    const value = match tokens.take(index) {
+        None: panic("token slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(value.text)
+    tokens.restore(index, $value)
+    result
+}
+
+fn importArenaAt(&values arena<u64>, index u64) u64 {
+    const value = match values.take(index) {
+        None: panic("offset slot is empty")
+        Some(found): found
+    }
+    values.restore(index, value)
+    value
+}
+
+fn importLineStarts(source String) own arena<u64> {
+    var result = newArena<u64>()
+    discard result.add(0)
+    var offset u64 = 0
+    while offset < text.ByteLen(source) {
+        if applicationByteAt(source, offset) == 10 {
+            discard result.add(offset + 1)
+        }
+        offset += 1
+    }
+    result
+}
+
+fn importLineStart(&starts arena<u64>, line u64) u64 {
+    if line == 0 || line > starts.len() return 0
+    importArenaAt(&starts, line - 1)
+}
+
+fn importLineEnd(&starts arena<u64>, line u64, size u64) u64 {
+    if line < starts.len() return importArenaAt(&starts, line)
+    size
+}
+
+fn importContentEnd(source String, start u64, end u64) u64 {
+    var current = end
+    while current > start && (applicationByteAt(source, current - 1) == 13 ||
+        applicationByteAt(source, current - 1) == 10) {
+        current -= 1
+    }
+    current
+}
+
+fn importBlank(value u64) bool {
+    value == 32 || value == 9
+}
+
+fn importSpace(value u64) bool {
+    importBlank(value) || value == 13 || value == 10
+}
+
+fn importTrim(value String) String {
+    var start u64 = 0
+    var end = text.ByteLen(value)
+    while start < end && importBlank(applicationByteAt(value, start)) {
+        start += 1
+    }
+    while end > start && importBlank(applicationByteAt(value, end - 1)) {
+        end -= 1
+    }
+    applicationSlice(value, start, end)
+}
+
+fn importWhitespace(value String) bool {
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        if !importSpace(applicationByteAt(value, index)) return false
+        index += 1
+    }
+    true
+}
+
+fn importSkipSpace(source String, offset u64) u64 {
+    var current = offset
+    while current < text.ByteLen(source) && importSpace(applicationByteAt(source, current)) {
+        current += 1
+    }
+    current
+}
+
+fn importDotCount(value String) u64 {
+    var count u64 = 0
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        if applicationByteAt(value, index) == 46 {
+            count += 1
+        }
+        index += 1
+    }
+    count
+}
+
+fn importAliasFor(declaration importDeclaration) String {
+    if text.IsEmpty(declaration.alias) return metadataShortName(declaration.packageName)
+    text.Copy(declaration.alias)
+}
+
+// Locates the whole lines that hold each import declaration. Declarations
+// that share a line, or tokens that do not spell the declaration, yield no
+// ranges, which leaves the source unchanged.
+fn importRanges(
+    &source program,
+    &tokens arena<token>,
+    &starts arena<u64>,
+    size u64
+) Option<own arena<importRange>> {
+    var result = newArena<importRange>()
+    var tokenIndex u64 = 0
+    var previousEnd u64 = 0
+    var index u64 = 0
+    while index < source.imports.len() {
+        const imported = match source.imports.take(index) {
+            None: panic("import slot is empty")
+            Some(found): found
+        }
+        const packageName = text.Copy(imported.packageName)
+        const importOffset = imported.span.offset
+        source.imports.restore(index, $imported)
+        index += 1
+        while tokenIndex < tokens.len() && (!importTokenKindIs(&tokens, tokenIndex, .Import) ||
+            importTokenSpan(&tokens, tokenIndex).offset >= importOffset) {
+            tokenIndex += 1
+        }
+        if tokenIndex == tokens.len() return .None
+        const opening = tokenIndex
+        var closing = opening + 1
+        if closing == tokens.len() return .None
+        var segment u64 = 0
+        while segment < importDotCount(packageName) {
+            if closing + 2 >= tokens.len() || !importTokenKindIs(&tokens, closing + 1, .Dot) {
+                return .None
+            }
+            closing += 2
+            segment += 1
+        }
+        if closing + 2 < tokens.len() && importTokenKindIs(&tokens, closing + 1, .As) &&
+            importTokenKindIs(&tokens, closing + 2, .Identifier) {
+            closing += 2
+        }
+        const start = importLineStart(&starts, importTokenSpan(&tokens, opening).line)
+        const closeSpan = importTokenSpan(&tokens, closing)
+        const end = importLineEnd(&starts, closeSpan.line, size)
+        if start < previousEnd return .None
+        discard result.add(importRange {
+            start = start
+            end = end
+            syntaxEnd = closeSpan.offset + closeSpan.length
+        })
+        previousEnd = end
+        tokenIndex = closing + 1
+    }
+    .Some(result)
+}
+
+fn importRangeAt(&ranges arena<importRange>, index u64) importRange {
+    const value = match ranges.take(index) {
+        None: panic("import range slot is empty")
+        Some(found): found
+    }
+    const result = importRange {
+        start = value.start
+        end = value.end
+        syntaxEnd = value.syntaxEnd
+    }
+    ranges.restore(index, $value)
+    result
+}
+
+// Names the aliases that source code outside the import lines qualifies.
+fn importUsedAliases(
+    &tokens arena<token>,
+    &aliases arena<String>,
+    &ranges arena<importRange>
+) own arena<String> {
+    var result = newArena<String>()
+    var index u64 = 0
+    while index + 1 < tokens.len() {
+        const name = importTokenText(&tokens, index)
+        if importTokenKindIs(&tokens, index, .Identifier) &&
+            importTokenKindIs(&tokens, index + 1, .Dot) && arenaContainsString(&aliases, name) {
+            const offset = importTokenSpan(&tokens, index).offset
+            var inside = false
+            var range u64 = 0
+            while range < ranges.len() {
+                const value = importRangeAt(&ranges, range)
+                if offset >= value.start && offset < value.end {
+                    inside = true
+                }
+                range += 1
+            }
+            if !inside && !arenaContainsString(&result, name) {
+                discard result.add($name)
+            }
+        }
+        index += 1
+    }
+    result
+}
+
+fn importPackageLineEnd(
+    &source program,
+    &tokens arena<token>,
+    &starts arena<u64>,
+    size u64
+) u64 {
+    if !source.hasPackageDeclaration return 0
+    var index u64 = 0
+    while index < tokens.len() {
+        if importTokenKindIs(&tokens, index, .Package) {
+            return importLineEnd(&starts, importTokenSpan(&tokens, index).line, size)
+        }
+        index += 1
+    }
+    0
+}

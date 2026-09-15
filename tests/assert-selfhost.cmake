@@ -69,6 +69,59 @@ function(require_rejected_parity label status fragment)
     endforeach()
 endfunction()
 
+# Runs one invocation with both compilers and requires the same status,
+# standard output, and standard error. Line endings and the self-hosted
+# program name in process messages are normalized before the comparison.
+function(require_command_parity label)
+    execute_process(
+        COMMAND "${STAGE0}" ${ARGN}
+        RESULT_VARIABLE expected_status
+        OUTPUT_VARIABLE expected_output
+        ERROR_VARIABLE expected_error
+    )
+    execute_process(
+        COMMAND "${COMPILER}" ${ARGN}
+        RESULT_VARIABLE actual_status
+        OUTPUT_VARIABLE actual_output
+        ERROR_VARIABLE actual_error
+    )
+    foreach(stream IN ITEMS expected_output expected_error actual_output actual_error)
+        string(REPLACE "\r\n" "\n" ${stream} "${${stream}}")
+    endforeach()
+    string(REPLACE "foundationc-selfhost: " "foundationc: " actual_error "${actual_error}")
+    if(NOT actual_status EQUAL expected_status OR
+       NOT actual_output STREQUAL expected_output OR
+       NOT actual_error STREQUAL expected_error)
+        message(FATAL_ERROR
+            "${label} differs from stage0:\n"
+            "stage0 status ${expected_status}, self-hosted status ${actual_status}\n"
+            "stage0 stdout:\n${expected_output}\nself-hosted stdout:\n${actual_output}\n"
+            "stage0 stderr:\n${expected_error}\nself-hosted stderr:\n${actual_error}"
+        )
+    endif()
+    set(command_status "${actual_status}" PARENT_SCOPE)
+    set(command_output "${actual_output}" PARENT_SCOPE)
+endfunction()
+
+# Rewrites one copied source in place with each compiler and requires the
+# same status and the same rewritten file.
+function(require_write_parity label command source expected)
+    foreach(side IN ITEMS stage0 selfhost)
+        set(work "${PARITY_DIRECTORY}/${label}-${side}")
+        file(REMOVE_RECURSE "${work}")
+        file(MAKE_DIRECTORY "${work}")
+        file(COPY_FILE "${source}" "${work}/main.fn")
+    endforeach()
+    run_checked("stage0 ${label}" "${STAGE0}" ${command} --write
+        "${PARITY_DIRECTORY}/${label}-stage0")
+    run_checked("${label}" "${COMPILER}" ${command} --write
+        "${PARITY_DIRECTORY}/${label}-selfhost")
+    require_same_file("${label}" "${PARITY_DIRECTORY}/${label}-stage0/main.fn"
+        "${PARITY_DIRECTORY}/${label}-selfhost/main.fn")
+    require_same_file("${label} fixture" "${expected}"
+        "${PARITY_DIRECTORY}/${label}-selfhost/main.fn")
+endfunction()
+
 # Snapshots one package with both compilers and requires the same report and
 # the same copied tree.
 function(require_snapshot_parity label project)
@@ -334,5 +387,23 @@ require_rejected_parity("emit-metadata target" 2 "emit-metadata <source-or-proje
     -o "${PARITY_DIRECTORY}/invalid.json" --target plan9)
 require_emit_parity("emit-metadata freestanding" "freestanding.metadata.json" emit-metadata
     "${ROOT}/tests/projects/freestanding-library" --target freestanding)
+
+set(imports_source "${ROOT}/tests/imports/messy.fn")
+set(imports_expected "${ROOT}/tests/imports/expected.fn")
+require_command_parity("imports stdout" imports "${imports_source}")
+if(NOT command_output STREQUAL "")
+    file(READ "${imports_expected}" imports_organized)
+    if(NOT command_output STREQUAL imports_organized)
+        message(FATAL_ERROR "imports stdout differs from ${imports_expected}")
+    endif()
+endif()
+require_command_parity("imports check" imports --check "${imports_source}")
+if(NOT command_status EQUAL 1)
+    message(FATAL_ERROR "imports check did not report the unorganized source")
+endif()
+require_command_parity("imports clean check" imports --check "${imports_expected}")
+require_write_parity("imports-write" imports "${imports_source}" "${imports_expected}")
+require_rejected_parity("imports mode" 2 "imports --check <source-or-project>"
+    imports --bogus "${imports_source}")
 
 message(STATUS "self-hosted compiler commands passed")

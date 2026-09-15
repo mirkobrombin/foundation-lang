@@ -1,0 +1,70 @@
+package foundation.compiler
+
+import std.io
+import std.text
+
+fn compilerProjectSourceContents(&sources arena<projectSource>, index u64) String {
+    const source = match sources.take(index) {
+        None: panic("project source slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(source.contents)
+    sources.restore(index, $source)
+    result
+}
+
+// Organizes the imports of every selected source against one test-mode
+// analysis of the input, which retains invalid models so unknown aliases can
+// be inferred. Nothing is written unless every source organizes cleanly.
+fn runCompilerImports(input String, mode compilerFormatMode) i32 {
+    var sources = match compilerFormatterSources(input) {
+        None: {
+            return 2
+        }
+        Some(value): value
+    }
+    if compilerFormatModeIs(mode, "stdout") && sources.len() != 1 {
+        compilerProcessFailure("stdout import organization requires one source file")
+        return 2
+    }
+    if compilerFormatModeIs(mode, "write") && !compilerAllReplaceable(&sources) return 1
+    var analysis = analyzeCompilerProject(input, false, true, .Test, hostTargetPlatform(), true)
+    if analysis.loaded.sources.len() == 0 {
+        writeCompilerAnalysisDiagnostics(&analysis)
+        return 1
+    }
+    var changed = newArena<compilerChangedFile>()
+    var index u64 = 0
+    while index < sources.len() {
+        const source = match sources.take(index) {
+            None: panic("source path slot is empty")
+            Some(value): value
+        }
+        const sourcePath = text.Copy(source)
+        sources.restore(index, $source)
+        index += 1
+        const identity = projectSourceIdentity(sourcePath)
+        const sourceId = match compilerSourceIndex(&analysis.loaded.sources, identity) {
+            None: {
+                compilerProcessFailure("source is outside the analyzed project: " + sourcePath)
+                return 1
+            }
+            Some(value): value
+        }
+        const organized = organizeImports(&analysis, sourceId)
+        const organizedSource { contents diagnostics } = organized
+        if diagnostics.hasErrors() {
+            writeCompilerFoundDiagnostics($diagnostics, &analysis.loaded.sources)
+            return 1
+        }
+        discard diagnostics
+        if compilerFormatModeIs(mode, "stdout") {
+            discard io.WriteStdoutText(contents)
+        } else {
+            if contents != compilerProjectSourceContents(&analysis.loaded.sources, sourceId) {
+                discard changed.add(compilerChangedFile { path = sourcePath contents = contents })
+            }
+        }
+    }
+    finishCompilerFormat(&changed, mode)
+}
