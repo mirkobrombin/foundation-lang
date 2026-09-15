@@ -58,18 +58,43 @@ jobs:
             cxx: g++
             llvm-archive: LLVM-21.1.8-Linux-X64.tar.xz
             llvm-sha256: b3b7f2801d15d50736acea3c73982994d025b01c2f035b91ae3b49d1b575732b
-          - name: macOS
+          - name: Linux aarch64
+            os: ubuntu-24.04-arm
+            platform: linux
+            cc: gcc
+            cxx: g++
+            llvm-archive: LLVM-21.1.8-Linux-ARM64.tar.xz
+            llvm-sha256: 65ce0b329514e5643407db2d02a5bd34bf33d159055dafa82825c8385bd01993
+          - name: macOS arm64
             os: macos-15
             platform: macos
             cc: clang
             cxx: clang++
             llvm-archive: LLVM-21.1.8-macOS-ARM64.tar.xz
             llvm-sha256: b95bdd32a33a81ee4d40363aaeb26728a26783fcef26a4d80f65457433ea4669
+          - name: macOS x86_64
+            os: macos-15-intel
+            platform: macos
+            cc: clang
+            cxx: clang++
+            llvm-source: llvm-project-21.1.8.src.tar.xz
+            llvm-sha256: 4633a23617fa31a3ea51242586ea7fb1da7140e426bd62fc164261fe036aa142
           - name: Windows x86_64
             os: windows-2025
             platform: windows
             cc: cl
             cxx: cl
+            msvc-architecture: x64
+            llvm-archive: clang+llvm-21.1.8-x86_64-pc-windows-msvc.tar.xz
+            llvm-sha256: 749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47
+          - name: Windows aarch64
+            os: windows-11-arm
+            platform: windows
+            cc: cl
+            cxx: cl
+            msvc-architecture: arm64
+            llvm-archive: clang+llvm-21.1.8-aarch64-pc-windows-msvc.tar.xz
+            llvm-sha256: f214b1226d8de005b5f691dd29d9dfea2b49e22d0de445429916173dbb626f7f
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -94,7 +119,7 @@ jobs:
       # Official archives provide static LLVM libraries, so the SDK binaries do not need an LLVM
       # install. The libraries are LLVM bitcode, which only the bundled lld can link.
       - name: Install LLVM 21 on Unix
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.llvm-archive != ''
         env:
           LLVM_ARCHIVE: ${{ matrix.llvm-archive }}
           LLVM_SHA256: ${{ matrix.llvm-sha256 }}
@@ -120,15 +145,69 @@ jobs:
             echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
           fi
 
+      # LLVM publishes no static archive for macOS x86_64, so that job builds one without optional
+      # compression or XML dependencies and caches it.
+      - name: Restore LLVM 21 build
+        id: llvm-cache
+        if: matrix.llvm-source != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/llvm-21.1.8
+          key: llvm-21.1.8-static-${{ runner.os }}-${{ runner.arch }}-v1
+
+      - name: Build LLVM 21 from source
+        if: matrix.llvm-source != '' && steps.llvm-cache.outputs.cache-hit != 'true'
+        env:
+          LLVM_SOURCE: ${{ matrix.llvm-source }}
+          LLVM_SHA256: ${{ matrix.llvm-sha256 }}
+        run: |
+          archive="$RUNNER_TEMP/$LLVM_SOURCE"
+          source="$RUNNER_TEMP/llvm-source"
+          curl -fsSL -o "$archive" "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/$LLVM_SOURCE"
+          if [ "$(cmake -E sha256sum "$archive" | cut -d ' ' -f 1)" != "$LLVM_SHA256" ]; then
+            echo "LLVM source checksum mismatch" >&2
+            exit 1
+          fi
+          mkdir -p "$source"
+          tar -xJf "$archive" -C "$source" --strip-components=1
+          rm "$archive"
+          cmake -S "$source/llvm" -B "$RUNNER_TEMP/llvm-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_INSTALL_PREFIX=$RUNNER_TEMP/llvm-21.1.8" \
+            -DLLVM_ENABLE_PROJECTS=lld \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DLLVM_ENABLE_LIBPFM=OFF \
+            -DLLVM_ENABLE_BINDINGS=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF
+          cmake --build "$RUNNER_TEMP/llvm-build" --target install
+          rm -rf "$source" "$RUNNER_TEMP/llvm-build"
+
+      - name: Use LLVM 21 built from source
+        if: matrix.llvm-source != ''
+        run: |
+          echo "LLVM_DIR=$RUNNER_TEMP/llvm-21.1.8/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "LLVM_ROOT=$RUNNER_TEMP/llvm-21.1.8" >> "$GITHUB_ENV"
+          echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+
       - name: Install LLVM 21 on Windows
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          LLVM_ARCHIVE: ${{ matrix.llvm-archive }}
+          LLVM_SHA256: ${{ matrix.llvm-sha256 }}
         run: |
           $archive = Join-Path $env:RUNNER_TEMP "llvm-21.1.8-windows.tar.xz"
           $root = Join-Path $env:RUNNER_TEMP "llvm-21.1.8"
-          Invoke-WebRequest -Uri https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz -OutFile $archive
+          $name = $env:LLVM_ARCHIVE.Replace("+", "%2B")
+          Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/$name" -OutFile $archive
           $digest = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($digest -ne "749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47") {
+          if ($digest -ne $env:LLVM_SHA256) {
             throw "LLVM archive checksum mismatch"
           }
           New-Item -ItemType Directory -Force $root | Out-Null
@@ -163,7 +242,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: >-
-          cmake -S . -B build/release -A x64
+          cmake -S . -B build/release -A ${{ matrix.msvc-architecture }}
           -DBUILD_TESTING=ON
           -DFOUNDATION_WARNINGS_AS_ERRORS=ON
           "-DLLVM_DIR=$env:LLVM_DIR"
@@ -203,7 +282,7 @@ jobs:
         shell: cmd
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set VS_PATH=%%i
-          call "%VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=x64
+          call "%VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=${{ matrix.msvc-architecture }} -host_arch=${{ matrix.msvc-architecture }}
           ctest --test-dir build/release -C Release --output-on-failure --parallel 4 || exit /b 1
 
       - name: Package Unix SDK
@@ -249,14 +328,16 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          if ($env:RUNNER_ARCH -ne "X64") {
-            throw "unsupported runner architecture $env:RUNNER_ARCH"
+          $architecture = switch ($env:RUNNER_ARCH) {
+            "X64" { "x86_64" }
+            "ARM64" { "aarch64" }
+            default { throw "unsupported runner architecture $env:RUNNER_ARCH" }
           }
           $version = $env:TAG.Substring(1)
           cmake `
             "-DBUILD_DIRECTORY=$env:GITHUB_WORKSPACE/build/release" `
             "-DOUTPUT_DIRECTORY=$env:GITHUB_WORKSPACE/build/release-assets" `
-            "-DARCHIVE_NAME=foundation-$version-windows-x86_64" `
+            "-DARCHIVE_NAME=foundation-$version-windows-$architecture" `
             -DEXECUTABLE_SUFFIX=.exe `
             -DCONFIG=Release `
             -P tools/release/package-sdk.cmake
@@ -290,5 +371,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          test "$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | length')" = 6
+          test "$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | length')" = 12
           gh release edit "$GITHUB_REF_NAME" --draft=false
