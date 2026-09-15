@@ -144,10 +144,11 @@ fn collectPackageDirectory(
             })
             return false
         }
+        // Digests and snapshots name entries with forward slashes on every host, as stage0 does.
         const relativePath = if text.IsEmpty(relative) {
             text.Copy(name)
         } else {
-            path.Join(relative, name)
+            relative + "/" + name
         }
         const kindResult = fs.Kind(entryPath)
         const kind = match kindResult {
