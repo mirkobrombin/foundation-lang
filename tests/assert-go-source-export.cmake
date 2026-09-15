@@ -1,7 +1,7 @@
 if(NOT DEFINED COMPILER OR NOT DEFINED SOURCE OR NOT DEFINED UNSUPPORTED_SOURCE OR
    NOT DEFINED RUNTIME_SOURCE OR NOT DEFINED OWN_SOURCE OR NOT DEFINED ESCAPE_SOURCE OR
    NOT DEFINED OWNER_DESTRUCTURE_SOURCE OR NOT DEFINED OPEN_GENERIC_SOURCE OR
-   NOT DEFINED GENERIC_STRUCT_SOURCE OR
+   NOT DEFINED GENERIC_STRUCT_SOURCE OR NOT DEFINED MULTIPLE_SOURCE OR
    NOT DEFINED FIXTURE OR NOT DEFINED WORK OR NOT DEFINED GO_EXECUTABLE)
     message(FATAL_ERROR "go-source export test requires compiler, sources, fixture, work, and Go")
 endif()
@@ -341,4 +341,38 @@ if(NOT generic_struct_diagnostics MATCHES "FDN4120" OR
    NOT generic_struct_diagnostics MATCHES "go-cgo or go-dynamic")
     message(FATAL_ERROR
         "generic custom-drop rejection omitted its contract or alternatives:\n${generic_struct_diagnostics}")
+endif()
+
+file(MAKE_DIRECTORY "${WORK}/multiple-source" "${WORK}/multiple-output")
+file(COPY "${MULTIPLE_SOURCE}/" DESTINATION "${WORK}/multiple-source")
+execute_process(
+    COMMAND "${COMPILER}" package resolve "${WORK}/multiple-source"
+    RESULT_VARIABLE multiple_resolve_status
+    OUTPUT_VARIABLE multiple_resolve_output
+    ERROR_VARIABLE multiple_resolve_error
+)
+if(NOT multiple_resolve_status EQUAL 0)
+    message(FATAL_ERROR
+        "cannot resolve multiple rejection fixture:\n${multiple_resolve_output}${multiple_resolve_error}")
+endif()
+execute_process(
+    COMMAND "${COMPILER}" package export "${WORK}/multiple-source"
+        -o "${WORK}/multiple-output"
+        --format go-source
+    RESULT_VARIABLE multiple_status
+    OUTPUT_VARIABLE multiple_output
+    ERROR_VARIABLE multiple_error
+)
+if(multiple_status EQUAL 0)
+    message(FATAL_ERROR "go-source accepted several unsupported constructs")
+endif()
+set(multiple_diagnostics "${multiple_output}${multiple_error}")
+string(REGEX MATCHALL "error\\[FDN4120\\]" multiple_codes "${multiple_diagnostics}")
+list(LENGTH multiple_codes multiple_count)
+if(NOT multiple_count EQUAL 3 OR
+   NOT multiple_diagnostics MATCHES "consuming method receiver" OR
+   NOT multiple_diagnostics MATCHES "cannot preserve owner destructuring" OR
+   NOT multiple_diagnostics MATCHES "conditional branches cannot return or escape an outer loop")
+    message(FATAL_ERROR
+        "go-source did not report every rejection in one run:\n${multiple_diagnostics}")
 endif()

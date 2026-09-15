@@ -14,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace foundation {
@@ -1579,8 +1580,7 @@ class GoSourceEmitter {
           states_(program.functions.size()) {}
 
     std::optional<std::string> emit() {
-        if (!packageInterface_.imports.empty()) {
-            const auto &imported = packageInterface_.imports.front();
+        for (const auto &imported : packageInterface_.imports) {
             fail("go-source cannot translate external function " + imported.foundationName,
                  sourceSpan(imported));
         }
@@ -1659,13 +1659,16 @@ class GoSourceEmitter {
                 function.source->column};
     }
 
+    // Scanning continues after a rejection so one run reports every rejected construct. A
+    // repeated rejection still counts, which keeps callers from adding a generic fallback.
     void fail(std::string message, SourceSpan span) {
-        if (failed_) {
+        ++rejections_;
+        failed_ = true;
+        message += "; use go-cgo or go-dynamic for this boundary";
+        if (!reported_.insert({span.source, span.offset, span.length, message}).second) {
             return;
         }
-        diagnostics_.error(
-            "FDN4120", std::move(message) + "; use go-cgo or go-dynamic for this boundary", span);
-        failed_ = true;
+        diagnostics_.error("FDN4120", std::move(message), span);
     }
 
     std::string uniqueName(std::string base) {
@@ -2017,6 +2020,7 @@ class GoSourceEmitter {
             for (FirVariantId variant{}; variant < declaration.variants.size(); ++variant) {
                 const auto payload = enumPayloadType(type, variant);
                 if (payload.has_value() && !scanType(*payload, span)) {
+                    enumStates_[key] = 0;
                     return false;
                 }
             }
@@ -2052,6 +2056,7 @@ class GoSourceEmitter {
         for (const auto &field : declaration.fields) {
             if (!scanType(substituteGoSourceType(field.type, type.arguments),
                           declaration.sourceSpan)) {
+                structStates_[key] = 0;
                 return false;
             }
         }
@@ -2100,14 +2105,20 @@ class GoSourceEmitter {
                 return false;
             }
         }
+        const auto rejections = rejections_;
         if (!scanType(function.returnType, function.sourceSpan)) {
-            fail("go-source cannot translate result type of " + function.name, function.sourceSpan);
+            if (rejections_ == rejections) {
+                fail("go-source cannot translate result type of " + function.name,
+                     function.sourceSpan);
+            }
             return false;
         }
         for (const auto &local : function.locals) {
             if (!scanType(local.type, function.sourceSpan) || local.type == voidType) {
-                fail("go-source cannot translate local " + local.name + " in " + function.name,
-                     function.sourceSpan);
+                if (rejections_ == rejections) {
+                    fail("go-source cannot translate local " + local.name + " in " + function.name,
+                         function.sourceSpan);
+                }
                 return false;
             }
         }
@@ -2165,10 +2176,11 @@ class GoSourceEmitter {
         }
         for (std::size_t index{}; index < closure.captures.size(); ++index) {
             const auto &capture = closure.captures[index];
+            const auto rejections = rejections_;
             if (capture.local >= outer.locals.size() ||
                 !scanType(outer.locals[capture.local].type, span) ||
                 !scanType(target.locals[captureLocals[index]].type, span)) {
-                if (!failed_) {
+                if (rejections_ == rejections) {
                     fail("go-source cannot translate a closure capture", span);
                 }
                 return false;
@@ -2193,17 +2205,19 @@ class GoSourceEmitter {
             fail("go-source found an invalid block in " + function.name, function.sourceSpan);
             return false;
         }
+        auto valid = true;
         for (const auto statement : function.blocks[id].statements) {
+            const auto rejections = rejections_;
             if (statement >= function.statements.size() ||
                 !scanStatement(function, function.statements[statement])) {
-                if (!failed_) {
+                if (rejections_ == rejections) {
                     fail("go-source found an invalid statement in " + function.name,
                          function.sourceSpan);
                 }
-                return false;
+                valid = false;
             }
         }
-        return true;
+        return valid;
     }
 
     bool blockEscapesExpression(const FirFunction &function, FirBlockId id,
@@ -2250,9 +2264,11 @@ class GoSourceEmitter {
         }
         if (const auto *binding = std::get_if<FirLetElseStatement>(&statement.value)) {
             if (binding->local >= function.locals.size() ||
-                binding->errorLocal >= function.locals.size() ||
-                !scanExpression(function, binding->initializer) ||
-                !scanBlock(function, binding->elseBlock)) {
+                binding->errorLocal >= function.locals.size()) {
+                return false;
+            }
+            const auto initializer = scanExpression(function, binding->initializer);
+            if (!scanBlock(function, binding->elseBlock) || !initializer) {
                 return false;
             }
             const auto type = function.expressions[binding->initializer].type;
@@ -2263,9 +2279,11 @@ class GoSourceEmitter {
             return true;
         }
         if (const auto *binding = std::get_if<FirResultElseStatement>(&statement.value)) {
-            if (binding->errorLocal >= function.locals.size() ||
-                !scanExpression(function, binding->expression) ||
-                !scanBlock(function, binding->elseBlock)) {
+            if (binding->errorLocal >= function.locals.size()) {
+                return false;
+            }
+            const auto expression = scanExpression(function, binding->expression);
+            if (!scanBlock(function, binding->elseBlock) || !expression) {
                 return false;
             }
             const auto type = function.expressions[binding->expression].type;
@@ -2281,12 +2299,13 @@ class GoSourceEmitter {
                 fail("go-source cannot preserve owner destructuring", statement.span);
                 return false;
             }
+            const auto rejections = rejections_;
             if (destructure->type.kind != TypeKind::Struct ||
                 destructure->type.declaration >= program_.structs.size() ||
                 !scanType(destructure->type, statement.span) ||
                 !scanExpression(function, destructure->initializer) ||
                 function.expressions[destructure->initializer].type != destructure->type) {
-                if (!failed_) {
+                if (rejections_ == rejections) {
                     fail("go-source supports value-struct destructuring only", statement.span);
                 }
                 return false;
@@ -2354,19 +2373,23 @@ class GoSourceEmitter {
             return !returned->value.has_value() || scanExpression(function, *returned->value);
         }
         if (const auto *branch = std::get_if<FirIfStatement>(&statement.value)) {
-            return scanExpression(function, branch->condition) &&
-                   scanBlock(function, branch->thenBlock) &&
-                   (!branch->elseBlock.has_value() || scanBlock(function, *branch->elseBlock));
+            const auto condition = scanExpression(function, branch->condition);
+            const auto thenBlock = scanBlock(function, branch->thenBlock);
+            const auto elseBlock =
+                !branch->elseBlock.has_value() || scanBlock(function, *branch->elseBlock);
+            return condition && thenBlock && elseBlock;
         }
         if (const auto *loop = std::get_if<FirWhileStatement>(&statement.value)) {
-            return scanExpression(function, loop->condition) && scanBlock(function, loop->body);
+            const auto condition = scanExpression(function, loop->condition);
+            return scanBlock(function, loop->body) && condition;
         }
         if (const auto *loop = std::get_if<FirForStatement>(&statement.value)) {
+            const auto rejections = rejections_;
             if (loop->sequenceStorage >= function.locals.size() ||
                 loop->index >= function.locals.size() || loop->value >= function.locals.size() ||
                 loop->next.has_value() || loop->ownsSequence ||
                 !scanExpression(function, loop->sequence) || !scanBlock(function, loop->body)) {
-                if (!failed_) {
+                if (rejections_ == rejections) {
                     fail("go-source supports for over arrays and slices only", statement.span);
                 }
                 return false;
@@ -2524,13 +2547,14 @@ class GoSourceEmitter {
             return true;
         }
         if (const auto *value = std::get_if<FirConditionalExpression>(&expression.value)) {
+            const auto rejections = rejections_;
             if (!scanExpression(function, value->condition) ||
                 function.expressions[value->condition].type != boolType ||
                 !scanBlock(function, value->thenBlock) ||
                 !scanExpression(function, value->thenValue) ||
                 !scanBlock(function, value->elseBlock) ||
                 !scanExpression(function, value->elseValue)) {
-                if (!failed_) {
+                if (rejections_ == rejections) {
                     fail("go-source found an invalid conditional expression", expression.span);
                 }
                 return false;
@@ -3973,12 +3997,15 @@ class GoSourceEmitter {
     std::map<std::pair<std::string, FirVariantId>, std::string> enumConstructorNames_;
     std::vector<std::string> currentLocals_;
     std::set<std::string> currentGeneratedLocals_;
+    std::set<std::tuple<std::size_t, std::size_t, std::size_t, std::string>> reported_;
+    std::size_t rejections_{};
     bool failed_{};
 };
 
 std::optional<PackageExport> generateGoSource(const FirProgram &program,
                                               const PackageInterface &packageInterface,
                                               Diagnostics &diagnostics) {
+    auto openGeneric = false;
     for (const auto &function : program.functions) {
         if (function.hasBody && function.exported && !function.method &&
             function.packageName == packageInterface.package && function.typeParameterCount != 0) {
@@ -3987,8 +4014,11 @@ std::optional<PackageExport> generateGoSource(const FirProgram &program,
                                   "; add a non-generic exported wrapper or use go-cgo or "
                                   "go-dynamic for this boundary",
                               function.sourceSpan);
-            return std::nullopt;
+            openGeneric = true;
         }
+    }
+    if (openGeneric) {
+        return std::nullopt;
     }
     const auto specialized = specializeSourcePackage(program, packageInterface.package);
     GoSourceEmitter emitter(specialized, packageInterface, diagnostics);

@@ -1,0 +1,24 @@
+package sample.multiple
+
+struct Token {
+    Value i32
+
+    fn Consume($self) i32 {
+        self.Value
+    }
+}
+
+fn makeToken() own Token {
+    own Token { Value = 42 }
+}
+
+fn RejectedStatements(flag bool) i32 {
+    const Token { Value } = makeToken()
+    const escaped = if flag {
+        if flag return 1
+        2
+    } else {
+        3
+    }
+    Value + escaped
+}

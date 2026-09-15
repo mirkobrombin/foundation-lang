@@ -1668,6 +1668,8 @@ Owner destructuring is rejected because this mode cannot preserve the outer allo
 `TypeName`. A `$self` method is rejected because Go cannot prevent the caller from reusing the
 consumed value. Custom-drop structs, raw pointers, callbacks, native imports, foreign metadata,
 native links, open generic exports, tasks, actions, and
-other runtime-backed FIR nodes are rejected with `FDN4120`. The command does not fall back to
-`go-cgo` or `go-dynamic`
+other runtime-backed FIR nodes are rejected with `FDN4120`. A rejection does not stop the scan: one
+run reports every native import, foreign declaration, and link requirement or, when the package has
+none, every open generic export or else every rejected function signature and statement, each as
+its own `FDN4120` diagnostic. The command does not fall back to `go-cgo` or `go-dynamic`
 implicitly.
