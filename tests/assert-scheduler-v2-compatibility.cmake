@@ -58,10 +58,11 @@ if(NOT foundation_result EQUAL 0)
         "Foundation scheduler fixture failed:\n${foundation_output}${foundation_error}")
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/go-race-flag.cmake")
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env GOWORK=off GOFLAGS=-mod=mod
         "FOUNDATION_SCHEDULER_STORE=${WORK}/go-store"
-        "${GO_EXECUTABLE}" run -race .
+        "${GO_EXECUTABLE}" run ${go_race_flag} .
     WORKING_DIRECTORY "${WORK}/go"
     RESULT_VARIABLE go_result
     OUTPUT_VARIABLE go_output
