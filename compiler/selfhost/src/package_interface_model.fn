@@ -1,0 +1,309 @@
+package foundation.compiler
+
+import std.text
+
+enum piiTypeKind {
+    Void
+    I8
+    I16
+    I32
+    I64
+    ISize
+    U8
+    U16
+    U32
+    U64
+    USize
+    F32
+    F64
+    Bool
+    StringValue
+    Raw
+    RawConst
+    Array
+    Slice
+    Own
+    View
+    Edit
+    StructValue
+    EnumValue
+    ContractValue
+    Function
+    Task
+    Channel
+    Sender
+    Receiver
+}
+
+enum piiOwnership {
+    Value
+    Borrowed
+    ExclusiveBorrow
+    CallerOwnedResult
+    RawUnmanaged
+    OpaqueBorrow
+    OpaqueTransfer
+}
+
+enum piiErrorConvention {
+    Infallible
+    StatusOut
+    TaggedResult
+    OptionTag
+    ForeignStatus
+}
+
+enum piiCallbackLifetime {
+    CallScoped
+    Retained
+    Once
+}
+
+enum piiCallbackProtocol {
+    Direct
+    FoundationReactorV1
+}
+
+struct piiType {
+    kind piiTypeKind
+    name String
+    abi String
+    nullable bool
+    arguments own arena<piiType>
+}
+
+struct piiParameter {
+    name String
+    type piiType
+    ownership piiOwnership
+}
+
+struct piiLayoutField {
+    foundationName String
+    cName String
+    type piiType
+}
+
+struct piiStructLayout {
+    foundationName String
+    cName String
+    fields own arena<piiLayoutField>
+}
+
+struct piiSourceSpan {
+    path String
+    offset u64
+    length u64
+    line u64
+    column u64
+}
+
+struct piiCallback {
+    name String
+    parameters own arena<piiParameter>
+    result piiType
+    errors piiErrorConvention
+    lifetime piiCallbackLifetime
+    protocol piiCallbackProtocol
+    contextHandle Option<String>
+    cancelSymbol Option<String>
+}
+
+struct piiFunction {
+    foundationName String
+    cSymbol String
+    exported bool
+    parameters own arena<piiParameter>
+    result piiType
+    resultOwnership piiOwnership
+    errors piiErrorConvention
+    callback Option<piiCallback>
+    source piiSourceSpan
+}
+
+struct piiForeign {
+    ecosystem u64
+    identifier String
+    version String
+    kind String
+    resolver String
+    digest String
+    target targetPlatform
+}
+
+struct piiLinkLibrary {
+    name String
+    target Option<targetSelector>
+}
+
+// The C ABI package interface of one native library. Records keep the order
+// in which they were collected; rendering sorts copies of them.
+struct packageInterface {
+    packageName String
+    version packageVersion
+    language u32
+    sdk packageRequirement
+    library String
+    soVersion u32
+    target targetPlatform
+    links own arena<piiLinkLibrary>
+    layouts own arena<piiStructLayout>
+    imports own arena<piiFunction>
+    exports own arena<piiFunction>
+    foreign own arena<piiForeign>
+}
+
+fn newPiiType(kind piiTypeKind) piiType {
+    piiType { kind = kind name = "" abi = "" nullable = false arguments = newArena<piiType>() }
+}
+
+fn copyPiiType(&value piiType) piiType {
+    var arguments = newArena<piiType>()
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = match value.arguments.take(index) {
+            None: panic("PII type argument slot is empty")
+            Some(found): found
+        }
+        discard arguments.add(copyPiiType(&argument))
+        value.arguments.restore(index, $argument)
+        index += 1
+    }
+    piiType {
+        kind = value.kind
+        name = text.Copy(value.name)
+        abi = text.Copy(value.abi)
+        nullable = value.nullable
+        arguments = arguments
+    }
+}
+
+fn piiTypeArgument(&value piiType, index u64) piiType {
+    var argument = match value.arguments.take(index) {
+        None: panic("PII type argument slot is empty")
+        Some(found): found
+    }
+    const result = copyPiiType(&argument)
+    value.arguments.restore(index, $argument)
+    result
+}
+
+fn piiTypeKindName(kind piiTypeKind) String {
+    match kind {
+        Void: "void"
+        I8: "i8"
+        I16: "i16"
+        I32: "i32"
+        I64: "i64"
+        ISize: "isize"
+        U8: "u8"
+        U16: "u16"
+        U32: "u32"
+        U64: "u64"
+        USize: "usize"
+        F32: "f32"
+        F64: "f64"
+        Bool: "bool"
+        StringValue: "string"
+        Raw: "raw"
+        RawConst: "raw_const"
+        Array: "array"
+        Slice: "slice"
+        Own: "own"
+        View: "view"
+        Edit: "edit"
+        StructValue: "struct"
+        EnumValue: "enum"
+        ContractValue: "contract"
+        Function: "function"
+        Task: "task"
+        Channel: "channel"
+        Sender: "sender"
+        Receiver: "receiver"
+    }
+}
+
+fn piiKindIs(value piiTypeKind, name String) bool {
+    piiTypeKindName(value) == name
+}
+
+fn piiScalarKind(kind piiTypeKind) bool {
+    match kind {
+        Void: false
+        StringValue: false
+        Raw: false
+        RawConst: false
+        Array: false
+        Slice: false
+        Own: false
+        View: false
+        Edit: false
+        StructValue: false
+        EnumValue: false
+        ContractValue: false
+        Function: false
+        Task: false
+        Channel: false
+        Sender: false
+        Receiver: false
+        _: true
+    }
+}
+
+fn piiOwnershipName(value piiOwnership) String {
+    match value {
+        Value: "value"
+        Borrowed: "borrowed"
+        ExclusiveBorrow: "exclusive_borrow"
+        CallerOwnedResult: "caller_owned_result"
+        RawUnmanaged: "raw_unmanaged"
+        OpaqueBorrow: "opaque_borrow"
+        OpaqueTransfer: "opaque_transfer"
+    }
+}
+
+fn piiOwnershipIs(value piiOwnership, name String) bool {
+    piiOwnershipName(value) == name
+}
+
+fn piiErrorConventionName(value piiErrorConvention) String {
+    match value {
+        Infallible: "infallible"
+        StatusOut: "status_out"
+        TaggedResult: "tagged_result"
+        OptionTag: "option_tag"
+        ForeignStatus: "foreign_status"
+    }
+}
+
+fn piiCallbackLifetimeName(value piiCallbackLifetime) String {
+    match value {
+        CallScoped: "call_scoped"
+        Retained: "retained"
+        Once: "once"
+    }
+}
+
+fn piiCallbackProtocolName(value piiCallbackProtocol) String {
+    match value {
+        Direct: "direct"
+        FoundationReactorV1: "foundation_reactor_v1"
+    }
+}
+
+// Ecosystems are ordered as the interface format declares them; the order
+// sorts foreign provenance records.
+fn piiEcosystemCode(value String) u64 {
+    if value == "zig" return 2
+    if value == "rust" return 3
+    if value == "go" return 4
+    1
+}
+
+fn piiEcosystemName(code u64) String {
+    if code == 0 return "foundation"
+    if code == 2 return "zig"
+    if code == 3 return "rust"
+    if code == 4 return "go"
+    "c"
+}

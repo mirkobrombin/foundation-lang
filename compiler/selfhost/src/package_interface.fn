@@ -1,0 +1,253 @@
+package foundation.compiler
+
+import std.path
+import std.text
+
+fn validatePiiFunctionPart(&part piiType, result bool, &reason String) bool {
+    const borrow = piiKindIs(part.kind, "view") || piiKindIs(part.kind, "edit")
+    if !result && borrow && part.arguments.len() == 1 {
+        var target = piiTypeArgument(&part, 0)
+        const ownership piiOwnership = if piiKindIs(part.kind, "view") {
+            .Borrowed
+        } else {
+            .ExclusiveBorrow
+        }
+        return validatePiiCAbi(&target, ownership, result, &reason)
+    }
+    var ownership piiOwnership = .Value
+    if piiKindIs(part.kind, "string") {
+        ownership = if result { .CallerOwnedResult } else { .Borrowed }
+    }
+    if piiKindIs(part.kind, "raw") || piiKindIs(part.kind, "raw_const") {
+        ownership = .RawUnmanaged
+    }
+    validatePiiCAbi(&part, ownership, result, &reason)
+}
+
+// Checks that one boundary value is representable by C ABI v1. On rejection
+// reason names the violated rule.
+fn validatePiiCAbi(
+    &type piiType,
+    ownership piiOwnership,
+    result bool,
+    &reason String
+) bool {
+    if type.name == "invalid" {
+        reason = "unresolved type cannot cross C ABI v1"
+        return false
+    }
+    const value = piiOwnershipIs(ownership, "value")
+    const borrowed = piiOwnershipIs(ownership, "borrowed")
+    const exclusive = piiOwnershipIs(ownership, "exclusive_borrow")
+    if piiKindIs(type.kind, "void") {
+        if result && value return true
+        reason = "C ABI v1 parameters cannot have type void"
+        return false
+    }
+    if piiScalarKind(type.kind) {
+        if value || (!result && exclusive) return true
+        reason = "C ABI v1 scalar ownership must be value or an exclusive parameter borrow"
+        return false
+    }
+    if piiKindIs(type.kind, "string") {
+        const owned = piiOwnershipIs(ownership, "caller_owned_result")
+        if (result && owned) || (!result && (borrowed || exclusive)) return true
+        reason = "C ABI v1 String ownership is invalid"
+        return false
+    }
+    if piiKindIs(type.kind, "raw") || piiKindIs(type.kind, "raw_const") {
+        if piiOwnershipIs(ownership, "raw_unmanaged") return true
+        reason = "C ABI v1 raw pointers require raw_unmanaged ownership"
+        return false
+    }
+    if piiKindIs(type.kind, "struct") {
+        if !result && (borrowed || exclusive) return true
+        reason = "C ABI v1 structs cross the boundary through a parameter borrow or raw pointer"
+        return false
+    }
+    if !piiKindIs(type.kind, "function") {
+        reason = "type is not supported by C ABI v1"
+        return false
+    }
+    if !value || type.abi != "c11" || type.arguments.len() == 0 {
+        reason = "C ABI v1 function pointers require abi c11 and value ownership"
+        return false
+    }
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var part = piiTypeArgument(&type, index)
+        if !validatePiiFunctionPart(&part, index == 0, &reason) return false
+        index += 1
+    }
+    true
+}
+
+fn validatePiiFunction(&function piiFunction, &found diagnostics, span sourceSpan) void {
+    var index u64 = 0
+    while index < function.parameters.len() {
+        var parameter = match function.parameters.take(index) {
+            None: panic("PII parameter slot is empty")
+            Some(value): value
+        }
+        var reason = ""
+        const ownership = parameter.ownership
+        const valid = validatePiiCAbi(&parameter.type, ownership, false, &reason)
+        const name = text.Copy(parameter.name)
+        function.parameters.restore(index, $parameter)
+        if !valid {
+            found.reportError(
+                "FDN2120",
+                "C ABI v1 cannot lower parameter " + name + " of " +
+                    function.foundationName + ": " + reason,
+                piiCopySpan(span)
+            )
+        }
+        index += 1
+    }
+    var reason = ""
+    const ownership = function.resultOwnership
+    if !validatePiiCAbi(&function.result, ownership, true, &reason) {
+        found.reportError(
+            "FDN2120",
+            "C ABI v1 cannot lower result of " + function.foundationName + ": " + reason,
+            span
+        )
+    }
+}
+
+fn piiManifestLinks(&manifest packageManifest) own arena<piiLinkLibrary> {
+    var result = newArena<piiLinkLibrary>()
+    var index u64 = 0
+    while index < manifest.nativeLinks.len() {
+        const link = match manifest.nativeLinks.take(index) {
+            None: panic("native link slot is empty")
+            Some(value): value
+        }
+        discard result.add(piiLinkLibrary {
+            name = text.Copy(link.library)
+            target = copyTargetOption(link.target)
+        })
+        manifest.nativeLinks.restore(index, $link)
+        index += 1
+    }
+    result
+}
+
+fn piiLockForeign(&lock packageLock) own arena<piiForeign> {
+    var result = newArena<piiForeign>()
+    var index u64 = 0
+    while index < lock.foreign.len() {
+        const foreign = match lock.foreign.take(index) {
+            None: panic("locked foreign slot is empty")
+            Some(value): value
+        }
+        discard result.add(piiForeign {
+            ecosystem = piiEcosystemCode(foreign.ecosystem)
+            identifier = text.Copy(foreign.identifier)
+            version = text.Copy(foreign.version)
+            kind = text.Copy(foreign.kind)
+            resolver = text.Copy(foreign.resolver)
+            digest = text.Copy(foreign.digest)
+            target = lock.target
+        })
+        lock.foreign.restore(index, $foreign)
+        index += 1
+    }
+    result
+}
+
+// The manifest and lock of a native library package.
+struct nativeLibraryProject {
+    manifest own packageManifest
+    lock own packageLock
+}
+
+fn newPackageInterface(&project nativeLibraryProject) own packageInterface {
+    const name = text.Copy(project.manifest.name)
+    const library = match copyFirStringOption(project.manifest.nativeName) {
+        None: text.Copy(name)
+        Some(value): value
+    }
+    const soVersion u32 = match project.manifest.nativeSOVersion {
+        None: 0
+        Some(value): value
+    }
+    own packageInterface {
+        packageName = name
+        version = copyPackageVersion(project.manifest.version)
+        language = project.manifest.language
+        sdk = copyPackageRequirement(project.manifest.sdk)
+        library = library
+        soVersion = soVersion
+        target = project.lock.target
+        links = piiManifestLinks(&project.manifest)
+        layouts = newArena<piiStructLayout>()
+        imports = newArena<piiFunction>()
+        exports = newArena<piiFunction>()
+        foreign = piiLockForeign(&project.lock)
+    }
+}
+
+// Describes the C ABI of the package specialization of source. Exports are
+// the root package's exported definitions and imports every reachable
+// bodyless C function; both are ordered by C symbol. Violations are reported
+// and yield no interface.
+fn buildPackageInterface(
+    &source firProgram,
+    &project nativeLibraryProject,
+    &found diagnostics
+) Option<own packageInterface> {
+    const packageName = text.Copy(project.manifest.name)
+    var program = monomorphizePackageInterface(&source, packageName)
+    var result = newPackageInterface(&project)
+    const library = text.Copy(result.library)
+    var publicStates = newPiiLayoutStates(program.structs.len())
+    var privateStates = newPiiLayoutStates(program.structs.len())
+    var privateLayouts = newArena<piiStructLayout>()
+    var index u64 = 0
+    while index < program.functions.len() {
+        var function = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(value): value
+        }
+        if !optionStringPresent(function.cSymbol) {
+            program.functions.restore(index, $function)
+            index += 1
+            continue
+        }
+        const rootExport = function.hasBody && function.exported &&
+            function.packageName == packageName
+        const imported = !function.hasBody
+        if imported || rootExport {
+            collectPiiFunctionLayouts(
+                &program, &function, library, &result.layouts, &publicStates, &found)
+        } else {
+            collectPiiFunctionLayouts(
+                &program, &function, library, &privateLayouts, &privateStates, &found)
+        }
+        var lowered = piiFunctionFor(&program, &function)
+        const span = piiCopySpan(function.sourceSpan)
+        program.functions.restore(index, $function)
+        index += 1
+        if !relativePiiSourcePath(lowered.source.path) {
+            found.reportError("FDN2121", "package interface source paths must be relative", span)
+            continue
+        }
+        lowered.source.path = path.Normalize(lowered.source.path)
+        validatePiiFunction(&lowered, &found, span)
+        if rootExport {
+            discard result.exports.add($lowered)
+        } else {
+            if imported {
+                discard result.imports.add($lowered)
+            } else {
+                discard lowered
+            }
+        }
+    }
+    if found.hasErrors() return .None
+    sortArena<piiFunction>(&result.imports, comparePiiFunction)
+    sortArena<piiFunction>(&result.exports, comparePiiFunction)
+    sortArena<piiForeign>(&result.foreign, comparePiiForeign)
+    .Some(result)
+}

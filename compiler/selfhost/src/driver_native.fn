@@ -1,0 +1,166 @@
+package foundation.compiler
+
+import std.path
+
+// Reads the manifest and lock of the package that contains input for one
+// native library command. Usage errors yield status 2 and package errors
+// status 1; both are reported before returning.
+fn readCompilerNativeProject(
+    input String,
+    command String,
+    requireNative bool,
+    requireName bool,
+    requireHost bool,
+    &status i32
+) Option<own nativeLibraryProject> {
+    const manifestPath = match discoverPackageManifest(input) {
+        None: {
+            compilerProcessFailure(command + " requires a package project")
+            status = 2
+            return .None
+        }
+        Some(value): value
+    }
+    var manifestResult = readPackageManifest(manifestPath)
+    var manifest = match replace manifestResult.value with .None {
+        None: {
+            reportCompilerPackageErrors(&manifestResult.errors)
+            status = 1
+            return .None
+        }
+        Some(value): value
+    }
+    const named = !requireName || optionStringPresent(manifest.nativeName)
+    if requireNative && (!manifest.nativeLibrary || !named) {
+        const requirement = " and native_name" if requireName else ""
+        compilerProcessFailure(command + " requires native_library c" + requirement)
+        status = 2
+        return .None
+    }
+    var lockResult = readPackageLock(path.Join(path.Parent(manifestPath), "foundation.lock"))
+    var lock = match replace lockResult.value with .None {
+        None: {
+            reportCompilerPackageErrors(&lockResult.errors)
+            status = 1
+            return .None
+        }
+        Some(value): value
+    }
+    if requireHost && !sameTarget(lock.target, hostTargetPlatform()) {
+        compilerProcessFailure(command + " requires a lock for the host target")
+        status = 2
+        return .None
+    }
+    .Some(own nativeLibraryProject { manifest = manifest lock = lock })
+}
+
+// Builds the interface of a checked native library. Interface violations, and
+// an empty export list when exports are required, are reported and yield no
+// interface.
+fn compilerPackageInterface(
+    input String,
+    &lowered loweredProgram,
+    &project nativeLibraryProject,
+    requireExports bool
+) Option<own packageInterface> {
+    var found = newDiagnostics()
+    const built = buildPackageInterface(&lowered.program, &project, &found)
+    var result = match built {
+        None: {
+            writeCompilerDiagnostics($found, &lowered.loaded.sources, input)
+            return .None
+        }
+        Some(value): value
+    }
+    if requireExports && result.exports.len() == 0 {
+        found.reportError(
+            "FDN2122",
+            "native library exports no C ABI functions",
+            sourceSpan { offset = 0 length = 0 line = 1 column = 1 source = 0 }
+        )
+        writeCompilerDiagnostics($found, &lowered.loaded.sources, input)
+        discard result
+        return .None
+    }
+    discard found
+    .Some(result)
+}
+
+// Parses the emit-pii options after the output path. Yields whether a
+// freestanding triple was requested, or none for a usage error.
+fn parseCompilerInterfaceArguments(args [String]) Option<bool> {
+    if len(args) < 4 || compilerArgument(args, 2) != "-o" return .None
+    var triple = false
+    var cpu = false
+    var features = false
+    var index usize = 4
+    while index < len(args) {
+        if index + 1 >= len(args) return .None
+        const option = compilerArgument(args, index)
+        if option == "--triple" && !triple {
+            triple = true
+        } else {
+            if option == "--cpu" && !cpu {
+                cpu = true
+            } else {
+                if option == "--features" && !features {
+                    features = true
+                } else {
+                    return .None
+                }
+            }
+        }
+        index += 2
+    }
+    if !triple && (cpu || features) return .None
+    .Some(triple)
+}
+
+fn runCompilerEmitPackageInterface(
+    input String,
+    outputPath String,
+    freestanding bool
+) i32 {
+    var status i32 = 0
+    const selectedProject = readCompilerNativeProject(
+        input, "emit-pii", true, false, false, &status)
+    var project = match selectedProject {
+        None: {
+            return status
+        }
+        Some(value): value
+    }
+    const freestandingLock = sameTarget(project.lock.target, .Freestanding)
+    if freestandingLock && !freestanding {
+        compilerProcessFailure("emit-pii requires --triple for a freestanding lock")
+        discard project
+        return 2
+    }
+    if !freestandingLock && freestanding {
+        compilerProcessFailure("--triple, --cpu, and --features require a freestanding lock")
+        discard project
+        return 2
+    }
+    if freestanding {
+        // LLVM normalizes and validates the triple, CPU, and features, so
+        // freestanding interfaces stay with the stage0 compiler.
+        compilerProcessFailure("emit-pii --triple requires the stage0 compiler")
+        discard project
+        return 2
+    }
+    const selected = loadLoweredProgram(input, false, .Production, hostTargetPlatform())
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const described = compilerPackageInterface(input, &lowered, &project, true)
+    var value = match described {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
+    writeCompilerOutput(outputPath, renderPackageInterfaceJSON(&value))
+}

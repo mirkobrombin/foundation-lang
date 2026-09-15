@@ -285,4 +285,39 @@ if(DEFINED ENV{FOUNDATION_CLANG} AND NOT "$ENV{FOUNDATION_CLANG}" STREQUAL "")
         -c "${freestanding_c}" -o "${OUTPUT_DIRECTORY}/freestanding.o")
 endif()
 
+set(native_first "${PARITY_DIRECTORY}/native-first/project")
+set(native_second "${PARITY_DIRECTORY}/native-second/nested/project")
+file(MAKE_DIRECTORY "${native_first}" "${native_second}")
+file(COPY "${ROOT}/tests/projects/native-interface/" DESTINATION "${native_first}")
+file(COPY "${ROOT}/tests/projects/native-interface/" DESTINATION "${native_second}")
+run_checked("native package resolve" "${COMPILER}" package resolve "${native_first}")
+run_checked("second native package resolve" "${COMPILER}" package resolve "${native_second}")
+require_emit_parity("emit-pii" "native.pii.json" emit-pii "${native_first}")
+run_checked("emit-pii second checkout" "${COMPILER}" emit-pii "${native_second}"
+    -o "${PARITY_DIRECTORY}/selfhost/native-second.pii.json")
+require_same_file("emit-pii checkout path" "${PARITY_DIRECTORY}/selfhost/native.pii.json"
+    "${PARITY_DIRECTORY}/selfhost/native-second.pii.json")
+require_rejected_parity("emit-pii output" 2 "emit-pii <project> -o <output.json>"
+    emit-pii "${native_first}" -o)
+require_rejected_parity("emit-pii native library" 2 "emit-pii requires native_library c"
+    emit-pii "${ROOT}/tests/package-workflow/app" -o "${PARITY_DIRECTORY}/invalid.json")
+file(READ "${native_second}/foundation.package" reserved_manifest)
+string(REPLACE "native_source native/libfuse/increment.c\n" "" reserved_manifest
+    "${reserved_manifest}")
+string(REPLACE "path native/libfuse" "registry default" reserved_manifest
+    "${reserved_manifest}")
+file(WRITE "${native_second}/foundation.package" "${reserved_manifest}")
+require_rejected_parity("emit-pii reserved resolver" 1 "FDN4057"
+    emit-pii "${native_second}" -o "${PARITY_DIRECTORY}/reserved.json")
+require_rejected_parity("emit-pii freestanding lock" 2
+    "emit-pii requires --triple for a freestanding lock"
+    emit-pii "${ROOT}/tests/projects/freestanding-library"
+    -o "${PARITY_DIRECTORY}/freestanding.json")
+require_rejected_parity("emit-pii hosted triple" 2
+    "--triple, --cpu, and --features require a freestanding lock"
+    emit-pii "${native_first}" -o "${PARITY_DIRECTORY}/hosted.json"
+    --triple x86_64-unknown-none-elf)
+require_rejected_parity("emit-pii cpu without triple" 2 "emit-pii <project> -o <output.json>"
+    emit-pii "${native_first}" -o "${PARITY_DIRECTORY}/hosted.json" --cpu generic)
+
 message(STATUS "self-hosted compiler commands passed")

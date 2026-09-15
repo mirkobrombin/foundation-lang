@@ -1,0 +1,271 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn comparePiiFunction(left piiFunction, right piiFunction) i32 {
+    const symbol = text.Compare(left.cSymbol, right.cSymbol)
+    if symbol != 0 return symbol
+    text.Compare(left.foundationName, right.foundationName)
+}
+
+fn comparePiiForeign(left piiForeign, right piiForeign) i32 {
+    if left.ecosystem != right.ecosystem {
+        return -1 if left.ecosystem < right.ecosystem else 1
+    }
+    var order = text.Compare(left.identifier, right.identifier)
+    if order == 0 {
+        order = text.Compare(left.version, right.version)
+    }
+    if order == 0 {
+        order = text.Compare(left.kind, right.kind)
+    }
+    if order == 0 {
+        order = text.Compare(left.resolver, right.resolver)
+    }
+    if order == 0 {
+        order = text.Compare(left.digest, right.digest)
+    }
+    if order != 0 return order
+    targetPlatformCode(left.target) - targetPlatformCode(right.target)
+}
+
+fn comparePiiLink(left piiLinkLibrary, right piiLinkLibrary) i32 {
+    const name = text.Compare(left.name, right.name)
+    if name != 0 return name
+    compareTargetOption(left.target, right.target)
+}
+
+fn comparePiiLayout(left piiStructLayout, right piiStructLayout) i32 {
+    const name = text.Compare(left.foundationName, right.foundationName)
+    if name != 0 return name
+    text.Compare(left.cName, right.cName)
+}
+
+fn piiTypeJSON(&type piiType) String {
+    var result = "{\"kind\":" + applicationJSONString(piiTypeKindName(type.kind))
+    if !text.IsEmpty(type.name) {
+        result += ",\"name\":" + applicationJSONString(type.name)
+    }
+    if !text.IsEmpty(type.abi) {
+        result += ",\"abi\":" + applicationJSONString(type.abi)
+    }
+    if type.nullable {
+        result += ",\"nullable\":true"
+    }
+    if type.arguments.len() != 0 {
+        result += ",\"arguments\":["
+        var index u64 = 0
+        while index < type.arguments.len() {
+            var argument = match type.arguments.take(index) {
+                None: panic("PII type argument slot is empty")
+                Some(value): value
+            }
+            if index != 0 {
+                result += ","
+            }
+            result += piiTypeJSON(&argument)
+            type.arguments.restore(index, $argument)
+            index += 1
+        }
+        result += "]"
+    }
+    result + "}"
+}
+
+fn piiParametersJSON(&parameters arena<piiParameter>) String {
+    var result = "["
+    var index u64 = 0
+    while index < parameters.len() {
+        var parameter = match parameters.take(index) {
+            None: panic("PII parameter slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += "{\"name\":" + applicationJSONString(parameter.name) +
+            ",\"ownership\":" + applicationJSONString(piiOwnershipName(parameter.ownership)) +
+            ",\"type\":" + piiTypeJSON(&parameter.type) + "}"
+        parameters.restore(index, $parameter)
+        index += 1
+    }
+    result + "]"
+}
+
+fn piiCallbackJSON(&callback piiCallback) String {
+    var result = "{\"name\":" + applicationJSONString(callback.name) +
+        ",\"parameters\":" + piiParametersJSON(&callback.parameters) +
+        ",\"result\":" + piiTypeJSON(&callback.result) +
+        ",\"error_convention\":" +
+        applicationJSONString(piiErrorConventionName(callback.errors)) +
+        ",\"lifetime\":" + applicationJSONString(piiCallbackLifetimeName(callback.lifetime)) +
+        ",\"protocol\":" + applicationJSONString(piiCallbackProtocolName(callback.protocol))
+    match copyFirStringOption(callback.contextHandle) {
+        None: {}
+        Some(value): {
+            result += ",\"context_handle\":" + applicationJSONString(value)
+        }
+    }
+    match copyFirStringOption(callback.cancelSymbol) {
+        None: {}
+        Some(value): {
+            result += ",\"cancel_symbol\":" + applicationJSONString(value)
+        }
+    }
+    result + "}"
+}
+
+fn piiFunctionJSON(&function piiFunction) String {
+    var result = "{\"foundation_name\":" + applicationJSONString(function.foundationName) +
+        ",\"c_symbol\":" + applicationJSONString(function.cSymbol) +
+        ",\"direction\":" + ("\"export\"" if function.exported else "\"import\"") +
+        ",\"abi\":\"c11\",\"parameters\":" + piiParametersJSON(&function.parameters) +
+        ",\"result\":" + piiTypeJSON(&function.result) +
+        ",\"result_ownership\":" +
+        applicationJSONString(piiOwnershipName(function.resultOwnership)) +
+        ",\"error_convention\":" + applicationJSONString(piiErrorConventionName(function.errors))
+    match replace function.callback with .None {
+        None: {}
+        Some(callback): {
+            var value = callback
+            result += ",\"callback\":" + piiCallbackJSON(&value)
+            function.callback = .Some(value)
+        }
+    }
+    result + ",\"source\":{\"path\":" + applicationJSONString(function.source.path) +
+        ",\"offset\":" + format.U64(function.source.offset) +
+        ",\"length\":" + format.U64(function.source.length) +
+        ",\"line\":" + format.U64(function.source.line) +
+        ",\"column\":" + format.U64(function.source.column) + "}}"
+}
+
+fn piiFunctionsJSON(&functions arena<piiFunction>) String {
+    var result = "["
+    var index u64 = 0
+    while index < functions.len() {
+        var function = match functions.take(index) {
+            None: panic("PII function slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += piiFunctionJSON(&function)
+        functions.restore(index, $function)
+        index += 1
+    }
+    result + "]"
+}
+
+fn piiLayoutJSON(&layout piiStructLayout) String {
+    var result = "{\"kind\":\"struct\",\"foundation_name\":" +
+        applicationJSONString(layout.foundationName) + ",\"c_name\":" +
+        applicationJSONString(layout.cName) + ",\"fields\":["
+    var index u64 = 0
+    while index < layout.fields.len() {
+        var field = match layout.fields.take(index) {
+            None: panic("PII layout field slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += "{\"foundation_name\":" + applicationJSONString(field.foundationName) +
+            ",\"c_name\":" + applicationJSONString(field.cName) + ",\"type\":" +
+            piiTypeJSON(&field.type) + "}"
+        layout.fields.restore(index, $field)
+        index += 1
+    }
+    result + "]}"
+}
+
+fn piiLinksJSON(&links arena<piiLinkLibrary>) String {
+    var result = "["
+    var index u64 = 0
+    while index < links.len() {
+        const link = match links.take(index) {
+            None: panic("PII link slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += "{\"name\":" + applicationJSONString(link.name)
+        match copyTargetOption(link.target) {
+            None: {}
+            Some(target): {
+                result += ",\"target\":" + applicationJSONString(targetSelectorName(target))
+            }
+        }
+        result += "}"
+        links.restore(index, $link)
+        index += 1
+    }
+    result + "]"
+}
+
+fn piiLayoutsJSON(&layouts arena<piiStructLayout>) String {
+    var result = "["
+    var index u64 = 0
+    while index < layouts.len() {
+        var layout = match layouts.take(index) {
+            None: panic("PII layout slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += piiLayoutJSON(&layout)
+        layouts.restore(index, $layout)
+        index += 1
+    }
+    result + "]"
+}
+
+fn piiForeignJSON(&foreign arena<piiForeign>) String {
+    var result = "["
+    var index u64 = 0
+    while index < foreign.len() {
+        const value = match foreign.take(index) {
+            None: panic("PII foreign slot is empty")
+            Some(found): found
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += "{\"ecosystem\":" + applicationJSONString(piiEcosystemName(value.ecosystem)) +
+            ",\"identifier\":" + applicationJSONString(value.identifier) +
+            ",\"version\":" + applicationJSONString(value.version) +
+            ",\"kind\":" + applicationJSONString(value.kind) +
+            ",\"resolver\":" + applicationJSONString(value.resolver) +
+            ",\"digest\":" + applicationJSONString(value.digest) +
+            ",\"target\":" + applicationJSONString(targetPlatformName(value.target)) +
+            ",\"abi\":\"c11\"}"
+        foreign.restore(index, $value)
+        index += 1
+    }
+    result + "]"
+}
+
+// Renders the canonical interface document. Every record list is sorted in
+// place first; the trailing digest covers the document without itself.
+fn renderPackageInterfaceJSON(&value packageInterface) String {
+    sortArena<piiFunction>(&value.imports, comparePiiFunction)
+    sortArena<piiFunction>(&value.exports, comparePiiFunction)
+    sortArena<piiForeign>(&value.foreign, comparePiiForeign)
+    sortArena<piiLinkLibrary>(&value.links, comparePiiLink)
+    sortArena<piiStructLayout>(&value.layouts, comparePiiLayout)
+    const body = "{\"format\":1,\"abi_major\":1,\"abi_minor\":3,\"package\":" +
+        applicationJSONString(value.packageName) + ",\"version\":" +
+        applicationJSONString(packageVersionString(value.version)) + ",\"language\":" +
+        format.U32(value.language) + ",\"sdk\":" +
+        applicationJSONString(packageRequirementString(value.sdk)) + ",\"library\":" +
+        applicationJSONString(value.library) + ",\"soversion\":" +
+        format.U32(value.soVersion) + ",\"target\":" +
+        applicationJSONString(targetPlatformName(value.target)) + ",\"links\":" +
+        piiLinksJSON(&value.links) + ",\"layouts\":" + piiLayoutsJSON(&value.layouts) +
+        ",\"imports\":" + piiFunctionsJSON(&value.imports) + ",\"exports\":" +
+        piiFunctionsJSON(&value.exports) + ",\"foreign\":" + piiForeignJSON(&value.foreign)
+    body + ",\"canonical_sha256\":" + applicationJSONString(packageSha256Text(body + "}")) + "}"
+}

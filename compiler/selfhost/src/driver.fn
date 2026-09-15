@@ -14,6 +14,8 @@ fn compilerUsage() String {
         "  foundationc-selfhost emit-app-host <source-or-project> " +
         "-o <output.fn> [--target <platform>]\n" +
         "  foundationc-selfhost emit-llvm <source-or-project> -o <output.ll>\n" +
+        "  foundationc-selfhost emit-pii <project> -o <output.json> " +
+        "[--triple <llvm-triple>] [--cpu <name>] [--features <list>]\n" +
         "  foundationc-selfhost emit-fsm <source-or-project> -o <output> " +
         "--format <mermaid|graphviz> [--machine <name>]\n" +
         "  foundationc-selfhost emit-app-plan <source-or-project> -o <output.json>\n" +
@@ -260,6 +262,19 @@ fn runCompilerCommand(args [String]) Option<i32> {
                         compilerArgument(args, 1),
                         compilerArgument(args, 3),
                         value))
+            }
+        }
+    }
+    if command == "emit-pii" {
+        match parseCompilerInterfaceArguments(args) {
+            None: {
+                return .None
+            }
+            Some(freestanding): {
+                return .Some(runCompilerEmitPackageInterface(
+                        compilerArgument(args, 1),
+                        compilerArgument(args, 3),
+                        freestanding))
             }
         }
     }

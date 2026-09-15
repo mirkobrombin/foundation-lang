@@ -1,0 +1,452 @@
+package foundation.compiler
+
+import std.path
+import std.text
+
+fn piiKindFor(kind semanticTypeKind) piiTypeKind {
+    match kind {
+        I8: .I8
+        I16: .I16
+        I32: .I32
+        I64: .I64
+        Isize: .ISize
+        U8: .U8
+        U16: .U16
+        U32: .U32
+        U64: .U64
+        Usize: .USize
+        F32: .F32
+        F64: .F64
+        Bool: .Bool
+        StringValue: .StringValue
+        Raw: .Raw
+        RawConst: .RawConst
+        Array: .Array
+        Slice: .Slice
+        Own: .Own
+        View: .View
+        Edit: .Edit
+        StructValue: .StructValue
+        EnumValue: .EnumValue
+        ContractValue: .ContractValue
+        Function: .Function
+        Task: .Task
+        Channel: .Channel
+        Sender: .Sender
+        Receiver: .Receiver
+        _: .Void
+    }
+}
+
+fn piiStructName(&program firProgram, declaration u64) String {
+    const value = match program.structs.take(declaration) {
+        None: panic("struct slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(value.name)
+    program.structs.restore(declaration, $value)
+    result
+}
+
+// Describes a checked type. Unresolved kinds keep the void kind and carry the
+// name "invalid", which no boundary accepts.
+fn piiTypeFor(&program firProgram, &type semanticType) piiType {
+    var result = newPiiType(piiKindFor(type.kind))
+    const declaration = type.declaration
+    if type.kind.Matches("StructValue") && declaration < program.structs.len() {
+        result.name = piiStructName(&program, declaration)
+    }
+    if type.kind.Matches("EnumValue") && declaration < program.enums.len() {
+        result.name = applicationPlanEnumName(&program, declaration)
+    }
+    if type.kind.Matches("ContractValue") && declaration < program.contracts.len() {
+        result.name = applicationPlanContractName(&program, declaration)
+    }
+    if isCSemanticFunction(&type) {
+        result.abi = "c11"
+    }
+    if type.kind.Matches("Invalid") || type.kind.Matches("Never") ||
+        type.kind.Matches("Parameter") {
+        result.name = "invalid"
+    }
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = semanticTypeArgument(&type, index)
+        discard result.arguments.add(piiTypeFor(&program, &argument))
+        index += 1
+    }
+    result
+}
+
+fn piiParameterOwnership(&type semanticType) piiOwnership {
+    if type.kind.Matches("StringValue") || type.kind.Matches("View") return .Borrowed
+    if type.kind.Matches("Edit") return .ExclusiveBorrow
+    if type.kind.Matches("Raw") || type.kind.Matches("RawConst") return .RawUnmanaged
+    .Value
+}
+
+// A parameter borrow crosses the boundary as its target type.
+fn piiBoundaryType(&program firProgram, &type semanticType) piiType {
+    if (type.kind.Matches("View") || type.kind.Matches("Edit")) && type.arguments.len() == 1 {
+        var target = semanticTypeArgument(&type, 0)
+        return piiTypeFor(&program, &target)
+    }
+    piiTypeFor(&program, &type)
+}
+
+fn piiCopySpan(value sourceSpan) sourceSpan {
+    sourceSpan {
+        offset = value.offset
+        length = value.length
+        line = value.line
+        column = value.column
+        source = value.source
+    }
+}
+
+// The completion callback of a reactor import reports one foreign status.
+fn piiCompletionCallback(
+    &program firProgram,
+    name String,
+    cancelSymbol Option<String>
+) piiCallback {
+    var parameters = newArena<piiParameter>()
+    var status = i32SemanticType()
+    discard parameters.add(piiParameter {
+        name = "status"
+        type = piiTypeFor(&program, &status)
+        ownership = .Value
+    })
+    piiCallback {
+        name = name + ".completion"
+        parameters = parameters
+        result = newPiiType(.Void)
+        errors = .ForeignStatus
+        lifetime = .Once
+        protocol = .FoundationReactorV1
+        contextHandle = .Some("foundation.reactor.operation")
+        cancelSymbol = copyFirStringOption(cancelSymbol)
+    }
+}
+
+fn piiFunctionFor(&program firProgram, &function firFunction) piiFunction {
+    const symbol = match copyFirStringOption(function.cSymbol) {
+        None: ""
+        Some(value): value
+    }
+    var resultOwnership piiOwnership = .Value
+    if function.returnType.kind.Matches("StringValue") {
+        resultOwnership = .CallerOwnedResult
+    }
+    if function.returnType.kind.Matches("Raw") || function.returnType.kind.Matches("RawConst") {
+        resultOwnership = .RawUnmanaged
+    }
+    var result = piiFunction {
+        foundationName = text.Copy(function.name)
+        cSymbol = symbol
+        exported = function.hasBody
+        parameters = newArena<piiParameter>()
+        result = piiTypeFor(&program, &function.returnType)
+        resultOwnership = resultOwnership
+        errors = .Infallible
+        callback = .None
+        source = piiSourceSpan {
+            path = text.Copy(function.sourcePath)
+            offset = function.sourceSpan.offset
+            length = function.sourceSpan.length
+            line = function.sourceSpan.line
+            column = function.sourceSpan.column
+        }
+    }
+    var index u64 = 0
+    while index < function.parameters.len() {
+        const local = match function.parameters.take(index) {
+            None: panic("function parameter slot is empty")
+            Some(found): found
+        }
+        function.parameters.restore(index, local)
+        var value = cLocalAt(&function, local)
+        const ownership = piiParameterOwnership(&value.type)
+        discard result.parameters.add(piiParameter {
+            name = text.Copy(value.name)
+            type = piiBoundaryType(&program, &value.type)
+            ownership = ownership
+        })
+        index += 1
+    }
+    if function.callback {
+        result.callback = .Some(piiCompletionCallback(
+                &program,
+                result.foundationName,
+                function.callbackCancelSymbol))
+        result.result = newPiiType(.Void)
+        result.resultOwnership = .Value
+    }
+    result
+}
+
+fn piiStructCopy(&program firProgram, id u64) firStruct {
+    const selected = match program.structs.take(id) {
+        None: panic("struct slot is empty")
+        Some(found): found
+    }
+    const firStructCopy { original value } = copyFirStruct($selected)
+    program.structs.restore(id, $original)
+    value
+}
+
+fn piiPointerLike(&type semanticType) bool {
+    type.kind.Matches("Raw") || type.kind.Matches("RawConst") || isCSemanticFunction(&type)
+}
+
+fn piiLayoutFieldSafe(&type semanticType) bool {
+    (isSemanticMachineScalar(&type) && !type.kind.Matches("Void") &&
+        !type.kind.Matches("Never")) || type.kind.Matches("Raw") ||
+        type.kind.Matches("RawConst") || isCSemanticFunction(&type) ||
+        type.kind.Matches("StructValue")
+}
+
+fn piiLayoutState(&states arena<u64>, id u64) u64 {
+    const value = match states.take(id) {
+        None: panic("layout state slot is empty")
+        Some(found): found
+    }
+    states.restore(id, value)
+    value
+}
+
+fn newPiiLayoutStates(count u64) own arena<u64> {
+    var states = newArena<u64>()
+    while states.len() < count {
+        discard states.add(0)
+    }
+    states
+}
+
+fn packageCIdentifierText(value String) String {
+    var builder = text.NewBuilder()
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        const byte = packageByteAt(value, index)
+        discard packageBuilderCodePoint(&builder, byte if isAsciiAlphaNumeric(byte) else 95)
+        index += 1
+    }
+    packageBuilderFinish(&builder)
+}
+
+// Names a struct in the public header: the library name, then the last
+// segment of the qualified type name, with every other byte replaced by '_'.
+fn packageCTypeName(library String, typeName String) String {
+    var start u64 = 0
+    var index u64 = 0
+    while index < text.ByteLen(typeName) {
+        if packageByteAt(typeName, index) == 46 {
+            start = index + 1
+        }
+        index += 1
+    }
+    packageCIdentifierText(library) + "_" +
+        packageCIdentifierText(packageSlice(typeName, start, text.ByteLen(typeName)))
+}
+
+// Records the C layout of every struct reachable by value or through a raw
+// pointer or C function type. Each struct is visited once per state arena.
+fn collectPiiStructLayout(
+    &program firProgram,
+    &type semanticType,
+    library String,
+    &layouts arena<piiStructLayout>,
+    &states arena<u64>,
+    &found diagnostics,
+    span sourceSpan
+) bool {
+    if !type.kind.Matches("StructValue") {
+        if !piiPointerLike(&type) return true
+        var valid = true
+        var index u64 = 0
+        while index < type.arguments.len() {
+            var argument = semanticTypeArgument(&type, index)
+            if !collectPiiStructLayout(
+                &program,
+                &argument,
+                library,
+                &layouts,
+                &states,
+                &found,
+                piiCopySpan(span)
+            ) {
+                valid = false
+            }
+            index += 1
+        }
+        return valid
+    }
+    const id = type.declaration
+    if id >= program.structs.len() {
+        found.reportError("FDN2120", "C ABI v1 struct declaration is invalid", span)
+        return false
+    }
+    if piiLayoutState(&states, id) != 0 return true
+    setArenaValue<u64>(&states, id, 1)
+    var declaration = piiStructCopy(&program, id)
+    var valid = true
+    if !declaration.exported || declaration.serviceType ||
+        declaration.typeParameterCount != 0 || type.arguments.len() != 0 ||
+        optionU64Present(declaration.dropFunction) {
+        found.reportError(
+            "FDN2120",
+            "C ABI v1 struct " + declaration.name +
+                " must be exported, concrete, non-service, and have no custom drop",
+            piiCopySpan(declaration.sourceSpan)
+        )
+        valid = false
+    }
+    var layout = piiStructLayout {
+        foundationName = text.Copy(declaration.name)
+        cName = packageCTypeName(library, declaration.name)
+        fields = newArena<piiLayoutField>()
+    }
+    var index u64 = 0
+    while index < declaration.fields.len() {
+        var field = match declaration.fields.take(index) {
+            None: panic("struct field slot is empty")
+            Some(found): found
+        }
+        const fieldName = text.Copy(field.name)
+        const exported = field.exported
+        var fieldType = copySemanticType(&field.type)
+        declaration.fields.restore(index, $field)
+        index += 1
+        const owner = "C ABI v1 struct field " + declaration.name + "." + fieldName
+        if !exported {
+            found.reportError("FDN2120", owner + " must be exported",
+                piiCopySpan(declaration.sourceSpan))
+            valid = false
+            continue
+        }
+        if !piiLayoutFieldSafe(&fieldType) {
+            found.reportError("FDN2120", owner + " has an unsupported layout type",
+                piiCopySpan(declaration.sourceSpan))
+            valid = false
+            continue
+        }
+        if !collectPiiStructLayout(
+            &program,
+            &fieldType,
+            library,
+            &layouts,
+            &states,
+            &found,
+            piiCopySpan(declaration.sourceSpan)
+        ) {
+            valid = false
+        }
+        discard layout.fields.add(piiLayoutField {
+            foundationName = text.Copy(fieldName)
+            cName = fieldName
+            type = piiTypeFor(&program, &fieldType)
+        })
+    }
+    setArenaValue<u64>(&states, id, 2)
+    if valid {
+        discard layouts.add($layout)
+    } else {
+        discard layout
+    }
+    valid
+}
+
+fn collectPiiBoundaryLayouts(
+    &program firProgram,
+    &type semanticType,
+    library String,
+    &layouts arena<piiStructLayout>,
+    &states arena<u64>,
+    &found diagnostics,
+    span sourceSpan
+) void {
+    if type.kind.Matches("StructValue") {
+        discard collectPiiStructLayout(
+            &program, &type, library, &layouts, &states, &found, span)
+        return
+    }
+    const borrow = type.kind.Matches("View") || type.kind.Matches("Edit")
+    if borrow && type.arguments.len() == 1 {
+        var target = semanticTypeArgument(&type, 0)
+        collectPiiBoundaryLayouts(&program, &target, library, &layouts, &states, &found, span)
+        return
+    }
+    if !piiPointerLike(&type) return
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = semanticTypeArgument(&type, index)
+        collectPiiBoundaryLayouts(
+            &program,
+            &argument,
+            library,
+            &layouts,
+            &states,
+            &found,
+            piiCopySpan(span)
+        )
+        index += 1
+    }
+}
+
+fn collectPiiFunctionLayouts(
+    &program firProgram,
+    &function firFunction,
+    library String,
+    &layouts arena<piiStructLayout>,
+    &states arena<u64>,
+    &found diagnostics
+) void {
+    const span = piiCopySpan(function.sourceSpan)
+    collectPiiBoundaryLayouts(
+        &program,
+        &function.returnType,
+        library,
+        &layouts,
+        &states,
+        &found,
+        piiCopySpan(span)
+    )
+    var index u64 = 0
+    while index < function.parameters.len() {
+        const local = match function.parameters.take(index) {
+            None: panic("function parameter slot is empty")
+            Some(found): found
+        }
+        function.parameters.restore(index, local)
+        if local < function.locals.len() {
+            var value = cLocalAt(&function, local)
+            collectPiiBoundaryLayouts(
+                &program,
+                &value.type,
+                library,
+                &layouts,
+                &states,
+                &found,
+                piiCopySpan(span)
+            )
+        }
+        index += 1
+    }
+}
+
+fn relativePiiSourcePath(value String) bool {
+    if path.IsAbsolute(value) return false
+    var start u64 = 0
+    var index u64 = 0
+    const length = text.ByteLen(value)
+    while index <= length {
+        const separator = index == length || packageByteAt(value, index) == 47 ||
+            packageByteAt(value, index) == 92
+        if separator {
+            if packageSlice(value, start, index) == ".." return false
+            start = index + 1
+        }
+        index += 1
+    }
+    true
+}
