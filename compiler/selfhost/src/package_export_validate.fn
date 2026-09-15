@@ -1,0 +1,104 @@
+package foundation.compiler
+
+fn exportMappedType(
+    &type piiType,
+    exportFormat packageExportFormat,
+    &callbacks arena<exportCallback>
+) Option<String> {
+    match exportFormat {
+        Zig: exportZigType(&type)
+        Rust: exportRustType(&type)
+        GoCgo: exportGoType(&type, &callbacks, false, false)
+        GoDynamic: exportGoType(&type, &callbacks, true, false)
+        GoSource: exportGoScalar(type.kind)
+    }
+}
+
+fn exportLayoutFailure(
+    &layout piiStructLayout,
+    exportFormat packageExportFormat,
+    &callbacks arena<exportCallback>
+) Option<String> {
+    var index u64 = 0
+    while index < layout.fields.len() {
+        var field = exportFieldAt(&layout, index)
+        if !optionStringPresent(exportMappedType(&field.type, exportFormat, &callbacks)) {
+            return .Some("field " + layout.foundationName + "." + field.foundationName)
+        }
+        index += 1
+    }
+    .None
+}
+
+fn exportFunctionFailure(
+    &function piiFunction,
+    exportFormat packageExportFormat,
+    &callbacks arena<exportCallback>
+) Option<String> {
+    if !optionStringPresent(exportMappedType(&function.result, exportFormat, &callbacks)) {
+        return .Some("result of " + function.foundationName)
+    }
+    var index u64 = 0
+    while index < function.parameters.len() {
+        var parameter = exportParameterAt(&function, index)
+        if !optionStringPresent(exportMappedType(&parameter.type, exportFormat, &callbacks)) {
+            return .Some("parameter " + parameter.name + " of " + function.foundationName)
+        }
+        index += 1
+    }
+    .None
+}
+
+fn reportExportMapFailure(
+    &found diagnostics,
+    exportFormat packageExportFormat,
+    subject String
+) bool {
+    const sourceMode = packageExportFormatIsGoSource(exportFormat)
+    const code = "FDN4120" if sourceMode else "FDN2130"
+    const suffix = "; use go-cgo or go-dynamic for this boundary" if sourceMode else ""
+    found.reportError(
+        $code,
+        "package export cannot map " + subject + suffix,
+        sourceSpan { offset = 0 length = 0 line = 1 column = 1 source = 0 }
+    )
+    false
+}
+
+// Reports the first layout field, result, or parameter the format cannot
+// express.
+fn exportTypesMapped(
+    &value packageInterface,
+    exportFormat packageExportFormat,
+    &found diagnostics
+) bool {
+    var callbacks = exportCallbacks(&value)
+    var layoutIndex u64 = 0
+    while layoutIndex < value.layouts.len() {
+        var layout = exportLayoutAt(&value, layoutIndex)
+        match exportLayoutFailure(&layout, exportFormat, &callbacks) {
+            Some(subject): {
+                return reportExportMapFailure(&found, exportFormat, subject)
+            }
+            None: {}
+        }
+        layoutIndex += 1
+    }
+    var index u64 = 0
+    while index < value.exports.len() {
+        var function = match value.exports.take(index) {
+            None: panic("package export function slot is empty")
+            Some(selected): selected
+        }
+        const failure = exportFunctionFailure(&function, exportFormat, &callbacks)
+        value.exports.restore(index, $function)
+        match failure {
+            Some(subject): {
+                return reportExportMapFailure(&found, exportFormat, subject)
+            }
+            None: {}
+        }
+        index += 1
+    }
+    true
+}

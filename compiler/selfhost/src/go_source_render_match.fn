@@ -1,0 +1,296 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn goBindMatchPayload(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &output text.Builder,
+    &matchType semanticType,
+    variant u64,
+    binding u64,
+    temporary String,
+    payloadPresent bool,
+    depth u64,
+    span sourceSpan
+) bool {
+    if !payloadPresent {
+        goSourceFail(&emitter, "go-source cannot bind a unit match variant", span)
+        return false
+    }
+    const local = goTextAt(&emitter.currentLocals, binding)
+    goWrite(&output, goIndent(depth) + local + " := " +
+        goPayloadRead(&emitter, &program, &matchType, variant, temporary) + "\n" +
+        goIndent(depth) + "_ = " + local + "\n")
+    true
+}
+
+// Opens the Go block of one match arm at depth and binds its guard and
+// payload locals. The result is the depth of the arm body, one deeper when
+// the arm has a guard.
+fn goOpenMatchArm(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    &inspected firMatchExpression,
+    &arm firMatchArm,
+    temporary String,
+    span sourceSpan,
+    depth u64
+) Option<u64> {
+    var matchType = copySemanticType(&inspected.type)
+    var payloadPresent = false
+    var armCondition = "true"
+    const wildcard = arm.wildcard
+    const variant = arm.variant
+    if !wildcard {
+        if variant >= goEnumVariantCount(&program, matchType.declaration) {
+            goSourceFail(&emitter, "go-source cannot render an invalid match variant", span)
+            return .None
+        }
+        payloadPresent = goHasEnumPayload(&program, &matchType, variant)
+        armCondition = temporary + ".tag == " + format.U64(variant)
+        match copyFirU64Option(arm.pattern) {
+            None: {}
+            Some(pattern): {
+                if !payloadPresent {
+                    goSourceFail(&emitter, "go-source cannot render a pattern for a unit variant",
+                        span)
+                    return .None
+                }
+                const rendered = match goRenderExpression(
+                    &emitter, &program, &function, pattern, depth) {
+                    None: {
+                        return .None
+                    }
+                    Some(found): found
+                }
+                armCondition = armCondition + " && " + temporary + "." +
+                    goEnumFieldName(&emitter, &program, &matchType, variant) + " == " + rendered
+            }
+        }
+    }
+    goWrite(&output, goIndent(depth) + "if " + armCondition + " {\n")
+    var armDepth = depth + 1
+    match copyFirU64Option(arm.guardBinding) {
+        None: {}
+        Some(binding): {
+            if !goBindMatchPayload(&emitter, &program, &output, &matchType, variant, binding,
+                temporary, payloadPresent, armDepth, span) {
+                return .None
+            }
+        }
+    }
+    match copyFirU64Option(arm.guard) {
+        None: {}
+        Some(guarded): {
+            const rendered = match goRenderExpression(
+                &emitter, &program, &function, guarded, armDepth) {
+                None: {
+                    return .None
+                }
+                Some(found): found
+            }
+            goWrite(&output, goIndent(armDepth) + "if " + goCondition(rendered) + " {\n")
+            armDepth += 1
+        }
+    }
+    match copyFirU64Option(arm.binding) {
+        None: {}
+        Some(binding): {
+            if !goBindMatchPayload(&emitter, &program, &output, &matchType, variant, binding,
+                temporary, payloadPresent, armDepth, span) {
+                return .None
+            }
+        }
+    }
+    .Some(armDepth)
+}
+
+fn goCloseMatchArm(&output text.Builder, &arm firMatchArm, depth u64) void {
+    if monomorphU64Present(copyFirU64Option(arm.guard)) {
+        goWrite(&output, goIndent(depth + 1) + "}\n")
+    }
+    goWrite(&output, goIndent(depth) + "}\n")
+}
+
+fn goRenderMatchArmValue(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    &arm firMatchArm,
+    renderedResult String,
+    span sourceSpan,
+    armDepth u64
+) bool {
+    match copyFirU64Option(arm.expression) {
+        None: {}
+        Some(armValue): {
+            if goPanicCall(&function, armValue) {
+                const rendered = match goRenderPanic(
+                    &emitter, &program, &function, armValue, armDepth) {
+                    None: {
+                        return false
+                    }
+                    Some(found): found
+                }
+                goWrite(&output, goIndent(armDepth) + rendered)
+                return true
+            }
+        }
+    }
+    goWrite(&output, goIndent(armDepth) + "return")
+    if text.IsEmpty(renderedResult) return true
+    match copyFirU64Option(arm.expression) {
+        None: {
+            goSourceFail(&emitter, "go-source cannot render a value match arm without a value",
+                span)
+            false
+        }
+        Some(armValue): {
+            const rendered = match goRenderExpression(
+                &emitter, &program, &function, armValue, armDepth) {
+                None: {
+                    return false
+                }
+                Some(found): found
+            }
+            goWrite(&output, " " + rendered)
+            true
+        }
+    }
+}
+
+fn goRenderMatchExpression(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &inspected firMatchExpression,
+    &resultType semanticType,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    if !inspected.type.kind.Matches("EnumValue") ||
+        inspected.type.declaration >= program.enums.len() {
+        goSourceFail(&emitter, "go-source cannot render an invalid match", span)
+        return .None
+    }
+    const subject = match goRenderExpression(
+        &emitter, &program, &function, inspected.value, depth + 1) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    const temporary = goTemporaryLocal(&emitter, "match")
+    var output = text.NewBuilder()
+    goWrite(&output, "func()")
+    const renderedResult = match goSourceType(&emitter, &program, &resultType) {
+        None: {
+            goSourceFail(&emitter, "go-source cannot render match result type", span)
+            return .None
+        }
+        Some(found): found
+    }
+    if !text.IsEmpty(renderedResult) {
+        goWrite(&output, " " + renderedResult)
+    }
+    goWrite(&output, " {\n" + goIndent(depth + 1) + temporary + " := " + subject + "\n")
+    var index u64 = 0
+    while index < inspected.arms.len() {
+        var arm = goArmAt(&inspected.arms, index)
+        const armDepth = match goOpenMatchArm(&emitter, &program, &function, &output,
+            &inspected, &arm, temporary, span, depth + 1) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        goRenderBlock(&emitter, &program, &function, &output, arm.block, armDepth)
+        if emitter.failed return .None
+        if !goRenderMatchArmValue(&emitter, &program, &function, &output, &arm, renderedResult,
+            span, armDepth) {
+            return .None
+        }
+        goWrite(&output, "\n")
+        goCloseMatchArm(&output, &arm, depth + 1)
+        index += 1
+    }
+    goWrite(&output, goIndent(depth + 1) + "panic(\"invalid enum tag\")\n" + goIndent(depth) +
+        "}()")
+    .Some(goFinish(&output))
+}
+
+// Arms run in source order. A completed arm jumps past the later arms because
+// a false guard must still fall through to them.
+fn goRenderMatchStatement(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    &inspected firMatchExpression,
+    span sourceSpan,
+    sink goSourceSink,
+    target String,
+    depth u64
+) bool {
+    if !inspected.type.kind.Matches("EnumValue") ||
+        inspected.type.declaration >= program.enums.len() {
+        goSourceFail(&emitter, "go-source cannot render an invalid match", span)
+        return false
+    }
+    const subject = match goRenderExpression(
+        &emitter, &program, &function, inspected.value, depth) {
+        None: {
+            return false
+        }
+        Some(found): found
+    }
+    const temporary = goTemporaryLocal(&emitter, "match")
+    const endLabel = goTemporaryLocal(&emitter, "matchEnd")
+    var reachesEnd = false
+    goWrite(&output, goIndent(depth) + temporary + " := " + subject + "\n")
+    var index u64 = 0
+    while index < inspected.arms.len() {
+        var arm = goArmAt(&inspected.arms, index)
+        const armDepth = match goOpenMatchArm(&emitter, &program, &function, &output,
+            &inspected, &arm, temporary, span, depth) {
+            None: {
+                return false
+            }
+            Some(found): found
+        }
+        goRenderBlock(&emitter, &program, &function, &output, arm.block, armDepth)
+        if emitter.failed return false
+        var terminated = goBlockTerminates(&function, arm.block)
+        if !terminated {
+            match copyFirU64Option(arm.expression) {
+                Some(armValue): {
+                    terminated = goRenderValueStatement(&emitter, &program, &function, &output,
+                        armValue, sink, target, armDepth)
+                }
+                None: {
+                    if goSinkReturns(sink) {
+                        goWrite(&output, goIndent(armDepth) + "return\n")
+                        terminated = true
+                    }
+                }
+            }
+        }
+        if emitter.failed return false
+        if !terminated {
+            goWrite(&output, goIndent(armDepth) + "goto " + endLabel + "\n")
+            reachesEnd = true
+        }
+        goCloseMatchArm(&output, &arm, depth)
+        index += 1
+    }
+    goWrite(&output, goIndent(depth) + "panic(\"invalid enum tag\")\n")
+    if reachesEnd {
+        goWrite(&output, goIndent(depth - 1) + endLabel + ":\n")
+    }
+    !reachesEnd
+}

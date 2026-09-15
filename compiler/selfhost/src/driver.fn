@@ -48,7 +48,8 @@ fn compilerUsage() String {
         "[--backend <llvm|c>] [--native <input>] " +
         "[--native-link <library>]...\n" +
         "  foundationc-selfhost package " +
-        "<init|resolve|fetch|requirements|locked|select|check|verify|inspect|snapshot|prune> " +
+        "<init|resolve|fetch|requirements|locked|select|check|verify|inspect|snapshot|" +
+        "prune|export> " +
         "...\n" +
         "  foundationc-selfhost version\n"
 }

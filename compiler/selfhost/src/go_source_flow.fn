@@ -1,0 +1,183 @@
+package foundation.compiler
+
+fn goBlockStatements(&function firFunction, id u64) own arena<u64> {
+    const firBlock { statements drops } = cBlockAt(&function, id)
+    discard drops
+    statements
+}
+
+fn goArmAt(&arms arena<firMatchArm>, index u64) firMatchArm {
+    var arm = match arms.take(index) {
+        None: panic("go-source match arm slot is empty")
+        Some(found): found
+    }
+    const result = copyFirMatchArm(&arm)
+    arms.restore(index, $arm)
+    result
+}
+
+fn goPanicCall(&function firFunction, id u64) bool {
+    if id >= function.expressions.len() return false
+    const firExpression { value type span } = cExpressionAt(&function, id)
+    discard type
+    discard span
+    match value {
+        Call(call): firCallPanics(call.kind)
+        _: false
+    }
+}
+
+fn goOptionalBlockEscapes(&function firFunction, block Option<u64>, loopDepth u64) bool {
+    match block {
+        None: false
+        Some(found): goBlockEscapes(&function, found, loopDepth)
+    }
+}
+
+fn goStatementEscapes(&function firFunction, id u64, loopDepth u64) bool {
+    const firStatement { value span } = cStatementAt(&function, id)
+    discard span
+    match value {
+        ReturnValue(returned): {
+            discard returned
+            true
+        }
+        BreakValue(stopped): {
+            discard stopped
+            loopDepth == 0
+        }
+        ContinueValue(resumed): {
+            discard resumed
+            loopDepth == 0
+        }
+        LetElse(binding): goExpressionEscapes(&function, binding.initializer, loopDepth) ||
+            goBlockEscapes(&function, binding.elseBlock, loopDepth)
+        ResultElse(binding): goExpressionEscapes(&function, binding.expression, loopDepth) ||
+            goBlockEscapes(&function, binding.elseBlock, loopDepth)
+        Variable(variable): goExpressionEscapes(&function, variable.initializer, loopDepth)
+        Assignment(assignment): goExpressionEscapes(&function, assignment.value, loopDepth)
+        Expression(expression): goExpressionEscapes(&function, expression.expression, loopDepth)
+        Discard(discarded): goExpressionEscapes(&function, discarded.expression, loopDepth)
+        IfValue(branch): {
+            const thenBlock = branch.thenBlock
+            goBlockEscapes(&function, thenBlock, loopDepth) ||
+                goOptionalBlockEscapes(&function, copyFirU64Option(branch.elseBlock), loopDepth)
+        }
+        WhileValue(iteration): goBlockEscapes(&function, iteration.body, loopDepth + 1)
+        ForValue(iteration): goBlockEscapes(&function, iteration.body, loopDepth + 1)
+        _: false
+    }
+}
+
+// Reports whether control can leave the enclosing expression from this block
+// through a return, or through a break or continue that targets an outer
+// loop, including one nested in a statement value or in the else block of a
+// Result binding.
+fn goBlockEscapes(&function firFunction, id u64, loopDepth u64) bool {
+    if id >= function.blocks.len() return true
+    var statements = goBlockStatements(&function, id)
+    var index u64 = 0
+    while index < statements.len() {
+        const statement = goU64At(&statements, index)
+        if statement >= function.statements.len() return true
+        if goStatementEscapes(&function, statement, loopDepth) return true
+        index += 1
+    }
+    false
+}
+
+fn goArmsEscape(&function firFunction, &arms arena<firMatchArm>, loopDepth u64) bool {
+    var index u64 = 0
+    while index < arms.len() {
+        const arm = goArmAt(&arms, index)
+        if goBlockEscapes(&function, arm.block, loopDepth) return true
+        match copyFirU64Option(arm.expression) {
+            None: {}
+            Some(expression): {
+                if goExpressionEscapes(&function, expression, loopDepth) return true
+            }
+        }
+        index += 1
+    }
+    false
+}
+
+fn goExpressionEscapes(&function firFunction, id u64, loopDepth u64) bool {
+    if id >= function.expressions.len() return false
+    const firExpression { value type span } = cExpressionAt(&function, id)
+    discard type
+    discard span
+    match value {
+        MatchValue(selected): {
+            var inspected = selected
+            goArmsEscape(&function, &inspected.arms, loopDepth)
+        }
+        Conditional(conditional): goBlockEscapes(&function, conditional.thenBlock, loopDepth) ||
+            goBlockEscapes(&function, conditional.elseBlock, loopDepth) ||
+            goExpressionEscapes(&function, conditional.thenValue, loopDepth) ||
+            goExpressionEscapes(&function, conditional.elseValue, loopDepth)
+        _: false
+    }
+}
+
+// Follows the Go terminating-statement rule for the last statement of a
+// translated block.
+fn goBlockTerminates(&function firFunction, id u64) bool {
+    if id >= function.blocks.len() return false
+    var statements = goBlockStatements(&function, id)
+    const count = statements.len()
+    if count == 0 return false
+    const last = goU64At(&statements, count - 1)
+    if last >= function.statements.len() return false
+    const firStatement { value span } = cStatementAt(&function, last)
+    discard span
+    match value {
+        ReturnValue(returned): {
+            discard returned
+            true
+        }
+        BreakValue(stopped): {
+            discard stopped
+            true
+        }
+        ContinueValue(resumed): {
+            discard resumed
+            true
+        }
+        Expression(expression): goPanicCall(&function, expression.expression)
+        IfValue(branch): {
+            const thenBlock = branch.thenBlock
+            match copyFirU64Option(branch.elseBlock) {
+                None: false
+                Some(elseBlock): goBlockTerminates(&function, thenBlock) &&
+                    goBlockTerminates(&function, elseBlock)
+            }
+        }
+        _: false
+    }
+}
+
+fn goAddressable(&function firFunction, id u64) bool {
+    if id >= function.expressions.len() return false
+    const firExpression { value type span } = cExpressionAt(&function, id)
+    discard type
+    discard span
+    match value {
+        Local(local): {
+            discard local
+            true
+        }
+        Read(read): {
+            discard read
+            true
+        }
+        Move(moved): {
+            discard moved
+            true
+        }
+        Field(field): goAddressable(&function, field.base)
+        Index(indexed): goAddressable(&function, indexed.base)
+        Ownership(ownership): goAddressable(&function, ownership.operand)
+        _: false
+    }
+}

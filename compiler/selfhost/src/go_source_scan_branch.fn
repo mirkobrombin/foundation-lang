@@ -1,0 +1,162 @@
+package foundation.compiler
+
+// Accepts panic only where Go can end the control path with a terminating
+// statement. A statement value may also be a match or conditional whose
+// branches escape.
+fn goScanValue(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    id u64,
+    statement bool
+) bool {
+    if !goPanicCall(&function, id) {
+        if statement return goScanStatementValue(&emitter, &program, &function, id)
+        return goScanExpression(&emitter, &program, &function, id)
+    }
+    const firExpression { value type span } = cExpressionAt(&function, id)
+    discard type
+    match value {
+        Call(call): {
+            var selected = call
+            if selected.arguments.len() != 1 || selected.typeArguments.len() != 0 {
+                goSourceFail(&emitter, "go-source found invalid panic arguments", span)
+                return false
+            }
+            goScanExpression(&emitter, &program, &function, goU64At(&selected.arguments, 0))
+        }
+        _: false
+    }
+}
+
+// Values that initialize or assign a local, are discarded, or are returned
+// lower to Go statements when a branch escapes, so the escape reaches the
+// translated function or loop.
+fn goScanStatementValue(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    id u64
+) bool {
+    if goExpressionEscapes(&function, id, 0) {
+        return goScanBranches(&emitter, &program, &function, id, true)
+    }
+    goScanExpression(&emitter, &program, &function, id)
+}
+
+fn goScanMatchArms(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &inspected firMatchExpression,
+    &expressionType semanticType,
+    span sourceSpan,
+    statement bool
+) bool {
+    var index u64 = 0
+    while index < inspected.arms.len() {
+        const arm = goArmAt(&inspected.arms, index)
+        match copyFirU64Option(arm.pattern) {
+            None: {}
+            Some(pattern): {
+                if pattern >= function.expressions.len() {
+                    goSourceFail(&emitter, "go-source found an invalid match pattern", span)
+                    return false
+                }
+                if !goLiteralExpression(&function, pattern) {
+                    goSourceFail(&emitter, "go-source match patterns must be literals", span)
+                    return false
+                }
+                if !goScanExpression(&emitter, &program, &function, pattern) return false
+            }
+        }
+        match copyFirU64Option(arm.guard) {
+            None: {}
+            Some(guarded): {
+                if !goScanExpression(&emitter, &program, &function, guarded) return false
+            }
+        }
+        if !goScanBlock(&emitter, &program, &function, arm.block) return false
+        match copyFirU64Option(arm.expression) {
+            None: {}
+            Some(armValue): {
+                if !goScanValue(&emitter, &program, &function, armValue, statement) return false
+            }
+        }
+        if statement && !monomorphU64Present(copyFirU64Option(arm.expression)) &&
+            !goIsVoidType(&expressionType) && !goBlockTerminates(&function, arm.block) {
+            goSourceFail(&emitter, "go-source requires a match arm without a value to end in " +
+                "return, break, continue, or panic", span)
+            return false
+        }
+        index += 1
+    }
+    true
+}
+
+fn goScanConditionalBranches(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &conditional firConditionalExpression,
+    span sourceSpan,
+    statement bool
+) bool {
+    const rejections = emitter.rejections
+    var valid = goScanExpression(&emitter, &program, &function, conditional.condition)
+    if valid {
+        var conditionType = cExpressionTypeAt(&function, conditional.condition)
+        valid = goIsBoolType(&conditionType)
+    }
+    if valid {
+        valid = goScanBlock(&emitter, &program, &function, conditional.thenBlock)
+    }
+    if valid {
+        valid = goScanValue(&emitter, &program, &function, conditional.thenValue, statement)
+    }
+    if valid {
+        valid = goScanBlock(&emitter, &program, &function, conditional.elseBlock)
+    }
+    if valid {
+        valid = goScanValue(&emitter, &program, &function, conditional.elseValue, statement)
+    }
+    if !valid {
+        if emitter.rejections == rejections {
+            goSourceFail(&emitter, "go-source found an invalid conditional expression", span)
+        }
+        return false
+    }
+    true
+}
+
+fn goScanBranches(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    id u64,
+    statement bool
+) bool {
+    const firExpression { value type span } = cExpressionAt(&function, id)
+    var expressionType = type
+    if !optionStringPresent(goSourceType(&emitter, &program, &expressionType)) {
+        goSourceFail(&emitter, "go-source reached an unsupported expression type", span)
+        return false
+    }
+    match value {
+        MatchValue(selected): {
+            var inspected = selected
+            var matchType = copySemanticType(&inspected.type)
+            if !goScanType(&emitter, &program, &matchType, span) ||
+                !goScanExpression(&emitter, &program, &function, inspected.value) {
+                return false
+            }
+            goScanMatchArms(&emitter, &program, &function, &inspected, &expressionType, span,
+                statement)
+        }
+        Conditional(conditional): {
+            var selected = conditional
+            goScanConditionalBranches(&emitter, &program, &function, &selected, span, statement)
+        }
+        _: false
+    }
+}

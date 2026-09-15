@@ -1,0 +1,283 @@
+package foundation.compiler
+
+import std.text
+
+fn goRenderBlock(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    id u64,
+    depth u64
+) void {
+    var statements = goBlockStatements(&function, id)
+    var index u64 = 0
+    while index < statements.len() {
+        goRenderStatement(&emitter, &program, &function, &output, goU64At(&statements, index),
+            depth)
+        if emitter.failed return
+        index += 1
+    }
+}
+
+fn goRenderVariable(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    local u64,
+    initializer u64,
+    depth u64
+) void {
+    const indentation = goIndent(depth)
+    if goExpressionEscapes(&function, initializer, 0) {
+        const name = goTextAt(&emitter.currentLocals, local)
+        var localType = cLocalTypeAt(&function, local)
+        goWrite(&output, indentation + "var " + name + " " +
+            goSourceText(&emitter, &program, &localType) + "\n")
+        discard goRenderValueStatement(&emitter, &program, &function, &output, initializer,
+            .AssignValue, name, depth)
+        return
+    }
+    match goRenderExpression(&emitter, &program, &function, initializer, depth) {
+        None: {}
+        Some(rendered): {
+            goWrite(&output, indentation + goTextAt(&emitter.currentLocals, local) + " := " +
+                rendered + "\n")
+        }
+    }
+}
+
+fn goRenderAssignment(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    &assignment firAssignmentStatement,
+    depth u64
+) void {
+    const target = match goRenderExpression(
+        &emitter, &program, &function, assignment.target, depth) {
+        None: {
+            return
+        }
+        Some(found): found
+    }
+    const indentation = goIndent(depth)
+    if cAssignmentIsAssign(assignment.operation) {
+        if goExpressionEscapes(&function, assignment.value, 0) {
+            discard goRenderValueStatement(&emitter, &program, &function, &output,
+                assignment.value, .AssignValue, target, depth)
+            return
+        }
+        match goRenderExpression(&emitter, &program, &function, assignment.value, depth) {
+            None: {}
+            Some(rendered): {
+                goWrite(&output, indentation + target + " = " + rendered + "\n")
+            }
+        }
+        return
+    }
+    var targetType = cExpressionTypeAt(&function, assignment.target)
+    const operation = cAssignmentBinary(assignment.operation)
+    const pointer = goTemporaryLocal(&emitter, "compound")
+    goWrite(&output, indentation + pointer + " := &(" + target + ")\n")
+    const rendered = match goRenderExpression(
+        &emitter, &program, &function, assignment.value, depth) {
+        None: {
+            return
+        }
+        Some(found): found
+    }
+    goWrite(&output, indentation + "*" + pointer + " = ")
+    if isSemanticInteger(&targetType) {
+        goWrite(&output, goIntegerHelper(&emitter, operation, &targetType) + "(*" + pointer +
+            ", " + rendered + ")\n")
+    } else {
+        goWrite(&output, "*" + pointer + " " + goBinarySymbol(operation) + " " + rendered + "\n")
+    }
+}
+
+fn goRenderExpressionStatement(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    expression u64,
+    depth u64
+) void {
+    if goExpressionEscapes(&function, expression, 0) {
+        discard goRenderValueStatement(&emitter, &program, &function, &output, expression,
+            .DiscardValue, "", depth)
+        return
+    }
+    const panicked = goPanicCall(&function, expression)
+    var rendered Option<String> = .None
+    if panicked {
+        rendered = goRenderPanic(&emitter, &program, &function, expression, depth)
+    } else {
+        rendered = goRenderExpression(&emitter, &program, &function, expression, depth)
+    }
+    match rendered {
+        None: {}
+        Some(found): {
+            var expressionType = cExpressionTypeAt(&function, expression)
+            if panicked || goIsVoidType(&expressionType) {
+                goWrite(&output, goIndent(depth) + found + "\n")
+            } else {
+                goWrite(&output, goIndent(depth) + "_ = " + found + "\n")
+            }
+        }
+    }
+}
+
+fn goRenderDiscard(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    expression u64,
+    depth u64
+) void {
+    if goExpressionEscapes(&function, expression, 0) {
+        discard goRenderValueStatement(&emitter, &program, &function, &output, expression,
+            .DiscardValue, "", depth)
+        return
+    }
+    match goRenderExpression(&emitter, &program, &function, expression, depth) {
+        None: {}
+        Some(rendered): {
+            goWrite(&output, goIndent(depth) + "_ = " + rendered + "\n")
+        }
+    }
+}
+
+fn goRenderReturn(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    value Option<u64>,
+    depth u64
+) void {
+    const indentation = goIndent(depth)
+    match value {
+        None: {
+            goWrite(&output, indentation + "return\n")
+        }
+        Some(found): {
+            if goExpressionEscapes(&function, found, 0) {
+                discard goRenderValueStatement(&emitter, &program, &function, &output, found,
+                    .ReturnValue, "", depth)
+                return
+            }
+            if goPanicCall(&function, found) {
+                match goRenderPanic(&emitter, &program, &function, found, depth) {
+                    None: {}
+                    Some(rendered): {
+                        goWrite(&output, indentation + rendered + "\n")
+                    }
+                }
+                return
+            }
+            goWrite(&output, indentation + "return")
+            match goRenderExpression(&emitter, &program, &function, found, depth) {
+                None: {}
+                Some(rendered): {
+                    goWrite(&output, " " + rendered + "\n")
+                }
+            }
+        }
+    }
+}
+
+fn goRenderIf(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    &branch firIfStatement,
+    depth u64
+) void {
+    const condition = match goRenderExpression(
+        &emitter, &program, &function, branch.condition, depth) {
+        None: {
+            return
+        }
+        Some(found): found
+    }
+    const indentation = goIndent(depth)
+    goWrite(&output, indentation + "if " + goCondition(condition) + " {\n")
+    goRenderBlock(&emitter, &program, &function, &output, branch.thenBlock, depth + 1)
+    goWrite(&output, indentation + "}")
+    match copyFirU64Option(branch.elseBlock) {
+        None: {}
+        Some(elseBlock): {
+            goWrite(&output, " else {\n")
+            goRenderBlock(&emitter, &program, &function, &output, elseBlock, depth + 1)
+            goWrite(&output, indentation + "}")
+        }
+    }
+    goWrite(&output, "\n")
+}
+
+fn goRenderStatement(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    id u64,
+    depth u64
+) void {
+    const firStatement { value span } = cStatementAt(&function, id)
+    match value {
+        Variable(variable): goRenderVariable(&emitter, &program, &function, &output,
+            variable.local, variable.initializer, depth)
+        LetElse(binding): {
+            var selected = binding
+            goRenderLetElse(&emitter, &program, &function, &output, &selected, depth)
+        }
+        ResultElse(binding): {
+            discard goRenderResultCheck(&emitter, &program, &function, &output,
+                binding.expression, binding.errorLocal, binding.elseBlock, depth)
+        }
+        StructDestructure(destructure): {
+            var selected = destructure
+            goRenderDestructure(&emitter, &program, &function, &output, &selected, span, depth)
+        }
+        Assignment(assignment): {
+            var selected = assignment
+            goRenderAssignment(&emitter, &program, &function, &output, &selected, depth)
+        }
+        Expression(expression): goRenderExpressionStatement(&emitter, &program, &function,
+            &output, expression.expression, depth)
+        Discard(discarded): goRenderDiscard(&emitter, &program, &function, &output,
+            discarded.expression, depth)
+        ReturnValue(returned): goRenderReturn(&emitter, &program, &function, &output,
+            copyFirU64Option(returned.value), depth)
+        IfValue(branch): {
+            var selected = branch
+            goRenderIf(&emitter, &program, &function, &output, &selected, depth)
+        }
+        WhileValue(iteration): goRenderWhile(&emitter, &program, &function, &output,
+            iteration.condition, iteration.body, depth)
+        ForValue(iteration): {
+            var selected = iteration
+            goRenderFor(&emitter, &program, &function, &output, &selected, depth)
+        }
+        BreakValue(stopped): {
+            discard stopped
+            goWrite(&output, goIndent(depth) + "break\n")
+        }
+        ContinueValue(resumed): {
+            discard resumed
+            goWrite(&output, goIndent(depth) + "continue\n")
+        }
+        UnsafeValue(block): {
+            discard block
+        }
+        SelectValue(selection): {
+            discard selection
+        }
+    }
+}

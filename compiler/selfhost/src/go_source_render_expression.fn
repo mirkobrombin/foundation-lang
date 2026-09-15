@@ -1,0 +1,276 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn goRenderLocal(&emitter goSourceEmitter, local u64, span sourceSpan) Option<String> {
+    if local >= emitter.currentLocals.len() {
+        goSourceFail(&emitter, "go-source found an invalid local while rendering", span)
+        return .None
+    }
+    .Some(goTextAt(&emitter.currentLocals, local))
+}
+
+fn goRenderList(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &values arena<u64>,
+    depth u64
+) Option<String> {
+    var output = ""
+    var index u64 = 0
+    while index < values.len() {
+        const rendered = match goRenderExpression(
+            &emitter, &program, &function, goU64At(&values, index), depth) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if index != 0 {
+            output = output + ", "
+        }
+        output = output + rendered
+        index += 1
+    }
+    .Some(output)
+}
+
+fn goRenderField(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    base u64,
+    field u64,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    const rendered = match goRenderExpression(&emitter, &program, &function, base, depth) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    var baseType = cExpressionTypeAt(&function, base)
+    var owned = goOwnedValue(&baseType)
+    if !owned.kind.Matches("StructValue") || owned.declaration >= program.structs.len() ||
+        field >= goStructFieldTotal(&program, owned.declaration) {
+        goSourceFail(&emitter, "go-source cannot render a field access", span)
+        return .None
+    }
+    .Some("(" + rendered + ")." + goFieldName(&emitter, &program, owned.declaration, field))
+}
+
+fn goRenderIndex(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    base u64,
+    position u64,
+    depth u64
+) Option<String> {
+    const renderedBase = goRenderExpression(&emitter, &program, &function, base, depth)
+    const renderedIndex = goRenderExpression(&emitter, &program, &function, position, depth)
+    match renderedBase {
+        None: .None
+        Some(baseText): match renderedIndex {
+            None: .None
+            Some(indexText): .Some("(" + baseText + ")[" + indexText + "]")
+        }
+    }
+}
+
+fn goRenderUnary(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    operation firUnaryOperator,
+    operand u64,
+    &expressionType semanticType,
+    depth u64
+) Option<String> {
+    const rendered = match goRenderExpression(&emitter, &program, &function, operand, depth) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    const name = goUnaryName(operation)
+    if name == "Not" return .Some("(!" + rendered + ")")
+    if name == "BitwiseNot" return .Some("(^" + rendered + ")")
+    if name == "Empty" return .Some("(len(" + rendered + ") == 0)")
+    if isSemanticFloating(&expressionType) return .Some("(-" + rendered + ")")
+    .Some(goNegateHelper(&emitter, &expressionType) + "(" + rendered + ")")
+}
+
+fn goRenderBinary(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    left u64,
+    operation firBinaryOperator,
+    right u64,
+    depth u64
+) Option<String> {
+    const renderedLeft = goRenderExpression(&emitter, &program, &function, left, depth)
+    const renderedRight = goRenderExpression(&emitter, &program, &function, right, depth)
+    const leftText = match renderedLeft {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    const rightText = match renderedRight {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    var operandType = cExpressionTypeAt(&function, left)
+    const name = goBinaryName(operation)
+    if name == "Add" && goIsStringType(&operandType) {
+        return .Some("(" + leftText + " + " + rightText + ")")
+    }
+    if goCheckedArithmetic(name) && isSemanticInteger(&operandType) {
+        return .Some(goIntegerHelper(&emitter, operation, &operandType) + "(" + leftText + ", " +
+            rightText + ")")
+    }
+    .Some("(" + leftText + " " + goBinarySymbol(operation) + " " + rightText + ")")
+}
+
+fn goRenderReplace(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    target u64,
+    value u64,
+    &expressionType semanticType,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    const renderedValue = goRenderExpression(&emitter, &program, &function, value, depth)
+    const renderedTarget = goRenderExpression(&emitter, &program, &function, target, depth)
+    const renderedType = goSourceType(&emitter, &program, &expressionType)
+    var valueText = ""
+    var targetText = ""
+    var typeText = ""
+    var complete = true
+    match renderedValue {
+        None: {
+            complete = false
+        }
+        Some(found): {
+            valueText = found
+        }
+    }
+    match renderedTarget {
+        None: {
+            complete = false
+        }
+        Some(found): {
+            targetText = found
+        }
+    }
+    match renderedType {
+        None: {
+            complete = false
+        }
+        Some(found): {
+            typeText = found
+        }
+    }
+    if !complete || text.IsEmpty(typeText) || !goAddressable(&function, target) {
+        const failed = emitter.failed
+        if !failed {
+            goSourceFail(&emitter, "go-source cannot render replace", span)
+        }
+        return .None
+    }
+    .Some("func(value " + typeText + ", target *" + typeText + ") " + typeText + " {\n" +
+        goIndent(depth + 1) + "previous := *target\n" +
+        goIndent(depth + 1) + "*target = value\n" +
+        goIndent(depth + 1) + "return previous\n" +
+        goIndent(depth) + "}(" + valueText + ", &(" + targetText + "))")
+}
+
+fn goRenderExpression(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    id u64,
+    depth u64
+) Option<String> {
+    const firExpression { value type span } = cExpressionAt(&function, id)
+    var expressionType = type
+    match value {
+        Integer(integer): .Some(goScalarText(&expressionType) + "(" +
+            ("-" if integer.negative else "") + format.U64(integer.magnitude) + ")")
+        Floating(floating): .Some(goScalarText(&expressionType) + "(" + floating.text + ")")
+        Boolean(boolean): .Some("true" if boolean.value else "false")
+        StringValue(literal): .Some(goQuotedString(literal.value))
+        Array(array): {
+            var selected = array
+            goRenderArray(&emitter, &program, &function, &selected.elements, &expressionType,
+                span, depth)
+        }
+        Local(local): goRenderLocal(&emitter, local.local, span)
+        Read(read): goRenderLocal(&emitter, read.local, span)
+        Move(moved): goRenderLocal(&emitter, moved.local, span)
+        FunctionValue(reference): {
+            if reference.function >= program.functions.len() ||
+                !goFunctionNamed(&emitter, reference.function) {
+                goSourceFail(&emitter, "go-source cannot resolve a function value", span)
+                return .None
+            }
+            .Some(goTextAt(&emitter.names, reference.function))
+        }
+        Closure(closure): {
+            var selected = closure
+            goRenderClosure(&emitter, &program, &function, &selected, &expressionType, span,
+                depth)
+        }
+        Ownership(ownership): goRenderOwnership(&emitter, &program, &function,
+            ownership.operation, ownership.operand, &expressionType, span, depth)
+        ContractValue(conversion): {
+            var selected = conversion
+            goRenderContractValue(&emitter, &program, &function, &selected, depth)
+        }
+        EnumValue(enumValue): {
+            var selected = enumValue
+            goRenderEnumValue(&emitter, &program, &function, &selected, span, depth)
+        }
+        MatchValue(selected): {
+            var inspected = selected
+            goRenderMatchExpression(&emitter, &program, &function, &inspected, &expressionType,
+                span, depth)
+        }
+        Conditional(conditional): {
+            var selected = conditional
+            goRenderConditionalExpression(&emitter, &program, &function, &selected,
+                &expressionType, span, depth)
+        }
+        StructValue(structValue): {
+            var selected = structValue
+            goRenderStructValue(&emitter, &program, &function, &selected, span, depth)
+        }
+        Field(field): goRenderField(&emitter, &program, &function, field.base, field.field, span,
+            depth)
+        Index(indexed): goRenderIndex(&emitter, &program, &function, indexed.base, indexed.index,
+            depth)
+        ReplaceValue(replaced): goRenderReplace(&emitter, &program, &function, replaced.target,
+            replaced.value, &expressionType, span, depth)
+        Unary(unary): goRenderUnary(&emitter, &program, &function, unary.operation,
+            unary.operand, &expressionType, depth)
+        Binary(binary): goRenderBinary(&emitter, &program, &function, binary.left,
+            binary.operation, binary.right, depth)
+        Call(call): {
+            var selected = call
+            goRenderCall(&emitter, &program, &function, &selected, &expressionType, span, depth)
+        }
+        _: {
+            goSourceFail(&emitter, "go-source cannot render an expression", span)
+            .None
+        }
+    }
+}

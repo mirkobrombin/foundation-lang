@@ -1,0 +1,252 @@
+package foundation.compiler
+
+fn goFunctionHasStateMetadata(&function firFunction) bool {
+    var present = false
+    const first = replace function.stateTransition with .None
+    match first {
+        None: {}
+        Some(found): {
+            present = true
+            function.stateTransition = .Some(found)
+        }
+    }
+    const second = replace function.workflow with .None
+    match second {
+        None: {}
+        Some(found): {
+            present = true
+            function.workflow = .Some(found)
+        }
+    }
+    const third = replace function.stateTimeout with .None
+    match third {
+        None: {}
+        Some(found): {
+            present = true
+            function.stateTimeout = .Some(found)
+        }
+    }
+    present
+}
+
+fn goValidReceiver(
+    &emitter goSourceEmitter,
+    &function firFunction,
+    span sourceSpan
+) bool {
+    if !function.method || function.constructor || function.parameters.len() == 0 {
+        goSourceFail(&emitter, "go-source found invalid method receiver metadata", span)
+        return false
+    }
+    const receiver = goParameterAt(&function, 0)
+    if receiver >= function.locals.len() {
+        goSourceFail(&emitter, "go-source found an invalid method receiver", span)
+        return false
+    }
+    var receiverType = cLocalTypeAt(&function, receiver)
+    var owned = goOwnedValue(&receiverType)
+    if !owned.kind.Matches("StructValue") && !owned.kind.Matches("EnumValue") &&
+        !owned.kind.Matches("ContractValue") {
+        goSourceFail(&emitter, "go-source requires a nominal method receiver", span)
+        return false
+    }
+    true
+}
+
+fn goValidLocals(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    span sourceSpan,
+    rejections u64
+) bool {
+    var local u64 = 0
+    while local < function.locals.len() {
+        var localType = cLocalTypeAt(&function, local)
+        if !goScanType(&emitter, &program, &localType, span) || goIsVoidType(&localType) {
+            if emitter.rejections == rejections {
+                goSourceFail(&emitter, "go-source cannot translate local " +
+                    goLocalName(&function, local) + " in " + function.name, span)
+            }
+            return false
+        }
+        local += 1
+    }
+    true
+}
+
+fn goValidFunction(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    closure bool
+) bool {
+    const span = function.sourceSpan
+    if !function.hasBody || function.packageName != emitter.packageName {
+        goSourceFail(&emitter, "go-source reached a function without a same-package body", span)
+        return false
+    }
+    const stateMetadata = goFunctionHasStateMetadata(&function)
+    if function.typeParameterCount != 0 || function.closure != closure ||
+        function.taskFunction || function.blocking || function.callback ||
+        function.actionFunction || stateMetadata || function.attributes.len() != 0 {
+        goSourceFail(&emitter, "go-source reached unsupported function " + function.name, span)
+        return false
+    }
+    const hasReceiver = goFunctionHasReceiver(&function)
+    if function.constructor && hasReceiver {
+        goSourceFail(&emitter, "go-source reached a constructor with a receiver", span)
+        return false
+    }
+    if hasReceiver && !goValidReceiver(&emitter, &function, span) return false
+    const rejections = emitter.rejections
+    var returnType = copySemanticType(&function.returnType)
+    if !goScanType(&emitter, &program, &returnType, span) {
+        if emitter.rejections == rejections {
+            goSourceFail(&emitter, "go-source cannot translate result type of " + function.name,
+                span)
+        }
+        return false
+    }
+    if !goValidLocals(&emitter, &program, &function, span, rejections) return false
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        if goParameterAt(&function, parameter) >= function.locals.len() {
+            goSourceFail(&emitter, "go-source found invalid parameter metadata in " +
+                function.name, span)
+            return false
+        }
+        parameter += 1
+    }
+    true
+}
+
+fn goScanFunction(&emitter goSourceEmitter, &program firProgram, id u64) bool {
+    if id >= program.functions.len() {
+        goSourceFail(&emitter, "go-source reached an invalid function", goEmptySpan())
+        return false
+    }
+    const scanState = goU64At(&emitter.states, id)
+    if scanState == 2 || scanState == 1 return true
+    goU64Set(&emitter.states, id, 1)
+    var function = cFunctionAt(&program, id)
+    if !goValidFunction(&emitter, &program, &function, false) return false
+    goPrepareFunctionName(&emitter, &program, id)
+    const body = function.body
+    if !goScanBlock(&emitter, &program, &function, body) return false
+    goU64Set(&emitter.states, id, 2)
+    discard emitter.order.add(id)
+    true
+}
+
+fn goCaptureAt(&captures arena<firClosureCapture>, index u64) firClosureCapture {
+    const selected = match captures.take(index) {
+        None: panic("go-source capture slot is empty")
+        Some(found): found
+    }
+    const result = firClosureCapture { local = selected.local mode = selected.mode }
+    captures.restore(index, $selected)
+    result
+}
+
+fn goCaptureModeLoan(mode firCaptureMode) bool {
+    match mode {
+        View: true
+        Edit: true
+        _: false
+    }
+}
+
+fn goScanCaptures(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &outer firFunction,
+    &target firFunction,
+    &closure firClosureExpression,
+    span sourceSpan
+) bool {
+    var captureLocals = goCapturedLocals(&target)
+    if captureLocals.len() != closure.captures.len() {
+        goSourceFail(&emitter, "go-source found invalid closure capture metadata", span)
+        return false
+    }
+    var index u64 = 0
+    while index < closure.captures.len() {
+        const captured = goCaptureAt(&closure.captures, index)
+        const rejections = emitter.rejections
+        var valid = captured.local < outer.locals.len()
+        if valid {
+            var outerType = cLocalTypeAt(&outer, captured.local)
+            valid = goScanType(&emitter, &program, &outerType, span)
+        }
+        if valid {
+            var targetType = cLocalTypeAt(&target, goU64At(&captureLocals, index))
+            valid = goScanType(&emitter, &program, &targetType, span)
+        }
+        if !valid {
+            if emitter.rejections == rejections {
+                goSourceFail(&emitter, "go-source cannot translate a closure capture", span)
+            }
+            return false
+        }
+        index += 1
+    }
+    true
+}
+
+fn goScanClosure(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &outer firFunction,
+    &closure firClosureExpression,
+    span sourceSpan
+) bool {
+    if closure.function >= program.functions.len() {
+        goSourceFail(&emitter, "go-source reached an invalid closure", span)
+        return false
+    }
+    var target = cFunctionAt(&program, closure.function)
+    if !goScanCaptures(&emitter, &program, &outer, &target, &closure, span) return false
+    const scanState = goU64At(&emitter.states, closure.function)
+    if scanState == 2 || scanState == 1 return true
+    goU64Set(&emitter.states, closure.function, 1)
+    const body = target.body
+    if !goValidFunction(&emitter, &program, &target, true) ||
+        !goScanBlock(&emitter, &program, &target, body) {
+        return false
+    }
+    goU64Set(&emitter.states, closure.function, 2)
+    true
+}
+
+// Returns the call arguments in parameter order.
+fn goOrderedArguments(
+    &emitter goSourceEmitter,
+    &call firCallExpression,
+    span sourceSpan
+) Option<own arena<u64>> {
+    if call.argumentParameters.len() == 0 return .Some(copyFirU64Arena(&call.arguments))
+    if call.argumentParameters.len() != call.arguments.len() {
+        goSourceFail(&emitter, "go-source found invalid call argument metadata", span)
+        return .None
+    }
+    const zero u64 = 0
+    const missing = ~zero
+    var result = newArena<u64>()
+    var index u64 = 0
+    while index < call.arguments.len() {
+        discard result.add(missing)
+        index += 1
+    }
+    var source u64 = 0
+    while source < call.arguments.len() {
+        const target = goU64At(&call.argumentParameters, source)
+        if target >= result.len() || goU64At(&result, target) != missing {
+            goSourceFail(&emitter, "go-source found invalid call argument order", span)
+            return .None
+        }
+        goU64Set(&result, target, goU64At(&call.arguments, source))
+        source += 1
+    }
+    .Some(result)
+}

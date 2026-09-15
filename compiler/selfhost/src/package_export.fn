@@ -1,0 +1,271 @@
+package foundation.compiler
+
+import std.io
+import std.path
+import std.text
+
+enum packageExportFormat {
+    Zig
+    Rust
+    GoCgo
+    GoDynamic
+    GoSource
+}
+
+enum packageExportArtifact {
+    NoArtifact
+    StaticArchive
+    SharedLibrary
+}
+
+struct packageExportFile {
+    location String
+    contents String
+}
+
+struct packageExport {
+    artifact packageExportArtifact
+    files own arena<packageExportFile>
+}
+
+struct packageExportRequest {
+    output String
+    format packageExportFormat
+}
+
+fn parsePackageExportFormat(value String) Option<packageExportFormat> {
+    if value == "zig" return .Some(.Zig)
+    if value == "rust" return .Some(.Rust)
+    if value == "go-cgo" return .Some(.GoCgo)
+    if value == "go-dynamic" return .Some(.GoDynamic)
+    if value == "go-source" return .Some(.GoSource)
+    .None
+}
+
+fn packageExportFormatIsGoSource(format packageExportFormat) bool {
+    match format {
+        GoSource: true
+        _: false
+    }
+}
+
+fn exportFile(location String, contents String) packageExportFile {
+    packageExportFile { location = text.Copy(location) contents = text.Copy(contents) }
+}
+
+// Renders the files of one foreign-language package. The interface document
+// is rendered last because rendering it sorts the interface records in place.
+fn generatePackageExport(
+    &program firProgram,
+    &described packageInterface,
+    format packageExportFormat,
+    &found diagnostics
+) Option<own packageExport> {
+    if !exportTypesMapped(&described, format, &found) return .None
+    var files = newArena<packageExportFile>()
+    var artifact packageExportArtifact = .StaticArchive
+    const goSource = exportGoPackageName(&described) + ".go"
+    match format {
+        Zig: {
+            discard files.add(exportFile("src/root.zig", renderZigExportSource(&described)))
+            discard files.add(exportFile("build.zig", renderZigExportBuild(&described)))
+            discard files.add(exportFile("build.zig.zon", renderZigExportManifest(&described)))
+        }
+        Rust: {
+            discard files.add(exportFile("src/lib.rs", renderRustExportSource(&described)))
+            discard files.add(exportFile("Cargo.toml", renderRustExportManifest(&described)))
+            discard files.add(exportFile("build.rs", renderRustExportBuild(&described)))
+        }
+        GoCgo: {
+            discard files.add(exportFile(goSource, renderCgoExportSource(&described)))
+            discard files.add(exportFile("go.mod", renderGoExportModule(&described, false)))
+        }
+        GoDynamic: {
+            artifact = .SharedLibrary
+            discard files.add(exportFile(goSource, renderGoDynamicExportSource(&described)))
+            discard files.add(exportFile("go.mod", renderGoExportModule(&described, true)))
+            discard files.add(exportFile("go.sum", renderGoExportSum()))
+        }
+        GoSource: {
+            artifact = .NoArtifact
+            const translated = match translateGoSourcePackage(&program, &described, &found) {
+                None: {
+                    return .None
+                }
+                Some(value): value
+            }
+            discard files.add(exportFile(goSource, translated))
+            discard files.add(exportFile("go.mod", renderGoExportModule(&described, false)))
+        }
+    }
+    discard files.add(exportFile("foundation.pii.json", renderPackageInterfaceJSON(&described)))
+    .Some(own packageExport { artifact = artifact files = files })
+}
+
+// Parses the options after the exported project. Each option takes one value
+// and only --native may repeat; an invalid list yields no request.
+fn parsePackageExportArguments(
+    &arguments arena<String>,
+    &options compilerNativeOptions
+) Option<packageExportRequest> {
+    var output Option<String> = .None
+    var selected Option<packageExportFormat> = .None
+    var index u64 = 2
+    while index < arguments.len() {
+        if index + 1 >= arguments.len() return .None
+        const option = packageArgument(&arguments, index)
+        const value = packageArgument(&arguments, index + 1)
+        index += 2
+        const formatSeen = match selected {
+            None: false
+            Some(found): {
+                discard found
+                true
+            }
+        }
+        if option == "-o" && !optionStringPresent(output) {
+            output = .Some(value)
+        } else {
+            if option == "--format" && !formatSeen {
+                match parsePackageExportFormat(value) {
+                    None: {
+                        return .None
+                    }
+                    Some(found): {
+                        selected = .Some(found)
+                    }
+                }
+            } else {
+                if option == "--native" {
+                    discard options.inputs.add($value)
+                } else {
+                    if option != "--backend" || options.backendSeen return .None
+                    match parseCompilerBackend(value) {
+                        None: {
+                            return .None
+                        }
+                        Some(backend): {
+                            options.backend = backend
+                            options.backendSeen = true
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const outputPath = match output {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    const exportFormat = match selected {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    .Some(packageExportRequest { output = outputPath format = exportFormat })
+}
+
+fn writePackageExportFiles(outputDirectory String, &files arena<packageExportFile>) i32 {
+    var index u64 = 0
+    while index < files.len() {
+        const file = match files.take(index) {
+            None: panic("package export file slot is empty")
+            Some(found): found
+        }
+        const destination = path.Join(outputDirectory, file.location)
+        const contents = text.Copy(file.contents)
+        files.restore(index, $file)
+        if compilerPathIsSymbolicLink(destination) {
+            compilerProcessFailure("refusing symbolic-link package output file")
+            return 1
+        }
+        if writeCompilerOutput(destination, contents) != 0 return 1
+        discard io.WriteStdoutText("package " + destination + "\n")
+        index += 1
+    }
+    0
+}
+
+// Generates a package for another language from one package project. Formats
+// that call through the C ABI also publish the native library under native/.
+fn exportCompilerPackage(
+    input String,
+    outputDirectory String,
+    format packageExportFormat,
+    &options compilerNativeOptions
+) i32 {
+    var status i32 = 0
+    const sourceMode = packageExportFormatIsGoSource(format)
+    var project = match readCompilerNativeProject(
+        input, "package export", !sourceMode, true, false, &status) {
+        None: {
+            return status
+        }
+        Some(found): found
+    }
+    if sameTarget(project.lock.target, .Freestanding) {
+        compilerProcessFailure("package export does not support the freestanding target")
+        discard project
+        return 2
+    }
+    if !sameTarget(project.lock.target, hostTargetPlatform()) {
+        compilerProcessFailure("package export requires a lock for the host target")
+        discard project
+        return 2
+    }
+    const selected = loadLoweredProgram(input, false, .Production, hostTargetPlatform())
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
+    var described = match compilerPackageInterface(input, &lowered, &project, !sourceMode) {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
+    var found = newDiagnostics()
+    const generated = generatePackageExport(&lowered.program, &described, format, &found)
+    var result = match generated {
+        None: {
+            writeCompilerFoundDiagnostics($found, &lowered.loaded.sources)
+            return 1
+        }
+        Some(value): value
+    }
+    discard found
+    if compilerPathIsSymbolicLink(outputDirectory) {
+        compilerProcessFailure("refusing symbolic-link package output directory")
+        return 1
+    }
+    const nativeDirectory = path.Join(outputDirectory, "native")
+    match result.artifact {
+        NoArtifact: {}
+        StaticArchive: {
+            status = runCompilerBuildLibrary(input, nativeDirectory, false, false, false, &options)
+        }
+        SharedLibrary: {
+            status = runCompilerBuildLibrary(input, nativeDirectory, true, false, false, &options)
+        }
+    }
+    if status != 0 return status
+    writePackageExportFiles(outputDirectory, &result.files)
+}
+
+fn runPackageExportCommand(&arguments arena<String>) i32 {
+    var options = newCompilerNativeOptions()
+    const parsed = parsePackageExportArguments(&arguments, &options)
+    const request = match parsed {
+        None: {
+            discard io.WriteStderrText(packageUsage())
+            return 2
+        }
+        Some(found): found
+    }
+    exportCompilerPackage(packageArgument(&arguments, 1), request.output, request.format, &options)
+}

@@ -1,0 +1,261 @@
+package foundation.compiler
+
+fn goScanLocal(&emitter goSourceEmitter, &function firFunction, local u64, span sourceSpan) bool {
+    if local >= function.locals.len() {
+        goSourceFail(&emitter, "go-source found an invalid local in " + function.name, span)
+        return false
+    }
+    true
+}
+
+fn goScanExpressionList(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &values arena<u64>
+) bool {
+    var index u64 = 0
+    while index < values.len() {
+        if !goScanExpression(&emitter, &program, &function, goU64At(&values, index)) return false
+        index += 1
+    }
+    true
+}
+
+fn goScanUnary(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    operation firUnaryOperator,
+    operand u64,
+    &expressionType semanticType,
+    span sourceSpan
+) bool {
+    const name = goUnaryName(operation)
+    if name == "Dereference" {
+        goSourceFail(&emitter, "go-source reached an unsupported unary operation", span)
+        return false
+    }
+    if name == "Negate" && !isSignedSemanticInteger(&expressionType) &&
+        !isSemanticFloating(&expressionType) {
+        goSourceFail(&emitter, "go-source cannot negate this value", span)
+        return false
+    }
+    if name == "BitwiseNot" && !isSemanticInteger(&expressionType) {
+        goSourceFail(&emitter, "go-source cannot complement this value", span)
+        return false
+    }
+    if !goScanExpression(&emitter, &program, &function, operand) return false
+    if name == "Empty" {
+        var operandType = cExpressionTypeAt(&function, operand)
+        var selected = goWithoutLoan(&operandType)
+        if !goIsStringType(&selected) && !goSequenceKind(&selected) {
+            goSourceFail(&emitter, "go-source supports empty tests for String, arrays, and slices",
+                span)
+            return false
+        }
+    }
+    true
+}
+
+fn goScanIndex(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    base u64,
+    position u64,
+    span sourceSpan
+) bool {
+    if !goScanExpression(&emitter, &program, &function, base) ||
+        !goScanExpression(&emitter, &program, &function, position) {
+        return false
+    }
+    var baseType = cExpressionTypeAt(&function, base)
+    var selected = goWithoutOwnership(&baseType)
+    if !goSequenceKind(&selected) || selected.arguments.len() != 1 {
+        goSourceFail(&emitter, "go-source indexing requires an array or slice", span)
+        return false
+    }
+    true
+}
+
+fn goScanBinary(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    left u64,
+    operation firBinaryOperator,
+    right u64,
+    span sourceSpan
+) bool {
+    if !goScanExpression(&emitter, &program, &function, left) ||
+        !goScanExpression(&emitter, &program, &function, right) {
+        return false
+    }
+    var operandType = cExpressionTypeAt(&function, left)
+    const name = goBinaryName(operation)
+    const stringAddition = name == "Add" && goIsStringType(&operandType)
+    const arithmetic = goCheckedArithmetic(name) || goBitwiseArithmetic(name)
+    if !stringAddition && arithmetic && !isSemanticNumeric(&operandType) {
+        goSourceFail(&emitter, "go-source reached unsupported arithmetic", span)
+        return false
+    }
+    if name == "Remainder" && !isSemanticInteger(&operandType) {
+        goSourceFail(&emitter, "go-source reached unsupported remainder arithmetic", span)
+        return false
+    }
+    if goShiftArithmetic(name) && !isSemanticInteger(&operandType) {
+        goSourceFail(&emitter, "go-source reached unsupported shift arithmetic", span)
+        return false
+    }
+    if goBitwiseArithmetic(name) && !isSemanticInteger(&operandType) {
+        goSourceFail(&emitter, "go-source reached unsupported bitwise arithmetic", span)
+        return false
+    }
+    true
+}
+
+fn goScanStructValue(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &value firStructExpression,
+    span sourceSpan
+) bool {
+    if !goScanType(&emitter, &program, &value.type, span) return false
+    var index u64 = 0
+    while index < value.fields.len() {
+        const field = goFieldValueAt(&value.fields, index)
+        if !goScanExpression(&emitter, &program, &function, field.value) return false
+        index += 1
+    }
+    true
+}
+
+fn goScanBranchExpression(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    id u64,
+    span sourceSpan
+) bool {
+    if goExpressionEscapes(&function, id, 0) {
+        goSourceFail(&emitter, "go-source supports return, break, and continue in match arms " +
+            "and conditional branches only when the expression initializes or assigns a " +
+            "local, is discarded, or is returned", span)
+        return false
+    }
+    goScanBranches(&emitter, &program, &function, id, false)
+}
+
+fn goScanExpression(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    id u64
+) bool {
+    if id >= function.expressions.len() {
+        goSourceFail(&emitter, "go-source found an invalid expression in " + function.name,
+            function.sourceSpan)
+        return false
+    }
+    const firExpression { value type span } = cExpressionAt(&function, id)
+    var expressionType = type
+    if goPanicCall(&function, id) {
+        goSourceFail(&emitter,
+            "go-source supports panic only as a statement, return value, or branch value", span)
+        return false
+    }
+    if !optionStringPresent(goSourceType(&emitter, &program, &expressionType)) {
+        goSourceFail(&emitter, "go-source reached an unsupported expression type", span)
+        return false
+    }
+    match value {
+        Integer(literal): {
+            discard literal
+            true
+        }
+        Floating(literal): {
+            discard literal
+            true
+        }
+        Boolean(literal): {
+            discard literal
+            true
+        }
+        StringValue(literal): {
+            discard literal
+            true
+        }
+        Array(array): {
+            var selected = array
+            if !goScanType(&emitter, &program, &expressionType, span) return false
+            goScanExpressionList(&emitter, &program, &function, &selected.elements)
+        }
+        Local(local): goScanLocal(&emitter, &function, local.local, span)
+        Read(read): goScanLocal(&emitter, &function, read.local, span)
+        Move(moved): goScanLocal(&emitter, &function, moved.local, span)
+        FunctionValue(reference): {
+            if reference.typeArguments.len() != 0 {
+                goSourceFail(&emitter, "go-source cannot translate a generic function value", span)
+                return false
+            }
+            goScanFunction(&emitter, &program, reference.function)
+        }
+        Closure(closure): {
+            var selected = closure
+            goScanClosure(&emitter, &program, &function, &selected, span)
+        }
+        Unary(unary): goScanUnary(&emitter, &program, &function, unary.operation, unary.operand,
+            &expressionType, span)
+        Ownership(ownership): goScanExpression(&emitter, &program, &function, ownership.operand)
+        EnumValue(enumValue): {
+            var selected = enumValue
+            if !goScanType(&emitter, &program, &selected.type, span) return false
+            match copyFirU64Option(selected.payload) {
+                None: true
+                Some(payload): goScanExpression(&emitter, &program, &function, payload)
+            }
+        }
+        MatchValue(selected): {
+            discard selected
+            goScanBranchExpression(&emitter, &program, &function, id, span)
+        }
+        Conditional(conditional): {
+            discard conditional
+            goScanBranchExpression(&emitter, &program, &function, id, span)
+        }
+        ContractValue(conversion): {
+            var selected = conversion
+            goScanContract(&emitter, &program, &function, &selected, &expressionType, span)
+        }
+        StructValue(structValue): {
+            var selected = structValue
+            goScanStructValue(&emitter, &program, &function, &selected, span)
+        }
+        Field(field): goScanExpression(&emitter, &program, &function, field.base)
+        Index(indexed): goScanIndex(&emitter, &program, &function, indexed.base, indexed.index,
+            span)
+        ReplaceValue(replaced): {
+            if !goScanExpression(&emitter, &program, &function, replaced.value) ||
+                !goScanExpression(&emitter, &program, &function, replaced.target) {
+                return false
+            }
+            if !goAddressable(&function, replaced.target) {
+                goSourceFail(&emitter, "go-source cannot preserve this replace target", span)
+                return false
+            }
+            true
+        }
+        Binary(binary): goScanBinary(&emitter, &program, &function, binary.left,
+            binary.operation, binary.right, span)
+        Call(call): {
+            var selected = call
+            goScanCall(&emitter, &program, &function, &selected, &expressionType, span)
+        }
+        _: {
+            goSourceFail(&emitter, "go-source reached an unsupported expression", span)
+            false
+        }
+    }
+}

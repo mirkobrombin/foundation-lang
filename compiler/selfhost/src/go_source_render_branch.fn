@@ -1,0 +1,223 @@
+package foundation.compiler
+
+import std.text
+
+fn goSinkReturns(sink goSourceSink) bool {
+    match sink {
+        ReturnValue: true
+        _: false
+    }
+}
+
+// Lowers a value whose branches escape into Go statements that return the
+// selected value, assign it to target, or discard it. The result reports
+// whether the emitted statements end in a Go terminating statement.
+fn goRenderValueStatement(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    id u64,
+    sink goSourceSink,
+    target String,
+    depth u64
+) bool {
+    const indentation = goIndent(depth)
+    if goPanicCall(&function, id) {
+        match goRenderPanic(&emitter, &program, &function, id, depth) {
+            None: {}
+            Some(rendered): {
+                goWrite(&output, indentation + rendered + "\n")
+            }
+        }
+        return true
+    }
+    if goExpressionEscapes(&function, id, 0) {
+        const firExpression { value type span } = cExpressionAt(&function, id)
+        discard type
+        match value {
+            MatchValue(selected): {
+                var inspected = selected
+                return goRenderMatchStatement(&emitter, &program, &function, &output, &inspected,
+                    span, sink, target, depth)
+            }
+            Conditional(conditional): {
+                var selected = conditional
+                return goRenderConditionalStatement(&emitter, &program, &function, &output,
+                    &selected, sink, target, depth)
+            }
+            _: {
+                return false
+            }
+        }
+    }
+    var expressionType = cExpressionTypeAt(&function, id)
+    const rendered = match goRenderExpression(&emitter, &program, &function, id, depth) {
+        None: {
+            return false
+        }
+        Some(found): found
+    }
+    const voidValue = goIsVoidType(&expressionType)
+    match sink {
+        ReturnValue: {
+            if voidValue {
+                goWrite(&output, indentation + rendered + "\n" + indentation + "return\n")
+            } else {
+                goWrite(&output, indentation + "return " + rendered + "\n")
+            }
+            return true
+        }
+        AssignValue: {
+            goWrite(&output, indentation + target + " = " + rendered + "\n")
+        }
+        DiscardValue: {
+            if voidValue {
+                goWrite(&output, indentation + rendered + "\n")
+            } else {
+                goWrite(&output, indentation + "_ = " + rendered + "\n")
+            }
+        }
+    }
+    false
+}
+
+fn goRenderBranchStatement(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    block u64,
+    value u64,
+    sink goSourceSink,
+    target String,
+    depth u64
+) bool {
+    goRenderBlock(&emitter, &program, &function, &output, block, depth + 1)
+    if emitter.failed return false
+    goBlockTerminates(&function, block) ||
+        goRenderValueStatement(&emitter, &program, &function, &output, value, sink, target,
+        depth + 1)
+}
+
+fn goRenderConditionalStatement(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    &conditional firConditionalExpression,
+    sink goSourceSink,
+    target String,
+    depth u64
+) bool {
+    const rendered = match goRenderExpression(
+        &emitter, &program, &function, conditional.condition, depth) {
+        None: {
+            return false
+        }
+        Some(found): found
+    }
+    const indentation = goIndent(depth)
+    goWrite(&output, indentation + "if " + goCondition(rendered) + " {\n")
+    const thenTerminates = goRenderBranchStatement(&emitter, &program, &function, &output,
+        conditional.thenBlock, conditional.thenValue, sink, target, depth)
+    goWrite(&output, indentation + "} else {\n")
+    const elseTerminates = goRenderBranchStatement(&emitter, &program, &function, &output,
+        conditional.elseBlock, conditional.elseValue, sink, target, depth)
+    goWrite(&output, indentation + "}\n")
+    thenTerminates && elseTerminates
+}
+
+fn goRenderValueBranch(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    block u64,
+    value u64,
+    renderedType String,
+    depth u64
+) bool {
+    goRenderBlock(&emitter, &program, &function, &output, block, depth)
+    if emitter.failed return false
+    if goPanicCall(&function, value) {
+        match goRenderPanic(&emitter, &program, &function, value, depth) {
+            None: {
+                return false
+            }
+            Some(rendered): {
+                goWrite(&output, goIndent(depth) + rendered + "\n")
+                return true
+            }
+        }
+    }
+    const rendered = match goRenderExpression(&emitter, &program, &function, value, depth) {
+        None: {
+            return false
+        }
+        Some(found): found
+    }
+    goWrite(&output, goIndent(depth))
+    if !text.IsEmpty(renderedType) {
+        goWrite(&output, "return ")
+    }
+    goWrite(&output, rendered + "\n")
+    if text.IsEmpty(renderedType) {
+        goWrite(&output, goIndent(depth) + "return\n")
+    }
+    true
+}
+
+fn goRenderConditionalExpression(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &conditional firConditionalExpression,
+    &resultType semanticType,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    var complete = true
+    var conditionText = ""
+    match goRenderExpression(&emitter, &program, &function, conditional.condition, depth) {
+        None: {
+            complete = false
+        }
+        Some(found): {
+            conditionText = found
+        }
+    }
+    var renderedType = ""
+    match goSourceType(&emitter, &program, &resultType) {
+        None: {
+            complete = false
+        }
+        Some(found): {
+            renderedType = found
+        }
+    }
+    if !complete {
+        const failed = emitter.failed
+        if !failed {
+            goSourceFail(&emitter, "go-source cannot render a conditional expression", span)
+        }
+        return .None
+    }
+    var output = text.NewBuilder()
+    goWrite(&output, "func()")
+    if !text.IsEmpty(renderedType) {
+        goWrite(&output, " " + renderedType)
+    }
+    goWrite(&output, " {\n" + goIndent(depth + 1) + "if " + goCondition(conditionText) + " {\n")
+    if !goRenderValueBranch(&emitter, &program, &function, &output, conditional.thenBlock,
+        conditional.thenValue, renderedType, depth + 2) {
+        return .None
+    }
+    goWrite(&output, goIndent(depth + 1) + "} else {\n")
+    if !goRenderValueBranch(&emitter, &program, &function, &output, conditional.elseBlock,
+        conditional.elseValue, renderedType, depth + 2) {
+        return .None
+    }
+    goWrite(&output, goIndent(depth + 1) + "}\n" + goIndent(depth) + "}()")
+    .Some(goFinish(&output))
+}

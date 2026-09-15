@@ -198,6 +198,20 @@ function(require_report_parity label work)
     endif()
 endfunction()
 
+# Lists the files one package export format writes beside native/.
+function(package_export_files format output)
+    if(format STREQUAL "zig")
+        set(files build.zig build.zig.zon src/root.zig foundation.pii.json)
+    elseif(format STREQUAL "rust")
+        set(files Cargo.toml build.rs src/lib.rs foundation.pii.json)
+    elseif(format STREQUAL "go-dynamic")
+        set(files go.mod go.sum sample_native.go foundation.pii.json)
+    else()
+        set(files go.mod sample_native.go foundation.pii.json)
+    endif()
+    set(${output} ${files} PARENT_SCOPE)
+endfunction()
+
 file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
 set(hello "${ROOT}/tests/cases/accept/hello.fn")
 set(tests "${ROOT}/tests/cases/accept/test-declarations.fn")
@@ -567,6 +581,104 @@ if(DEFINED C_COMPILER AND NOT C_COMPILER STREQUAL "")
         "-DSYSTEM_NAME=${SYSTEM_NAME}"
         "-DNM=${NM}"
         "-DREADELF=${READELF}")
+endif()
+
+set(export_work "${PARITY_DIRECTORY}/export")
+set(export_project "${export_work}/project")
+file(MAKE_DIRECTORY "${export_project}")
+file(COPY "${ROOT}/tests/projects/native-interface/" DESTINATION "${export_project}")
+run_checked("export package resolve" "${STAGE0}" package resolve "${export_project}")
+foreach(format IN ITEMS zig rust go-cgo go-dynamic)
+    require_report_parity("package export ${format}" "${export_work}" package export
+        "${export_project}" -o "${export_work}/<side>-${format}" --format ${format}
+        --native "${export_project}/native/libfuse/increment.c")
+    package_export_files(${format} export_files)
+    foreach(file IN LISTS export_files ITEMS native/include/sample_native.h
+            native/share/foundation/sample_native.pii.json)
+        require_same_file("package export ${format} ${file}"
+            "${export_work}/stage0-${format}/${file}" "${export_work}/selfhost-${format}/${file}")
+    endforeach()
+endforeach()
+require_command_parity("package export format" package export "${export_project}"
+    -o "${export_work}/invalid" --format cobol)
+require_command_parity("package export missing format" package export "${export_project}"
+    -o "${export_work}/invalid")
+require_command_parity("package export project" package export "${hello}"
+    -o "${export_work}/invalid" --format zig)
+if(NOT command_status EQUAL 2)
+    message(FATAL_ERROR "package export accepted a source file instead of a package project")
+endif()
+foreach(format IN ITEMS zig go-source)
+    require_rejected_parity("package export freestanding ${format}" 2
+        "package export does not support the freestanding target"
+        package export "${ROOT}/tests/projects/freestanding-library"
+        -o "${export_work}/freestanding-${format}" --format ${format})
+endforeach()
+
+find_program(selfhost_zig NAMES zig HINTS "$ENV{HOME}/.local/zig-0.16.0")
+find_program(selfhost_cargo NAMES cargo)
+find_program(selfhost_go NAMES go go.exe)
+if(CMAKE_HOST_UNIX AND selfhost_zig AND selfhost_cargo AND selfhost_go)
+    run_selfhost_script("package export" assert-package-export.cmake
+        "-DSOURCE=${ROOT}/tests/projects/native-interface"
+        "-DWORK=${PARITY_DIRECTORY}/package-export"
+        "-DZIG_EXECUTABLE=${selfhost_zig}"
+        "-DCARGO_EXECUTABLE=${selfhost_cargo}"
+        "-DGO_EXECUTABLE=${selfhost_go}"
+        "-DSYSTEM_NAME=${SYSTEM_NAME}")
+endif()
+
+set(go_source_work "${PARITY_DIRECTORY}/go-source")
+set(go_source_project "${go_source_work}/go-source-interface")
+file(MAKE_DIRECTORY "${go_source_project}")
+file(COPY "${ROOT}/tests/projects/go-source-interface/" DESTINATION "${go_source_project}")
+run_checked("go-source package resolve" "${STAGE0}" package resolve "${go_source_project}")
+require_report_parity("package export go-source" "${go_source_work}" package export
+    "${go_source_project}" -o "${go_source_work}/<side>-output" --format go-source)
+foreach(file IN ITEMS go.mod sample_source.go foundation.pii.json)
+    require_same_file("package export go-source ${file}"
+        "${go_source_work}/stage0-output/${file}" "${go_source_work}/selfhost-output/${file}")
+endforeach()
+set(go_source_rejections
+    go-source-unsupported-conditional-escape
+    go-source-unsupported-contract-conflict
+    go-source-unsupported-generic-struct
+    go-source-unsupported-multiple
+    go-source-unsupported-name-collision
+    go-source-unsupported-open-generic
+    go-source-unsupported-owned-contract
+    go-source-unsupported-owner-cycle
+    go-source-unsupported-task
+    go-source-unsupported-unsafe
+    native-interface)
+foreach(fixture IN LISTS go_source_rejections)
+    set(rejected "${go_source_work}/${fixture}")
+    file(MAKE_DIRECTORY "${rejected}")
+    file(COPY "${ROOT}/tests/projects/${fixture}/" DESTINATION "${rejected}")
+    run_checked("${fixture} package resolve" "${STAGE0}" package resolve "${rejected}")
+    require_command_parity("go-source ${fixture}" package export "${rejected}"
+        -o "${go_source_work}/${fixture}-output" --format go-source)
+    if(NOT command_status EQUAL 1)
+        message(FATAL_ERROR "go-source did not reject ${fixture}")
+    endif()
+endforeach()
+if(selfhost_go)
+    run_selfhost_script("go-source export" assert-go-source-export.cmake
+        "-DSOURCE=${ROOT}/tests/projects/go-source-interface"
+        "-DUNSUPPORTED_SOURCE=${ROOT}/tests/projects/native-interface"
+        "-DRUNTIME_SOURCE=${ROOT}/tests/projects/go-source-unsupported-task"
+        "-DESCAPE_SOURCE=${ROOT}/tests/projects/go-source-unsupported-conditional-escape"
+        "-DOWNER_CYCLE_SOURCE=${ROOT}/tests/projects/go-source-unsupported-owner-cycle"
+        "-DOPEN_GENERIC_SOURCE=${ROOT}/tests/projects/go-source-unsupported-open-generic"
+        "-DGENERIC_STRUCT_SOURCE=${ROOT}/tests/projects/go-source-unsupported-generic-struct"
+        "-DMULTIPLE_SOURCE=${ROOT}/tests/projects/go-source-unsupported-multiple"
+        "-DOWNED_CONTRACT_SOURCE=${ROOT}/tests/projects/go-source-unsupported-owned-contract"
+        "-DCONTRACT_CONFLICT_SOURCE=${ROOT}/tests/projects/go-source-unsupported-contract-conflict"
+        "-DUNSAFE_SOURCE=${ROOT}/tests/projects/go-source-unsupported-unsafe"
+        "-DNAME_COLLISION_SOURCE=${ROOT}/tests/projects/go-source-unsupported-name-collision"
+        "-DFIXTURE=${ROOT}/tests/fixtures/package-export/go-source/source_test.go"
+        "-DWORK=${PARITY_DIRECTORY}/go-source-export"
+        "-DGO_EXECUTABLE=${selfhost_go}")
 endif()
 
 message(STATUS "self-hosted compiler commands passed")

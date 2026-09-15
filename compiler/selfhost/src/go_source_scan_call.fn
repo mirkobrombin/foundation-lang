@@ -1,0 +1,238 @@
+package foundation.compiler
+
+fn goScanLenCall(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &call firCallExpression,
+    span sourceSpan
+) bool {
+    if call.arguments.len() != 1 || call.typeArguments.len() != 0 {
+        goSourceFail(&emitter, "go-source supports len for String, arrays, and slices", span)
+        return false
+    }
+    const argument = goU64At(&call.arguments, 0)
+    if !goScanExpression(&emitter, &program, &function, argument) return false
+    var argumentType = cExpressionTypeAt(&function, argument)
+    var selected = goWithoutLoan(&argumentType)
+    if !goIsStringType(&selected) && !goSequenceKind(&selected) {
+        goSourceFail(&emitter, "go-source supports len for String, arrays, and slices", span)
+        return false
+    }
+    true
+}
+
+fn goCheckedConversionValid(
+    &program firProgram,
+    &expressionType semanticType,
+    &targetType semanticType
+) bool {
+    if !goBuiltinEnum(&program, &expressionType, "Result") return false
+    var errorValid = false
+    match goEnumPayloadType(&program, &expressionType, 1) {
+        None: {}
+        Some(found): {
+            var selected = found
+            errorValid = goBuiltinEnum(&program, &selected, "NumberError")
+        }
+    }
+    if !errorValid return false
+    match goEnumPayloadType(&program, &expressionType, 0) {
+        None: false
+        Some(found): {
+            var payload = found
+            sameSemanticType(&payload, &targetType)
+        }
+    }
+}
+
+fn goScanConversionCall(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &call firCallExpression,
+    &expressionType semanticType,
+    span sourceSpan
+) bool {
+    if call.arguments.len() != 1 || call.typeArguments.len() != 2 {
+        goSourceFail(&emitter, "go-source found invalid numeric conversion metadata", span)
+        return false
+    }
+    var sourceType = semanticTypeArgumentOf(&call.typeArguments, 0)
+    var targetType = semanticTypeArgumentOf(&call.typeArguments, 1)
+    if !isSemanticNumeric(&sourceType) || !isSemanticNumeric(&targetType) {
+        goSourceFail(&emitter, "go-source found invalid numeric conversion metadata", span)
+        return false
+    }
+    if !goScanExpression(&emitter, &program, &function, goU64At(&call.arguments, 0)) return false
+    if sameSemanticType(&expressionType, &targetType) return true
+    if !goCheckedConversionValid(&program, &expressionType, &targetType) {
+        goSourceFail(&emitter, "go-source found an invalid checked numeric conversion", span)
+        return false
+    }
+    goScanType(&emitter, &program, &expressionType, span)
+}
+
+fn goScanFunctionValueCall(
+    &emitter goSourceEmitter,
+    &function firFunction,
+    &call firCallExpression,
+    &arguments arena<u64>,
+    span sourceSpan
+) bool {
+    if call.local >= function.locals.len() {
+        goSourceFail(&emitter, "go-source found an invalid callable local", span)
+        return false
+    }
+    var localType = cLocalTypeAt(&function, call.local)
+    var callable = goWithoutLoan(&localType)
+    if !callable.kind.Matches("Function") || isCSemanticFunction(&callable) ||
+        callable.arguments.len() != arguments.len() + 1 {
+        goSourceFail(&emitter, "go-source found an invalid function value call", span)
+        return false
+    }
+    var index u64 = 0
+    while index < arguments.len() {
+        var parameter = semanticTypeArgument(&callable, index + 1)
+        if goPointerParameter(&parameter) &&
+            !goAddressable(&function, goU64At(&arguments, index)) {
+            goSourceFail(&emitter, "go-source cannot preserve an editable function argument",
+                span)
+            return false
+        }
+        index += 1
+    }
+    true
+}
+
+fn goScanFunctionCall(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    target u64,
+    &arguments arena<u64>,
+    span sourceSpan
+) bool {
+    if !goScanFunction(&emitter, &program, target) return false
+    var callee = cFunctionAt(&program, target)
+    if callee.parameters.len() != arguments.len() {
+        goSourceFail(&emitter, "go-source found invalid function call metadata", span)
+        return false
+    }
+    var index u64 = 0
+    while index < arguments.len() {
+        const parameter = goParameterAt(&callee, index)
+        if parameter >= callee.locals.len() {
+            goSourceFail(&emitter, "go-source found invalid function parameter metadata", span)
+            return false
+        }
+        var parameterType = cLocalTypeAt(&callee, parameter)
+        if goPointerParameter(&parameterType) &&
+            !goAddressable(&function, goU64At(&arguments, index)) {
+            goSourceFail(&emitter, "go-source cannot preserve an editable function argument",
+                span)
+            return false
+        }
+        index += 1
+    }
+    true
+}
+
+fn goValidContractCall(
+    &program firProgram,
+    &receiver semanticType,
+    method u64,
+    argumentCount u64
+) bool {
+    if !receiver.kind.Matches("ContractValue") || receiver.declaration >= program.contracts.len() {
+        return false
+    }
+    if method >= goContractMethodCount(&program, receiver.declaration) return false
+    const selected = goContractMethodAt(&program, receiver.declaration, method)
+    selected.parameters.len() + 1 == argumentCount
+}
+
+fn goScanContractCall(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &call firCallExpression,
+    span sourceSpan
+) bool {
+    if call.arguments.len() == 0 || call.typeArguments.len() != 0 {
+        goSourceFail(&emitter, "go-source found invalid contract call metadata", span)
+        return false
+    }
+    var index u64 = 0
+    while index < call.arguments.len() {
+        if !goScanExpression(&emitter, &program, &function, goU64At(&call.arguments, index)) {
+            return false
+        }
+        index += 1
+    }
+    var arguments = match goOrderedArguments(&emitter, &call, span) {
+        None: {
+            return false
+        }
+        Some(found): found
+    }
+    var receiverType = cExpressionTypeAt(&function, goU64At(&arguments, 0))
+    var receiver = goOwnedValue(&receiverType)
+    if !goValidContractCall(&program, &receiver, call.method, arguments.len()) {
+        goSourceFail(&emitter, "go-source found invalid contract call metadata", span)
+        return false
+    }
+    var method = goContractMethodAt(&program, receiver.declaration, call.method)
+    var position u64 = 1
+    while position < arguments.len() {
+        var parameterType = semanticTypeArgumentOf(&method.parameters, position - 1)
+        var substituted = substituteSemanticType(&parameterType, &receiver.arguments)
+        if goPointerParameter(&substituted) &&
+            !goAddressable(&function, goU64At(&arguments, position)) {
+            goSourceFail(&emitter, "go-source cannot preserve an editable contract argument", span)
+            return false
+        }
+        position += 1
+    }
+    goScanType(&emitter, &program, &receiver, span)
+}
+
+fn goScanCall(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &call firCallExpression,
+    &expressionType semanticType,
+    span sourceSpan
+) bool {
+    const kind = goCallKindName(call.kind)
+    if kind == "Len" return goScanLenCall(&emitter, &program, &function, &call, span)
+    if kind == "Print" {
+        if call.arguments.len() != 1 || call.typeArguments.len() != 0 {
+            goSourceFail(&emitter, "go-source found invalid print arguments", span)
+            return false
+        }
+        return goScanExpression(&emitter, &program, &function, goU64At(&call.arguments, 0))
+    }
+    if kind == "NumericConversion" {
+        return goScanConversionCall(&emitter, &program, &function, &call, &expressionType, span)
+    }
+    if kind == "ContractValue" {
+        return goScanContractCall(&emitter, &program, &function, &call, span)
+    }
+    if (kind != "Function" && kind != "FunctionValue") || call.typeArguments.len() != 0 {
+        goSourceFail(&emitter, "go-source reached an unsupported call", span)
+        return false
+    }
+    if !goScanExpressionList(&emitter, &program, &function, &call.arguments) return false
+    var arguments = match goOrderedArguments(&emitter, &call, span) {
+        None: {
+            return false
+        }
+        Some(found): found
+    }
+    if kind == "FunctionValue" {
+        return goScanFunctionValueCall(&emitter, &function, &call, &arguments, span)
+    }
+    goScanFunctionCall(&emitter, &program, &function, call.function, &arguments, span)
+}

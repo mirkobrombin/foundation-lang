@@ -1,0 +1,117 @@
+package foundation.compiler
+
+fn goScanLetElse(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &binding firLetElseStatement,
+    span sourceSpan
+) bool {
+    if binding.local >= function.locals.len() || binding.errorLocal >= function.locals.len() {
+        return false
+    }
+    const initializer = goScanExpression(&emitter, &program, &function, binding.initializer)
+    if !goScanBlock(&emitter, &program, &function, binding.elseBlock) || !initializer return false
+    var initializerType = cExpressionTypeAt(&function, binding.initializer)
+    if !goBuiltinEnum(&program, &initializerType, "Result") {
+        goSourceFail(&emitter, "go-source let-else requires Result", span)
+        return false
+    }
+    true
+}
+
+fn goScanResultElse(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &binding firResultElseStatement,
+    span sourceSpan
+) bool {
+    if binding.errorLocal >= function.locals.len() return false
+    const expression = goScanExpression(&emitter, &program, &function, binding.expression)
+    if !goScanBlock(&emitter, &program, &function, binding.elseBlock) || !expression return false
+    var expressionType = cExpressionTypeAt(&function, binding.expression)
+    if !goBuiltinEnum(&program, &expressionType, "Result") {
+        goSourceFail(&emitter, "go-source result-else requires Result", span)
+        return false
+    }
+    true
+}
+
+fn goScanDestructureBindings(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &destructure firStructDestructureStatement,
+    &destructured semanticType,
+    span sourceSpan
+) bool {
+    var declaration = goStructDeclaration(&program, destructured.declaration)
+    var bound = newArena<bool>()
+    var field u64 = 0
+    while field < declaration.fields.len() {
+        discard bound.add(false)
+        field += 1
+    }
+    var index u64 = 0
+    while index < destructure.bindings.len() {
+        const binding = goStructBindingAt(&destructure.bindings, index)
+        var valid = binding.local < function.locals.len() &&
+            binding.field < declaration.fields.len()
+        if valid {
+            valid = !goBoolAt(&bound, binding.field)
+        }
+        if valid {
+            var localType = cLocalTypeAt(&function, binding.local)
+            var fieldType = goStructFieldType(&declaration, binding.field)
+            var substituted = substituteSemanticType(&fieldType, &destructured.arguments)
+            valid = sameSemanticType(&localType, &substituted)
+        }
+        if !valid {
+            goSourceFail(&emitter, "go-source found invalid struct destructuring metadata", span)
+            return false
+        }
+        goBoolSet(&bound, binding.field, true)
+        index += 1
+    }
+    field = 0
+    while field < bound.len() {
+        if !goBoolAt(&bound, field) {
+            goSourceFail(&emitter, "go-source requires complete struct destructuring", span)
+            return false
+        }
+        field += 1
+    }
+    true
+}
+
+fn goScanDestructure(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &destructure firStructDestructureStatement,
+    span sourceSpan
+) bool {
+    var destructured = goOwnedValue(&destructure.type)
+    const rejections = emitter.rejections
+    var valid = destructured.kind.Matches("StructValue") &&
+        destructured.declaration < program.structs.len()
+    if valid {
+        valid = goScanType(&emitter, &program, &destructured, span)
+    }
+    if valid {
+        valid = goScanExpression(&emitter, &program, &function, destructure.initializer)
+    }
+    if valid {
+        var initializerType = cExpressionTypeAt(&function, destructure.initializer)
+        var owned = goOwnedValue(&initializerType)
+        valid = sameSemanticType(&owned, &destructured)
+    }
+    if !valid {
+        if emitter.rejections == rejections {
+            goSourceFail(&emitter, "go-source supports struct and owner destructuring only", span)
+        }
+        return false
+    }
+    goScanDestructureBindings(&emitter, &program, &function, &destructure, &destructured, span)
+}

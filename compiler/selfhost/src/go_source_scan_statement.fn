@@ -1,0 +1,235 @@
+package foundation.compiler
+
+fn goScanBlock(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    id u64
+) bool {
+    if id >= function.blocks.len() {
+        goSourceFail(&emitter, "go-source found an invalid block in " + function.name,
+            function.sourceSpan)
+        return false
+    }
+    var statements = goBlockStatements(&function, id)
+    var valid = true
+    var index u64 = 0
+    while index < statements.len() {
+        const statement = goU64At(&statements, index)
+        const rejections = emitter.rejections
+        if statement >= function.statements.len() ||
+            !goScanStatement(&emitter, &program, &function, statement) {
+            if emitter.rejections == rejections {
+                goSourceFail(&emitter, "go-source found an invalid statement in " + function.name,
+                    function.sourceSpan)
+            }
+            valid = false
+        }
+        index += 1
+    }
+    valid
+}
+
+fn goScanCompoundTarget(
+    &emitter goSourceEmitter,
+    &function firFunction,
+    &assignment firAssignmentStatement,
+    span sourceSpan
+) bool {
+    var targetType = cExpressionTypeAt(&function, assignment.target)
+    const name = goBinaryName(cAssignmentBinary(assignment.operation))
+    const stringAddition = name == "Add" && goIsStringType(&targetType)
+    const shift = goShiftArithmetic(name)
+    if !stringAddition && (!isSemanticNumeric(&targetType) ||
+        (shift && !isSemanticInteger(&targetType))) {
+        goSourceFail(&emitter,
+            "go-source supports compound assignment for numeric values and String", span)
+        return false
+    }
+    if name == "Remainder" && !isSemanticInteger(&targetType) {
+        goSourceFail(&emitter, "go-source requires an integer compound remainder target", span)
+        return false
+    }
+    true
+}
+
+fn goScanAssignment(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &assignment firAssignmentStatement,
+    span sourceSpan
+) bool {
+    if !goScanExpression(&emitter, &program, &function, assignment.target) return false
+    const shape = goPlaceShapeOf(&function, assignment.target)
+    const local = match shape {
+        LocalPlace: true
+        _: false
+    }
+    const plain = cAssignmentIsAssign(assignment.operation)
+    var value = false
+    if local && plain {
+        value = goScanStatementValue(&emitter, &program, &function, assignment.value)
+    } else {
+        value = goScanExpression(&emitter, &program, &function, assignment.value)
+    }
+    if !value return false
+    const place = match shape {
+        OtherPlace: false
+        _: true
+    }
+    if !place {
+        goSourceFail(&emitter,
+            "go-source supports assignment to locals, fields, and sequence elements", span)
+        return false
+    }
+    if plain return true
+    goScanCompoundTarget(&emitter, &function, &assignment, span)
+}
+
+fn goScanIterator(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &iteration firForStatement,
+    next u64,
+    span sourceSpan
+) bool {
+    var option = cExpressionTypeAt(&function, next)
+    if !goBuiltinEnum(&program, &option, "Option") || !goHasEnumPayload(&program, &option, 1) {
+        goSourceFail(&emitter, "go-source requires an iterator that returns Option", span)
+        return false
+    }
+    var loanValid = false
+    match goOwnershipOperand(&function, iteration.sequence) {
+        None: {}
+        Some(operand): {
+            loanValid = goAddressable(&function, operand)
+        }
+    }
+    if !iteration.ownsSequence && !loanValid {
+        goSourceFail(&emitter, "go-source cannot preserve this iterator loan", span)
+        return false
+    }
+    true
+}
+
+fn goScanFor(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &iteration firForStatement,
+    span sourceSpan
+) bool {
+    const rejections = emitter.rejections
+    if iteration.sequenceStorage >= function.locals.len() ||
+        iteration.index >= function.locals.len() || iteration.value >= function.locals.len() {
+        goSourceFail(&emitter, "go-source found invalid for metadata", span)
+        return false
+    }
+    const sequence = goScanExpression(&emitter, &program, &function, iteration.sequence)
+    var next = true
+    match copyFirU64Option(iteration.next) {
+        None: {}
+        Some(found): {
+            next = goScanExpression(&emitter, &program, &function, found)
+        }
+    }
+    if !goScanBlock(&emitter, &program, &function, iteration.body) || !sequence || !next {
+        if emitter.rejections == rejections {
+            goSourceFail(&emitter, "go-source supports for over arrays, slices, and iterators only",
+                span)
+        }
+        return false
+    }
+    match copyFirU64Option(iteration.next) {
+        None: {}
+        Some(found): {
+            return goScanIterator(&emitter, &program, &function, &iteration, found, span)
+        }
+    }
+    var sequenceType = cExpressionTypeAt(&function, iteration.sequence)
+    var selected = goWithoutLoan(&sequenceType)
+    if iteration.ownsSequence || !goSequenceKind(&selected) || selected.arguments.len() != 1 {
+        goSourceFail(&emitter, "go-source supports for over arrays, slices, and iterators only",
+            span)
+        return false
+    }
+    true
+}
+
+fn goScanStatement(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    id u64
+) bool {
+    const firStatement { value span } = cStatementAt(&function, id)
+    match value {
+        Variable(variable): variable.local < function.locals.len() &&
+            goScanStatementValue(&emitter, &program, &function, variable.initializer)
+        LetElse(binding): {
+            var selected = binding
+            goScanLetElse(&emitter, &program, &function, &selected, span)
+        }
+        ResultElse(binding): {
+            var selected = binding
+            goScanResultElse(&emitter, &program, &function, &selected, span)
+        }
+        StructDestructure(destructure): {
+            var selected = destructure
+            goScanDestructure(&emitter, &program, &function, &selected, span)
+        }
+        Assignment(assignment): {
+            var selected = assignment
+            goScanAssignment(&emitter, &program, &function, &selected, span)
+        }
+        Expression(expression): goScanValue(&emitter, &program, &function,
+            expression.expression, true)
+        Discard(discarded): goScanStatementValue(&emitter, &program, &function,
+            discarded.expression)
+        ReturnValue(returned): match copyFirU64Option(returned.value) {
+            None: true
+            Some(found): goScanValue(&emitter, &program, &function, found, true)
+        }
+        IfValue(branch): {
+            const condition = goScanExpression(&emitter, &program, &function, branch.condition)
+            const thenBlock = goScanBlock(&emitter, &program, &function, branch.thenBlock)
+            var elseBlock = true
+            match copyFirU64Option(branch.elseBlock) {
+                None: {}
+                Some(found): {
+                    elseBlock = goScanBlock(&emitter, &program, &function, found)
+                }
+            }
+            condition && thenBlock && elseBlock
+        }
+        WhileValue(iteration): {
+            const condition = goScanExpression(&emitter, &program, &function,
+                iteration.condition)
+            goScanBlock(&emitter, &program, &function, iteration.body) && condition
+        }
+        ForValue(iteration): {
+            var selected = iteration
+            goScanFor(&emitter, &program, &function, &selected, span)
+        }
+        BreakValue(stopped): {
+            discard stopped
+            true
+        }
+        ContinueValue(resumed): {
+            discard resumed
+            true
+        }
+        UnsafeValue(block): {
+            discard block
+            goSourceFail(&emitter, "go-source cannot translate an unsafe block", span)
+            false
+        }
+        SelectValue(selection): {
+            discard selection
+            goSourceFail(&emitter, "go-source cannot translate a channel select", span)
+            false
+        }
+    }
+}

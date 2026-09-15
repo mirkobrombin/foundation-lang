@@ -1,0 +1,178 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+struct goSourceEntry {
+    key String
+    value String
+}
+
+struct goSourceCount {
+    key String
+    value u64
+}
+
+struct goSourceTypeEntry {
+    key String
+    type semanticType
+}
+
+struct goSourceMessage {
+    message String
+    span sourceSpan
+}
+
+enum goSourceSink {
+    ReturnValue
+    AssignValue
+    DiscardValue
+}
+
+// Translation state of one go-source package. Keyed tables keep insertion
+// order; the renderers sort them by key wherever the Go output order depends
+// on it.
+struct goSourceEmitter {
+    packageName String
+    states own arena<u64>
+    names own arena<String>
+    usedNames own arena<String>
+    order own arena<u64>
+    helperNames own arena<goSourceEntry>
+    helpers own arena<goSourceEntry>
+    structStates own arena<goSourceCount>
+    contractNames own arena<goSourceEntry>
+    contractStates own arena<goSourceCount>
+    reachableContracts own arena<goSourceTypeEntry>
+    forwarders own arena<goSourceEntry>
+    forwarderDefaults own arena<goSourceEntry>
+    scanDepths own arena<goSourceCount>
+    scanDepth u64
+    ownerBarrier u64
+    reachableStructs own arena<goSourceTypeEntry>
+    structNames own arena<goSourceEntry>
+    preparedStructFields own arena<String>
+    structFieldNames own arena<goSourceEntry>
+    enumStates own arena<goSourceCount>
+    reachableEnums own arena<goSourceTypeEntry>
+    enumNames own arena<goSourceEntry>
+    preparedEnums own arena<String>
+    enumFieldNames own arena<goSourceEntry>
+    enumMethodNames own arena<goSourceEntry>
+    enumConstructorNames own arena<goSourceEntry>
+    currentLocals own arena<String>
+    currentGeneratedLocals own arena<String>
+    imports own arena<String>
+    reported own arena<String>
+    messages own arena<goSourceMessage>
+    rejections u64
+    failed bool
+}
+
+fn newGoSourceEmitter(packageName String, functionCount u64) own goSourceEmitter {
+    var states = newArena<u64>()
+    var names = newArena<String>()
+    const unscanned u64 = 0
+    var index u64 = 0
+    while index < functionCount {
+        discard states.add(unscanned)
+        discard names.add("")
+        index += 1
+    }
+    own goSourceEmitter {
+        packageName = text.Copy(packageName)
+        states = states
+        names = names
+        usedNames = newArena<String>()
+        order = newArena<u64>()
+        helperNames = newArena<goSourceEntry>()
+        helpers = newArena<goSourceEntry>()
+        structStates = newArena<goSourceCount>()
+        contractNames = newArena<goSourceEntry>()
+        contractStates = newArena<goSourceCount>()
+        reachableContracts = newArena<goSourceTypeEntry>()
+        forwarders = newArena<goSourceEntry>()
+        forwarderDefaults = newArena<goSourceEntry>()
+        scanDepths = newArena<goSourceCount>()
+        scanDepth = 0
+        ownerBarrier = 0
+        reachableStructs = newArena<goSourceTypeEntry>()
+        structNames = newArena<goSourceEntry>()
+        preparedStructFields = newArena<String>()
+        structFieldNames = newArena<goSourceEntry>()
+        enumStates = newArena<goSourceCount>()
+        reachableEnums = newArena<goSourceTypeEntry>()
+        enumNames = newArena<goSourceEntry>()
+        preparedEnums = newArena<String>()
+        enumFieldNames = newArena<goSourceEntry>()
+        enumMethodNames = newArena<goSourceEntry>()
+        enumConstructorNames = newArena<goSourceEntry>()
+        currentLocals = newArena<String>()
+        currentGeneratedLocals = newArena<String>()
+        imports = newArena<String>()
+        reported = newArena<String>()
+        messages = newArena<goSourceMessage>()
+        rejections = 0
+        failed = false
+    }
+}
+
+fn goUniqueName(&emitter goSourceEmitter, base String) String {
+    var root = text.Copy(base)
+    if text.IsEmpty(root) {
+        root = "foundationFunction"
+    }
+    var candidate = text.Copy(root)
+    var suffix u64 = 2
+    while arenaContainsString(&emitter.usedNames, candidate) {
+        candidate = root + format.U64(suffix)
+        suffix += 1
+    }
+    discard emitter.usedNames.add(text.Copy(candidate))
+    candidate
+}
+
+fn goEmptySpan() sourceSpan {
+    sourceSpan { offset = 0 length = 0 line = 1 column = 1 source = 0 }
+}
+
+// Records one rejection. Scanning continues so one run reports every rejected
+// construct; a repeated rejection still counts but is reported once.
+fn goSourceFail(&emitter goSourceEmitter, message String, span sourceSpan) void {
+    emitter.rejections += 1
+    emitter.failed = true
+    const full = message + "; use go-cgo or go-dynamic for this boundary"
+    const key = format.U64(span.source) + ":" + format.U64(span.offset) + ":" +
+        format.U64(span.length) + ":" + full
+    if arenaContainsString(&emitter.reported, key) return
+    discard emitter.reported.add($key)
+    discard emitter.messages.add(goSourceMessage { message = full span = goCopySpan(span) })
+}
+
+fn goCopySpan(span sourceSpan) sourceSpan {
+    sourceSpan {
+        offset = span.offset
+        length = span.length
+        line = span.line
+        column = span.column
+        source = span.source
+    }
+}
+
+fn goIndent(depth u64) String {
+    var result = ""
+    var index u64 = 0
+    while index < depth {
+        result = result + "\t"
+        index += 1
+    }
+    result
+}
+
+fn goWrite(&output text.Builder, value String) void {
+    discard packageBuilderWrite(&output, value)
+}
+
+fn goFinish(&output text.Builder) String {
+    packageBuilderFinish(&output)
+}

@@ -1,0 +1,235 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn goIdentifier(value String) String {
+    const result = exportCamelName(value)
+    if exportKeyword(result, exportGoKeywords()) return result + "_"
+    result
+}
+
+fn goLowerFirst(value String) String {
+    if text.IsEmpty(value) return ""
+    var first = applicationByteAt(value, 0)
+    if exportUpperLetter(first) {
+        first = first + 32
+    }
+    exportByteText(first) + applicationSlice(value, 1, text.ByteLen(value))
+}
+
+fn goLastDot(value String, limit u64) Option<u64> {
+    var index = limit
+    while index > 0 {
+        index -= 1
+        if applicationByteAt(value, index) == 46 return .Some(index)
+    }
+    .None
+}
+
+// Returns the segment before the member name of a qualified name.
+fn goMemberOwnerName(name String) String {
+    const member = match goLastDot(name, text.ByteLen(name)) {
+        None: {
+            return ""
+        }
+        Some(found): found
+    }
+    if member == 0 return ""
+    var start u64 = 0
+    match goLastDot(name, member) {
+        None: {}
+        Some(found): {
+            start = found + 1
+        }
+    }
+    applicationSlice(name, start, member)
+}
+
+fn goSuffixed(&used arena<String>, base String) String {
+    var candidate = text.Copy(base)
+    var suffix u64 = 2
+    while arenaContainsString(&used, candidate) {
+        candidate = base + format.U64(suffix)
+        suffix += 1
+    }
+    discard used.add(text.Copy(candidate))
+    candidate
+}
+
+fn goArgumentLabels(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType
+) String {
+    var result = ""
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = semanticTypeArgument(&value, index)
+        result = result + goEnumTypeLabel(&emitter, &program, &argument)
+        index += 1
+    }
+    result
+}
+
+fn goStructTypeName(&emitter goSourceEmitter, &program firProgram, &value semanticType) String {
+    const key = goSourceTypeKey(&value)
+    match goEntryFind(&emitter.structNames, key) {
+        Some(found): {
+            return found
+        }
+        None: {}
+    }
+    const base = exportTypeName(goStructDeclarationName(&program, value.declaration)) +
+        goArgumentLabels(&emitter, &program, &value)
+    const name = goUniqueName(&emitter, base)
+    goEntryPut(&emitter.structNames, key, name)
+    name
+}
+
+fn goEnumTypeName(&emitter goSourceEmitter, &program firProgram, &value semanticType) String {
+    const key = goSourceTypeKey(&value)
+    match goEntryFind(&emitter.enumNames, key) {
+        Some(found): {
+            return found
+        }
+        None: {}
+    }
+    const base = exportTypeName(goEnumDeclarationName(&program, value.declaration)) +
+        goArgumentLabels(&emitter, &program, &value)
+    const name = goUniqueName(&emitter, base)
+    goEntryPut(&emitter.enumNames, key, name)
+    name
+}
+
+fn goContractTypeName(&emitter goSourceEmitter, &program firProgram, &value semanticType) String {
+    const key = goSourceTypeKey(&value)
+    match goEntryFind(&emitter.contractNames, key) {
+        Some(found): {
+            return found
+        }
+        None: {}
+    }
+    const base = exportTypeName(goContractDeclarationName(&program, value.declaration)) +
+        goArgumentLabels(&emitter, &program, &value)
+    const name = goUniqueName(&emitter, base)
+    goEntryPut(&emitter.contractNames, key, name)
+    name
+}
+
+// Names one type argument inside a generated declaration name.
+fn goEnumTypeLabel(&emitter goSourceEmitter, &program firProgram, &value semanticType) String {
+    if value.kind.Matches("Own") && value.arguments.len() == 1 {
+        var inner = semanticTypeArgument(&value, 0)
+        return "Own" + goEnumTypeLabel(&emitter, &program, &inner)
+    }
+    var selected = goWithoutLoan(&value)
+    if goIsStringType(&selected) return "String"
+    const tag = goSourceTypeTag(&selected)
+    if !text.IsEmpty(tag) return tag
+    if goSameType(&selected, newSemanticType(.F32)) return "F32"
+    if goSameType(&selected, newSemanticType(.F64)) return "F64"
+    if goIsBoolType(&selected) return "Bool"
+    if goIsVoidType(&selected) return "Void"
+    if selected.kind.Matches("Array") && selected.arguments.len() == 1 {
+        var element = semanticTypeArgument(&selected, 0)
+        return "Array" + format.U64(selected.declaration) +
+            goEnumTypeLabel(&emitter, &program, &element)
+    }
+    if selected.kind.Matches("Slice") && selected.arguments.len() == 1 {
+        var element = semanticTypeArgument(&selected, 0)
+        return "Slice" + goEnumTypeLabel(&emitter, &program, &element)
+    }
+    if selected.kind.Matches("StructValue") && selected.declaration < program.structs.len() {
+        return goStructTypeName(&emitter, &program, &selected)
+    }
+    if selected.kind.Matches("EnumValue") && selected.declaration < program.enums.len() {
+        return goEnumTypeName(&emitter, &program, &selected)
+    }
+    if selected.kind.Matches("ContractValue") && selected.declaration < program.contracts.len() {
+        return goContractTypeName(&emitter, &program, &selected)
+    }
+    "Value"
+}
+
+fn goContractMethodName(&method goContractMethod) String {
+    if method.exported return exportTypeName(method.name)
+    goIdentifier(method.name)
+}
+
+fn goPrepareStructFields(&emitter goSourceEmitter, &program firProgram, id u64) void {
+    const key = format.U64(id)
+    if !goTextAdd(&emitter.preparedStructFields, key) return
+    var used = newArena<String>()
+    var declaration = goStructDeclaration(&program, id)
+    var field u64 = 0
+    while field < declaration.fields.len() {
+        const name = goStructFieldName(&declaration, field)
+        const exported = goStructFieldExported(&declaration, field)
+        var base = exportTypeName(name) if exported else goIdentifier(name)
+        if text.IsEmpty(base) {
+            base = "Field" if exported else "field"
+        }
+        const candidate = goSuffixed(&used, base)
+        goEntryPut(&emitter.structFieldNames, key + ":" + format.U64(field), candidate)
+        field += 1
+    }
+}
+
+fn goFieldName(&emitter goSourceEmitter, &program firProgram, declaration u64, field u64) String {
+    goPrepareStructFields(&emitter, &program, declaration)
+    goEntryText(&emitter.structFieldNames, format.U64(declaration) + ":" + format.U64(field))
+}
+
+// Names the payload fields, variant methods, and variant constructors of one
+// enum type once. Field and method names are unique within the type and the
+// constructors within the package.
+fn goPrepareEnum(&emitter goSourceEmitter, &program firProgram, &value semanticType) void {
+    const key = goSourceTypeKey(&value)
+    if !goTextAdd(&emitter.preparedEnums, key) return
+    const generatedType = goEnumTypeName(&emitter, &program, &value)
+    var fields = newArena<String>()
+    discard fields.add("tag")
+    var members = newArena<String>()
+    var declaration = goEnumDeclaration(&program, value.declaration)
+    var variant u64 = 0
+    while variant < declaration.variants.len() {
+        const name = goEnumVariantName(&declaration, variant)
+        const variantKey = key + "#" + format.U64(variant)
+        goEntryPut(&emitter.enumFieldNames, variantKey, goSuffixed(&fields, goIdentifier(name)))
+        goEntryPut(&emitter.enumMethodNames, variantKey, goSuffixed(&members, exportTypeName(name)))
+        const constructorName = goUniqueName(&emitter, "New" + generatedType + exportTypeName(name))
+        goEntryPut(&emitter.enumConstructorNames, variantKey, constructorName)
+        variant += 1
+    }
+}
+
+fn goEnumFieldName(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType,
+    variant u64
+) String {
+    goPrepareEnum(&emitter, &program, &value)
+    goEntryText(&emitter.enumFieldNames, goSourceTypeKey(&value) + "#" + format.U64(variant))
+}
+
+fn goEnumMethodName(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType,
+    variant u64
+) String {
+    goPrepareEnum(&emitter, &program, &value)
+    goEntryText(&emitter.enumMethodNames, goSourceTypeKey(&value) + "#" + format.U64(variant))
+}
+
+fn goEnumConstructorName(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType,
+    variant u64
+) String {
+    goPrepareEnum(&emitter, &program, &value)
+    goEntryText(&emitter.enumConstructorNames, goSourceTypeKey(&value) + "#" + format.U64(variant))
+}

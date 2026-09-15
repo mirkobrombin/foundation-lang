@@ -1,0 +1,230 @@
+package foundation.compiler
+
+fn goRejectOwnedPointerContract(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType,
+    span sourceSpan
+) bool {
+    var borrowed = copySemanticType(&value)
+    while goLoanKind(&borrowed) && borrowed.arguments.len() == 1 {
+        const inner = semanticTypeArgument(&borrowed, 0)
+        borrowed = inner
+    }
+    if !borrowed.kind.Matches("Own") || borrowed.arguments.len() != 1 return false
+    var target = semanticTypeArgument(&borrowed, 0)
+    if !target.kind.Matches("ContractValue") || target.declaration >= program.contracts.len() ||
+        !goPointerContract(&program, &target) {
+        return false
+    }
+    goSourceFail(&emitter, "go-source cannot translate an owned " +
+        goContractDeclarationName(&program, target.declaration) +
+        " because Go copies of it would share the value its editing methods change", span)
+    true
+}
+
+// Accepts a type that Go can express. A type that reaches itself is accepted
+// only when an owned enum payload lies on the cycle, because that payload is
+// the only owner stored behind a Go pointer.
+fn goScanType(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType,
+    span sourceSpan
+) bool {
+    if goRejectOwnedPointerContract(&emitter, &program, &value, span) return false
+    var selected = goOwnedValue(&value)
+    if optionStringPresent(goScalarType(&selected)) return true
+    if selected.kind.Matches("ContractValue") {
+        return goScanContractType(&emitter, &program, &selected, span)
+    }
+    if goSequenceKind(&selected) {
+        if selected.arguments.len() != 1 {
+            goSourceFail(&emitter, "go-source reached an incomplete sequence type", span)
+            return false
+        }
+        var element = semanticTypeArgument(&selected, 0)
+        return goScanType(&emitter, &program, &element, span)
+    }
+    if selected.kind.Matches("Function") {
+        if isCSemanticFunction(&selected) || selected.arguments.len() == 0 {
+            goSourceFail(&emitter, "go-source cannot translate this function type", span)
+            return false
+        }
+        var index u64 = 0
+        while index < selected.arguments.len() {
+            var argument = semanticTypeArgument(&selected, index)
+            if index != 0 {
+                const inner = goWithoutOwnership(&argument)
+                argument = inner
+            }
+            if !goScanType(&emitter, &program, &argument, span) return false
+            index += 1
+        }
+        return true
+    }
+    if selected.kind.Matches("EnumValue") {
+        return goScanEnumType(&emitter, &program, &selected, span)
+    }
+    if selected.kind.Matches("Raw") || selected.kind.Matches("RawConst") {
+        goSourceFail(&emitter, "go-source cannot translate a raw pointer", span)
+        return false
+    }
+    if selected.kind.Matches("Task") || selected.kind.Matches("Channel") ||
+        selected.kind.Matches("Sender") || selected.kind.Matches("Receiver") {
+        goSourceFail(&emitter, "go-source cannot translate a task or channel value", span)
+        return false
+    }
+    if !selected.kind.Matches("StructValue") || selected.declaration >= program.structs.len() {
+        goSourceFail(&emitter, "go-source reached an unsupported type", span)
+        return false
+    }
+    goScanStructType(&emitter, &program, &selected, span)
+}
+
+fn goScanEnumType(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType,
+    span sourceSpan
+) bool {
+    if value.declaration >= program.enums.len() {
+        goSourceFail(&emitter, "go-source reached an invalid enum type", span)
+        return false
+    }
+    var declaration = goEnumDeclaration(&program, value.declaration)
+    if value.arguments.len() != declaration.typeParameterCount {
+        goSourceFail(&emitter, "go-source reached an incomplete enum type", span)
+        return false
+    }
+    const key = goSourceTypeKey(&value)
+    const scanState = goCountValue(&emitter.enumStates, key)
+    if scanState == 2 return true
+    if scanState == 1 {
+        const recorded = goCountValue(&emitter.scanDepths, key)
+        if emitter.ownerBarrier > recorded return true
+        goSourceFail(&emitter, "go-source cannot translate recursive enum " + declaration.name +
+            " unless an owned enum payload closes the cycle", span)
+        return false
+    }
+    goCountSet(&emitter.enumStates, key, 1)
+    const depth = emitter.scanDepth
+    goCountSet(&emitter.scanDepths, key, depth)
+    emitter.scanDepth += 1
+    discard goEnumTypeName(&emitter, &program, &value)
+    goPrepareEnum(&emitter, &program, &value)
+    var variant u64 = 0
+    while variant < declaration.variants.len() {
+        match goEnumPayloadType(&program, &value, variant) {
+            None: {}
+            Some(payload): {
+                var selected = payload
+                const barrier = emitter.ownerBarrier
+                if selected.kind.Matches("Own") {
+                    emitter.ownerBarrier = emitter.scanDepth
+                }
+                const scanned = goScanType(&emitter, &program, &selected, span)
+                emitter.ownerBarrier = barrier
+                if !scanned {
+                    goCountSet(&emitter.enumStates, key, 0)
+                    emitter.scanDepth -= 1
+                    return false
+                }
+            }
+        }
+        variant += 1
+    }
+    emitter.scanDepth -= 1
+    goCountSet(&emitter.enumStates, key, 2)
+    goTypeEntryPut(&emitter.reachableEnums, key, &value)
+    true
+}
+
+fn goScanStructType(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType,
+    span sourceSpan
+) bool {
+    var declaration = goStructDeclaration(&program, value.declaration)
+    if value.arguments.len() != declaration.typeParameterCount {
+        goSourceFail(&emitter, "go-source reached an incomplete struct type", span)
+        return false
+    }
+    const key = goSourceTypeKey(&value)
+    const scanState = goCountValue(&emitter.structStates, key)
+    if scanState == 2 return true
+    if scanState == 1 {
+        const recorded = goCountValue(&emitter.scanDepths, key)
+        if emitter.ownerBarrier > recorded return true
+        goSourceFail(&emitter, "go-source cannot translate recursive struct " + declaration.name +
+            " unless an owned enum payload closes the cycle", span)
+        return false
+    }
+    if monomorphU64Present(declaration.dropFunction) || declaration.serviceType {
+        goSourceFail(&emitter, "go-source cannot translate struct " + declaration.name, span)
+        return false
+    }
+    goCountSet(&emitter.structStates, key, 1)
+    const depth = emitter.scanDepth
+    goCountSet(&emitter.scanDepths, key, depth)
+    emitter.scanDepth += 1
+    discard goStructTypeName(&emitter, &program, &value)
+    goPrepareStructFields(&emitter, &program, value.declaration)
+    var field u64 = 0
+    while field < declaration.fields.len() {
+        var fieldType = goStructFieldType(&declaration, field)
+        var substituted = substituteSemanticType(&fieldType, &value.arguments)
+        if !goScanType(&emitter, &program, &substituted, declaration.sourceSpan) {
+            goCountSet(&emitter.structStates, key, 0)
+            emitter.scanDepth -= 1
+            return false
+        }
+        field += 1
+    }
+    emitter.scanDepth -= 1
+    goCountSet(&emitter.structStates, key, 2)
+    goTypeEntryPut(&emitter.reachableStructs, key, &value)
+    true
+}
+
+// Go interfaces may refer to themselves, so a contract already under scan is
+// accepted.
+fn goScanContractType(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType,
+    span sourceSpan
+) bool {
+    if value.declaration >= program.contracts.len() ||
+        value.arguments.len() != goContractTypeParameterCount(&program, value.declaration) {
+        goSourceFail(&emitter, "go-source reached an incomplete contract type", span)
+        return false
+    }
+    const key = goSourceTypeKey(&value)
+    if goCountValue(&emitter.contractStates, key) != 0 return true
+    goCountSet(&emitter.contractStates, key, 1)
+    discard goContractTypeName(&emitter, &program, &value)
+    const count = goContractMethodCount(&program, value.declaration)
+    var index u64 = 0
+    while index < count {
+        var method = goContractMethodAt(&program, value.declaration, index)
+        var returnType = substituteSemanticType(&method.returnType, &value.arguments)
+        var valid = goScanType(&emitter, &program, &returnType, span)
+        var parameter u64 = 0
+        while parameter < method.parameters.len() && valid {
+            var parameterType = semanticTypeArgumentOf(&method.parameters, parameter)
+            var substituted = substituteSemanticType(&parameterType, &value.arguments)
+            valid = goScanType(&emitter, &program, &substituted, span)
+            parameter += 1
+        }
+        if !valid {
+            goCountSet(&emitter.contractStates, key, 0)
+            return false
+        }
+        index += 1
+    }
+    goCountSet(&emitter.contractStates, key, 2)
+    goTypeEntryPut(&emitter.reachableContracts, key, &value)
+    true
+}

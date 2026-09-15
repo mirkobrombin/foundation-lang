@@ -1,0 +1,111 @@
+package foundation.compiler
+
+import std.text
+
+fn goRenderWhile(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    conditionId u64,
+    body u64,
+    depth u64
+) void {
+    const condition = match goRenderExpression(
+        &emitter, &program, &function, conditionId, depth) {
+        None: {
+            return
+        }
+        Some(found): found
+    }
+    const indentation = goIndent(depth)
+    goWrite(&output, indentation + "for " + goCondition(condition) + " {\n")
+    goRenderBlock(&emitter, &program, &function, &output, body, depth + 1)
+    goWrite(&output, indentation + "}\n")
+}
+
+// An iterator loop calls next until it yields None. A borrowed iterator is
+// reached through a pointer so next edits the iterated place.
+fn goRenderIteratorFor(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    &iteration firForStatement,
+    next u64,
+    sequence String,
+    depth u64
+) void {
+    const indentation = goIndent(depth)
+    const sequenceName = goTextAt(&emitter.currentLocals, iteration.sequenceStorage)
+    const indexName = goTextAt(&emitter.currentLocals, iteration.index)
+    goWrite(&output, indentation + sequenceName + " := ")
+    if iteration.ownsSequence {
+        goWrite(&output, sequence + "\n")
+    } else {
+        goWrite(&output, "&(" + sequence + ")\n")
+        goTextSet(&emitter.currentLocals, iteration.sequenceStorage, "*" + sequenceName)
+    }
+    var option = cExpressionTypeAt(&function, next)
+    const nextName = goTemporaryLocal(&emitter, "next")
+    var indexType = usizeSemanticType()
+    goWrite(&output, indentation + "for " + indexName + " := uint(0); ; " + indexName + " = " +
+        goIntegerHelper(&emitter, .Add, &indexType) + "(" + indexName + ", 1) {\n")
+    const rendered = match goRenderExpression(&emitter, &program, &function, next, depth + 1) {
+        None: {
+            return
+        }
+        Some(found): found
+    }
+    const valueName = goTextAt(&emitter.currentLocals, iteration.value)
+    goWrite(&output, indentation + "\t" + nextName + " := " + rendered + "\n" +
+        indentation + "\tif " + nextName + ".tag == 0 {\n" +
+        indentation + "\t\tbreak\n" +
+        indentation + "\t}\n" +
+        indentation + "\t" + valueName + " := " +
+        goPayloadRead(&emitter, &program, &option, 1, nextName) + "\n" +
+        indentation + "\t_ = " + valueName + "\n")
+    goRenderBlock(&emitter, &program, &function, &output, iteration.body, depth + 1)
+    goTextSet(&emitter.currentLocals, iteration.sequenceStorage, sequenceName)
+    goWrite(&output, indentation + "}\n")
+}
+
+fn goRenderFor(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    &iteration firForStatement,
+    depth u64
+) void {
+    const sequence = match goRenderExpression(
+        &emitter, &program, &function, iteration.sequence, depth) {
+        None: {
+            return
+        }
+        Some(found): found
+    }
+    match copyFirU64Option(iteration.next) {
+        None: {}
+        Some(next): {
+            goRenderIteratorFor(&emitter, &program, &function, &output, &iteration, next,
+                sequence, depth)
+            return
+        }
+    }
+    const indentation = goIndent(depth)
+    const sequenceName = goTextAt(&emitter.currentLocals, iteration.sequenceStorage)
+    const indexName = goTextAt(&emitter.currentLocals, iteration.index)
+    const rawIndex = goTemporaryLocal(&emitter, "index")
+    const previousIndex = goTextAt(&emitter.currentLocals, iteration.index)
+    const previousValue = goTextAt(&emitter.currentLocals, iteration.value)
+    goTextSet(&emitter.currentLocals, iteration.value, sequenceName + "[" + indexName + "]")
+    goWrite(&output, indentation + sequenceName + " := " + sequence + "\n" +
+        indentation + "for " + rawIndex + " := range " + sequenceName + " {\n" +
+        indentation + "\t" + indexName + " := uint(" + rawIndex + ")\n" +
+        indentation + "\t_ = " + indexName + "\n")
+    goRenderBlock(&emitter, &program, &function, &output, iteration.body, depth + 1)
+    goTextSet(&emitter.currentLocals, iteration.index, previousIndex)
+    goTextSet(&emitter.currentLocals, iteration.value, previousValue)
+    goWrite(&output, indentation + "}\n")
+}

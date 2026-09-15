@@ -42,7 +42,10 @@ fn packageUsage() String {
         "  foundationc package verify <project> [--cache <path>]\n" +
         "  foundationc package inspect <project>\n" +
         "  foundationc package snapshot <project> -o <directory>\n" +
-        "  foundationc package prune <project> [--cache <path>]\n"
+        "  foundationc package prune <project> [--cache <path>]\n" +
+        "  foundationc package export <project> -o <directory>" +
+        " --format <zig|rust|go-cgo|go-dynamic|go-source>" +
+        " [--backend <llvm|c>] [--native <input>]...\n"
 }
 
 fn packageArgument(&arguments arena<String>, index u64) String {
@@ -845,6 +848,7 @@ fn prunePackageCommand(&options packageOptions) i32 {
 fn runPackageArgumentCommand(command String, &arguments arena<String>) Option<i32> {
     if command == "select" return .Some(selectPackageVersionCommand(&arguments))
     if command == "snapshot" return .Some(runPackageSnapshotCommand(&arguments))
+    if command == "export" return .Some(runPackageExportCommand(&arguments))
     .None
 }
 

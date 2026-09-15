@@ -1,0 +1,170 @@
+package foundation.compiler
+
+import std.text
+
+fn exportLowerLetter(value u64) bool {
+    value >= 97 && value <= 122
+}
+
+fn exportUpperLetter(value u64) bool {
+    value >= 65 && value <= 90
+}
+
+fn exportDigit(value u64) bool {
+    value >= 48 && value <= 57
+}
+
+fn exportByteText(value u64) String {
+    var builder = text.NewBuilder()
+    discard packageBuilderCodePoint(&builder, value)
+    packageBuilderFinish(&builder)
+}
+
+fn exportTextAt(&values arena<String>, index u64) String {
+    const value = match values.take(index) {
+        None: panic("package export text slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(value)
+    values.restore(index, $value)
+    result
+}
+
+// Splits a name into lower-case words. Every byte that is not an ASCII letter
+// or digit separates words, and an upper-case letter starts a new word after
+// a letter or before a lower-case letter.
+fn exportWords(value String) own arena<String> {
+    var result = newArena<String>()
+    var current = ""
+    var afterLetter = false
+    const length = text.ByteLen(value)
+    var index u64 = 0
+    while index < length {
+        const raw = applicationByteAt(value, index)
+        const upper = exportUpperLetter(raw)
+        const letter = upper || exportLowerLetter(raw)
+        if !letter && !exportDigit(raw) {
+            if !text.IsEmpty(current) {
+                discard result.add(text.Copy(current))
+                current = ""
+            }
+            afterLetter = false
+            index += 1
+            continue
+        }
+        const nextLower = index + 1 < length &&
+            exportLowerLetter(applicationByteAt(value, index + 1))
+        if upper && !text.IsEmpty(current) && (afterLetter || nextLower) {
+            discard result.add(text.Copy(current))
+            current = ""
+        }
+        var lowered = raw
+        if upper {
+            lowered = raw + 32
+        }
+        current = current + exportByteText(lowered)
+        afterLetter = letter
+        index += 1
+    }
+    if !text.IsEmpty(current) {
+        discard result.add(text.Copy(current))
+    }
+    result
+}
+
+fn exportIdentifierStart(value String) String {
+    if text.IsEmpty(value) || exportDigit(applicationByteAt(value, 0)) return "_" + value
+    text.Copy(value)
+}
+
+fn exportCapitalized(value String) String {
+    if text.IsEmpty(value) return ""
+    var first = applicationByteAt(value, 0)
+    if exportLowerLetter(first) {
+        first = first - 32
+    }
+    exportByteText(first) + applicationSlice(value, 1, text.ByteLen(value))
+}
+
+fn exportSnakeName(value String) String {
+    var parts = exportWords(value)
+    var result = ""
+    var index u64 = 0
+    while index < parts.len() {
+        if index != 0 {
+            result = result + "_"
+        }
+        result = result + exportTextAt(&parts, index)
+        index += 1
+    }
+    exportIdentifierStart(result)
+}
+
+fn exportCamelName(value String) String {
+    var parts = exportWords(value)
+    var result = ""
+    var index u64 = 0
+    while index < parts.len() {
+        const part = exportTextAt(&parts, index)
+        if index == 0 {
+            result = result + part
+        } else {
+            result = result + exportCapitalized(part)
+        }
+        index += 1
+    }
+    exportIdentifierStart(result)
+}
+
+fn exportTypeName(value String) String {
+    var parts = exportWords(metadataShortName(value))
+    var result = ""
+    var index u64 = 0
+    while index < parts.len() {
+        result = result + exportCapitalized(exportTextAt(&parts, index))
+        index += 1
+    }
+    exportIdentifierStart(result)
+}
+
+// Keyword lists separate their words with single spaces and start and end
+// with a space.
+fn exportKeyword(value String, keywords String) bool {
+    text.Contains(keywords, " " + value + " ")
+}
+
+fn exportGoKeywords() String {
+    " any append bool break byte cap case chan clear close comparable complex complex128" +
+        " complex64 const continue copy default defer delete else error fallthrough false" +
+        " float32 float64 for func go goto if imag import int int16 int32 int64 int8" +
+        " interface iota len make map max min new nil package panic print println range" +
+        " real recover return rune select string struct switch true type uint uint16" +
+        " uint32 uint64 uint8 uintptr var "
+}
+
+fn exportRustKeywords() String {
+    " as break const continue crate else enum extern false fn for if impl in let loop" +
+        " match mod move mut pub ref return self Self static struct super trait true type" +
+        " unsafe use where while async await dyn abstract become box do final macro" +
+        " override priv typeof unsized virtual yield try "
+}
+
+fn exportZigKeywords() String {
+    " align allowzero and anyframe anytype asm async await break callconv catch comptime" +
+        " const continue defer else enum errdefer error export extern fn for if inline" +
+        " noalias nosuspend opaque or orelse packed pub resume return linksection struct" +
+        " suspend switch test threadlocal try union unreachable usingnamespace var" +
+        " volatile while "
+}
+
+fn exportRustIdentifier(value String) String {
+    const result = exportSnakeName(value)
+    if exportKeyword(result, exportRustKeywords()) return result + "_"
+    result
+}
+
+fn exportZigIdentifier(value String) String {
+    const result = exportCamelName(value)
+    if exportKeyword(result, exportZigKeywords()) return result + "_"
+    result
+}

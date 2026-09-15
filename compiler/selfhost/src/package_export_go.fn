@@ -1,0 +1,215 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn exportGoPackageName(&value packageInterface) String {
+    const result = exportSnakeName(value.library)
+    if exportKeyword(result, exportGoKeywords()) return result + "_"
+    result
+}
+
+fn exportGoModulePath(&value packageInterface) String {
+    if text.Contains(value.packageName, ".") return text.Copy(value.packageName)
+    "foundation.local/" + exportSnakeName(value.packageName)
+}
+
+fn renderGoExportModule(&value packageInterface, dynamic bool) String {
+    const requirement = "\nrequire github.com/ebitengine/purego v0.10.2\n" if dynamic else ""
+    "module " + exportGoModulePath(&value) + "\n\ngo 1.24.0\n" + requirement
+}
+
+fn renderGoExportSum() String {
+    "github.com/ebitengine/purego v0.10.2 " +
+        "h1:W809HbnvzAxgdm+aOvlSekrM16wGCdT/e76+9tS7gzE=\n" +
+        "github.com/ebitengine/purego v0.10.2/go.mod " +
+        "h1:iIjxzd6CiRiOG0UyXP+V1+jWqUXVjPKLAI0mRfJZTmQ=\n"
+}
+
+fn exportSpaces(count u64) String {
+    var result = ""
+    var index u64 = 0
+    while index < count {
+        result = result + " "
+        index += 1
+    }
+    result
+}
+
+enum exportTypeProbe {
+    StringText
+    UnsafeValue
+    VoidPointer
+}
+
+fn exportVoidPointer(&type piiType) bool {
+    if !exportRawKind(type.kind) || type.arguments.len() != 1 return false
+    var target = piiTypeArgument(&type, 0)
+    piiKindIs(target.kind, "void")
+}
+
+fn exportTypeMatches(&type piiType, probe exportTypeProbe) bool {
+    match probe {
+        StringText: piiKindIs(type.kind, "string")
+        UnsafeValue: piiKindIs(type.kind, "string") || exportRawKind(type.kind)
+        VoidPointer: exportVoidPointer(&type)
+    }
+}
+
+fn exportParametersUse(&function piiFunction, probe exportTypeProbe) bool {
+    var index u64 = 0
+    while index < function.parameters.len() {
+        var parameter = exportParameterAt(&function, index)
+        if exportTypeMatches(&parameter.type, probe) return true
+        index += 1
+    }
+    false
+}
+
+// Reports whether an exported result, or with resultsOnly unset any exported
+// parameter, matches the probe.
+fn exportAnyFunctionUses(&value packageInterface, probe exportTypeProbe, resultsOnly bool) bool {
+    var used = false
+    var index u64 = 0
+    while index < value.exports.len() && !used {
+        var function = match value.exports.take(index) {
+            None: panic("package export function slot is empty")
+            Some(found): found
+        }
+        used = exportTypeMatches(&function.result, probe)
+        if !used && !resultsOnly {
+            used = exportParametersUse(&function, probe)
+        }
+        value.exports.restore(index, $function)
+        index += 1
+    }
+    used
+}
+
+fn exportGoUsesUnsafe(&value packageInterface) bool {
+    value.layouts.len() != 0 || exportAnyFunctionUses(&value, .UnsafeValue, false)
+}
+
+fn exportGoUsesString(&value packageInterface) bool {
+    exportAnyFunctionUses(&value, .StringText, false)
+}
+
+fn exportGoReturnsString(&value packageInterface) bool {
+    exportAnyFunctionUses(&value, .StringText, true)
+}
+
+fn exportGoUsesUnsafePointer(&value packageInterface) bool {
+    var layoutIndex u64 = 0
+    while layoutIndex < value.layouts.len() {
+        var layout = exportLayoutAt(&value, layoutIndex)
+        var field u64 = 0
+        while field < layout.fields.len() {
+            var selected = exportFieldAt(&layout, field)
+            if exportTypeMatches(&selected.type, .VoidPointer) return true
+            field += 1
+        }
+        layoutIndex += 1
+    }
+    exportAnyFunctionUses(&value, .VoidPointer, false)
+}
+
+fn renderGoExportTypes(&value packageInterface, &callbacks arena<exportCallback>) String {
+    var output = ""
+    var callback u64 = 0
+    while callback < callbacks.len() {
+        output = output + "type Callback" + format.U64(callback) + " uintptr\n"
+        callback += 1
+    }
+    if callbacks.len() != 0 {
+        output = output + "\n"
+    }
+    var layoutIndex u64 = 0
+    while layoutIndex < value.layouts.len() {
+        var layout = exportLayoutAt(&value, layoutIndex)
+        output = output + "type " + exportTypeName(layout.foundationName) + " struct {\n"
+        var width u64 = 0
+        var field u64 = 0
+        while field < layout.fields.len() {
+            var selected = exportFieldAt(&layout, field)
+            const nameLength = text.ByteLen(exportTypeName(selected.foundationName))
+            if nameLength > width {
+                width = nameLength
+            }
+            field += 1
+        }
+        field = 0
+        while field < layout.fields.len() {
+            var selected = exportFieldAt(&layout, field)
+            const name = exportTypeName(selected.foundationName)
+            const mapped = exportMapped(exportGoType(&selected.type, &callbacks, false, true))
+            output = output + "\t" + name + exportSpaces(width - text.ByteLen(name) + 1) +
+                mapped + "\n"
+            field += 1
+        }
+        output = output + "}\n\n"
+        layoutIndex += 1
+    }
+    output
+}
+
+fn renderGoExportImports(runtimePackage bool, unsafePackage bool, dynamic bool) String {
+    var imported = newArena<String>()
+    if dynamic {
+        discard imported.add("\"fmt\"")
+    }
+    if runtimePackage {
+        discard imported.add("\"runtime\"")
+    }
+    if unsafePackage {
+        discard imported.add("\"unsafe\"")
+    }
+    if dynamic {
+        discard imported.add("\"github.com/ebitengine/purego\"")
+    }
+    if imported.len() == 0 return ""
+    if imported.len() == 1 return "\nimport " + exportTextAt(&imported, 0) + "\n"
+    var output = "\nimport (\n"
+    var index u64 = 0
+    while index < imported.len() {
+        output = output + "\t" + exportTextAt(&imported, index) + "\n"
+        index += 1
+    }
+    output + ")\n"
+}
+
+fn goExportSignature(
+    &function piiFunction,
+    &callbacks arena<exportCallback>,
+    dynamicFunction bool
+) String {
+    var output = "("
+    var index u64 = 0
+    while index < function.parameters.len() {
+        var parameter = exportParameterAt(&function, index)
+        if index != 0 {
+            output = output + ", "
+        }
+        output = output + exportCamelName(parameter.name) + " " +
+            exportMapped(exportGoType(&parameter.type, &callbacks, dynamicFunction, false))
+        index += 1
+    }
+    const result = exportMapped(exportGoType(&function.result, &callbacks, dynamicFunction, false))
+    output = output + ")"
+    if !text.IsEmpty(result) {
+        output = output + " " + result
+    }
+    output + " {\n"
+}
+
+fn goExportKeepAlive(&function piiFunction) String {
+    var output = ""
+    var index u64 = 0
+    while index < function.parameters.len() {
+        var parameter = exportParameterAt(&function, index)
+        if piiKindIs(parameter.type.kind, "string") {
+            output = output + "\truntime.KeepAlive(" + exportCamelName(parameter.name) + ")\n"
+        }
+        index += 1
+    }
+    output
+}

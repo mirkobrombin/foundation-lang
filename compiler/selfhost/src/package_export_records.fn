@@ -1,0 +1,205 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+// One distinct function type of an exported boundary. Callbacks are numbered
+// in the byte order of their keys.
+struct exportCallback {
+    key String
+    type piiType
+}
+
+fn exportMapped(value Option<String>) String {
+    match value {
+        None: panic("package export type was not validated")
+        Some(found): text.Copy(found)
+    }
+}
+
+fn exportRawKind(kind piiTypeKind) bool {
+    piiKindIs(kind, "raw") || piiKindIs(kind, "raw_const")
+}
+
+fn exportFieldAt(&layout piiStructLayout, index u64) piiLayoutField {
+    var field = match layout.fields.take(index) {
+        None: panic("package export field slot is empty")
+        Some(found): found
+    }
+    const name = text.Copy(field.foundationName)
+    const cName = text.Copy(field.cName)
+    const copied = copyPiiType(&field.type)
+    layout.fields.restore(index, $field)
+    piiLayoutField { foundationName = name cName = cName type = copied }
+}
+
+fn exportLayoutAt(&value packageInterface, index u64) piiStructLayout {
+    var layout = match value.layouts.take(index) {
+        None: panic("package export layout slot is empty")
+        Some(found): found
+    }
+    var fields = newArena<piiLayoutField>()
+    var field u64 = 0
+    while field < layout.fields.len() {
+        discard fields.add(exportFieldAt(&layout, field))
+        field += 1
+    }
+    const name = text.Copy(layout.foundationName)
+    const cName = text.Copy(layout.cName)
+    value.layouts.restore(index, $layout)
+    piiStructLayout { foundationName = name cName = cName fields = fields }
+}
+
+fn exportParameterAt(&function piiFunction, index u64) piiParameter {
+    var parameter = match function.parameters.take(index) {
+        None: panic("package export parameter slot is empty")
+        Some(found): found
+    }
+    const name = text.Copy(parameter.name)
+    const copied = copyPiiType(&parameter.type)
+    const ownership = parameter.ownership
+    function.parameters.restore(index, $parameter)
+    piiParameter { name = name type = copied ownership = ownership }
+}
+
+fn exportLinkNameAt(&value packageInterface, index u64) String {
+    const link = match value.links.take(index) {
+        None: panic("package export link slot is empty")
+        Some(found): found
+    }
+    const name = text.Copy(link.name)
+    value.links.restore(index, $link)
+    name
+}
+
+fn exportPiiKindCode(kind piiTypeKind) String {
+    match kind {
+        Void: "0"
+        I8: "1"
+        I16: "2"
+        I32: "3"
+        I64: "4"
+        ISize: "5"
+        U8: "6"
+        U16: "7"
+        U32: "8"
+        U64: "9"
+        USize: "10"
+        F32: "11"
+        F64: "12"
+        Bool: "13"
+        StringValue: "14"
+        Raw: "15"
+        RawConst: "16"
+        Array: "17"
+        Slice: "18"
+        Own: "19"
+        View: "20"
+        Edit: "21"
+        StructValue: "22"
+        EnumValue: "23"
+        ContractValue: "24"
+        Function: "25"
+        Task: "26"
+        Channel: "27"
+        Sender: "28"
+        Receiver: "29"
+    }
+}
+
+fn exportPiiTypeKey(&type piiType) String {
+    var result = exportPiiKindCode(type.kind) + ":" + type.name + ":" + type.abi + ":"
+    result = result + ("1" if type.nullable else "0") + "<"
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = piiTypeArgument(&type, index)
+        result = result + exportPiiTypeKey(&argument) + ";"
+        index += 1
+    }
+    result + ">"
+}
+
+fn exportCallbackIndex(&callbacks arena<exportCallback>, key String) Option<u64> {
+    var index u64 = 0
+    while index < callbacks.len() {
+        const entry = match callbacks.take(index) {
+            None: panic("package export callback slot is empty")
+            Some(found): found
+        }
+        const same = entry.key == key
+        callbacks.restore(index, $entry)
+        if same return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn exportCallbackNumber(&callbacks arena<exportCallback>, &type piiType) String {
+    match exportCallbackIndex(&callbacks, exportPiiTypeKey(&type)) {
+        None: panic("package export callback was not collected")
+        Some(found): format.U64(found)
+    }
+}
+
+fn collectExportCallbacks(&type piiType, &callbacks arena<exportCallback>) void {
+    if piiKindIs(type.kind, "function") {
+        const key = exportPiiTypeKey(&type)
+        match exportCallbackIndex(&callbacks, key) {
+            Some(found): {
+                discard found
+            }
+            None: {
+                discard callbacks.add(exportCallback { key = key type = copyPiiType(&type) })
+            }
+        }
+    }
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = piiTypeArgument(&type, index)
+        collectExportCallbacks(&argument, &callbacks)
+        index += 1
+    }
+}
+
+fn compareExportCallback(left exportCallback, right exportCallback) i32 {
+    text.Compare(left.key, right.key)
+}
+
+fn collectExportFunctionCallbacks(&function piiFunction, &callbacks arena<exportCallback>) void {
+    collectExportCallbacks(&function.result, &callbacks)
+    var index u64 = 0
+    while index < function.parameters.len() {
+        var parameter = exportParameterAt(&function, index)
+        collectExportCallbacks(&parameter.type, &callbacks)
+        index += 1
+    }
+}
+
+// Collects the distinct function types that layout fields and exported
+// signatures mention.
+fn exportCallbacks(&value packageInterface) own arena<exportCallback> {
+    var result = newArena<exportCallback>()
+    var layoutIndex u64 = 0
+    while layoutIndex < value.layouts.len() {
+        var layout = exportLayoutAt(&value, layoutIndex)
+        var field u64 = 0
+        while field < layout.fields.len() {
+            var selected = exportFieldAt(&layout, field)
+            collectExportCallbacks(&selected.type, &result)
+            field += 1
+        }
+        layoutIndex += 1
+    }
+    var index u64 = 0
+    while index < value.exports.len() {
+        var function = match value.exports.take(index) {
+            None: panic("package export function slot is empty")
+            Some(found): found
+        }
+        collectExportFunctionCallbacks(&function, &result)
+        value.exports.restore(index, $function)
+        index += 1
+    }
+    sortArena<exportCallback>(&result, compareExportCallback)
+    result
+}

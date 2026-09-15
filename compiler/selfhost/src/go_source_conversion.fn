@@ -1,0 +1,111 @@
+package foundation.compiler
+
+import std.text
+
+struct goIntegerBounds {
+    lower String
+    upper String
+}
+
+// Returns the half-open range of one integer type as Go constant expressions.
+fn goIntegerBoundsOf(&emitter goSourceEmitter, &value semanticType) goIntegerBounds {
+    discard goTextAdd(&emitter.imports, "math")
+    const tag = goSourceTypeTag(&value)
+    var bits = ""
+    if !value.kind.Matches("Isize") && !value.kind.Matches("Usize") {
+        bits = applicationSlice(tag, 1, text.ByteLen(tag))
+    }
+    if isSignedSemanticInteger(&value) {
+        return goIntegerBounds { lower = "math.MinInt" + bits upper = "math.MaxInt" + bits + "+1" }
+    }
+    goIntegerBounds { lower = "0" upper = "math.MaxUint" + bits + "+1" }
+}
+
+fn goConversionFailure(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &resultType semanticType,
+    result String,
+    errorName String,
+    variant String
+) String {
+    "\t\treturn " + result + "{tag: 1, " + goEnumFieldName(&emitter, &program, &resultType, 1) +
+        ": " + errorName + "{tag: " + variant + "}}\n\t}\n"
+}
+
+// Mirrors the C and LLVM checked conversions: NonFinite precedes OutOfRange,
+// which precedes PrecisionLoss, and every range test runs before a Go
+// conversion whose result would be implementation-defined.
+fn goConversionHelper(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &sourceType semanticType,
+    &targetType semanticType,
+    &resultType semanticType
+) String {
+    const key = "Convert" + goEnumTypeLabel(&emitter, &program, &sourceType) + "To" +
+        goEnumTypeLabel(&emitter, &program, &targetType)
+    match goRegisteredHelper(&emitter, key) {
+        Some(found): {
+            return found
+        }
+        None: {}
+    }
+    const helper = goUniqueName(&emitter, "foundation" + key)
+    goEntryPut(&emitter.helperNames, key, helper)
+    const sourceName = goScalarText(&sourceType)
+    const targetName = goScalarText(&targetType)
+    const result = goEnumTypeName(&emitter, &program, &resultType)
+    var errorType = match goEnumPayloadType(&program, &resultType, 1) {
+        None: panic("checked conversion has no error payload")
+        Some(found): found
+    }
+    const errorName = goEnumTypeName(&emitter, &program, &errorType)
+    var output = "func " + helper + "(value " + sourceName + ") " + result + " {\n"
+    if isSemanticFloating(&sourceType) {
+        discard goTextAdd(&emitter.imports, "math")
+        const wide = "float64(value)" if sourceType.kind.Matches("F32") else "value"
+        output = output + "\tif math.IsNaN(" + wide + ") || math.IsInf(" + wide + ", 0) {\n" +
+            goConversionFailure(&emitter, &program, &resultType, result, errorName, "1")
+    }
+    if isSemanticInteger(&sourceType) && isSemanticInteger(&targetType) {
+        output = output + "\tconverted := " + targetName + "(value)\n\tif "
+        if isSignedSemanticInteger(&sourceType) && !isSignedSemanticInteger(&targetType) {
+            output = output + "value < 0 || "
+        } else {
+            if !isSignedSemanticInteger(&sourceType) && isSignedSemanticInteger(&targetType) {
+                output = output + "converted < 0 || "
+            }
+        }
+        output = output + sourceName + "(converted) != value {\n" +
+            goConversionFailure(&emitter, &program, &resultType, result, errorName, "0")
+    } else {
+        if isSemanticFloating(&sourceType) && isSemanticInteger(&targetType) {
+            const bounds = goIntegerBoundsOf(&emitter, &targetType)
+            output = output + "\tif value < " + bounds.lower + " || value >= " + bounds.upper +
+                " {\n" + goConversionFailure(&emitter, &program, &resultType, result, errorName,
+                "0") + "\tconverted := " + targetName + "(value)\n" +
+                "\tif " + sourceName + "(converted) != value {\n" +
+                goConversionFailure(&emitter, &program, &resultType, result, errorName, "2")
+        } else {
+            if isSemanticInteger(&sourceType) {
+                const bounds = goIntegerBoundsOf(&emitter, &sourceType)
+                output = output + "\tconverted := " + targetName + "(value)\n" +
+                    "\tif converted < " + bounds.lower + " || converted >= " + bounds.upper +
+                    " || " + sourceName + "(converted) != value {\n" +
+                    goConversionFailure(&emitter, &program, &resultType, result, errorName, "2")
+            } else {
+                // f64 values at or beyond the midpoint above MaxFloat32 round to infinity.
+                output = output + "\tif math.Abs(value) >= 0x1.ffffffp+127 {\n" +
+                    goConversionFailure(&emitter, &program, &resultType, result, errorName,
+                    "0") + "\tconverted := " + targetName + "(value)\n" +
+                    "\tif " + sourceName + "(converted) != value {\n" +
+                    goConversionFailure(&emitter, &program, &resultType, result, errorName, "2")
+            }
+        }
+    }
+    output = output + "\treturn " + result + "{tag: 0, " +
+        goEnumFieldName(&emitter, &program, &resultType, 0) + ": converted}\n}\n"
+    goEntryPut(&emitter.helpers, helper, output)
+    helper
+}

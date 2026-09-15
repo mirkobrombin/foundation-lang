@@ -1,0 +1,255 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn goMethodTargetAt(
+    &targets arena<firContractMethodTarget>,
+    index u64
+) firContractMethodTarget {
+    var selected = match targets.take(index) {
+        None: panic("go-source contract target slot is empty")
+        Some(found): found
+    }
+    const result = copyFirContractMethodTarget(&selected)
+    targets.restore(index, $selected)
+    result
+}
+
+fn goForwarderPointer(
+    &program firProgram,
+    &method goContractMethod,
+    &target firContractMethodTarget
+) bool {
+    if !target.contractDefault return goReceiverEdits(method.receiver)
+    var origin = cFunctionAt(&program, target.function)
+    match goDefaultReceiver(&program, &origin) {
+        None: false
+        Some(found): {
+            var selected = found
+            goPointerContract(&program, &selected)
+        }
+    }
+}
+
+fn goForwarderCall(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &concrete semanticType,
+    &target firContractMethodTarget,
+    &arguments arena<String>,
+    span sourceSpan
+) Option<String> {
+    const targetName = goTextAt(&emitter.names, target.function)
+    if target.contractDefault {
+        var output = targetName + "(self"
+        var index u64 = 0
+        while index < arguments.len() {
+            output = output + ", " + goTextAt(&arguments, index)
+            index += 1
+        }
+        return .Some(output)
+    }
+    var output = "self"
+    var owner = copySemanticType(&concrete)
+    var step u64 = 0
+    while step < target.delegatePath.len() {
+        const field = goU64At(&target.delegatePath, step)
+        if !owner.kind.Matches("StructValue") || owner.declaration >= program.structs.len() {
+            goSourceFail(&emitter, "go-source found an invalid contract delegate path", span)
+            return .None
+        }
+        var declaration = goStructDeclaration(&program, owner.declaration)
+        if field >= declaration.fields.len() {
+            goSourceFail(&emitter, "go-source found an invalid contract delegate path", span)
+            return .None
+        }
+        output = output + "." + goFieldName(&emitter, &program, owner.declaration, field)
+        var fieldType = goStructFieldType(&declaration, field)
+        var substituted = substituteSemanticType(&fieldType, &owner.arguments)
+        const next = goOwnedValue(&substituted)
+        owner = next
+        step += 1
+    }
+    output = output + "." + targetName + "("
+    var index u64 = 0
+    while index < arguments.len() {
+        if index != 0 {
+            output = output + ", "
+        }
+        output = output + goTextAt(&arguments, index)
+        index += 1
+    }
+    .Some(output)
+}
+
+// Renders the Go method that fills one contract slot the concrete struct does
+// not declare. A default receives the outer value and a delegated method runs
+// on the delegate field. The receiver is a pointer only when the slot or the
+// contract of its default can edit.
+fn goContractForwarder(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &concrete semanticType,
+    &contractType semanticType,
+    &method goContractMethod,
+    &target firContractMethodTarget,
+    span sourceSpan
+) Option<String> {
+    var returnType = substituteSemanticType(&method.returnType, &contractType.arguments)
+    const rendered = goSourceType(&emitter, &program, &returnType)
+    const named = goFunctionNamed(&emitter, target.function)
+    const result = match rendered {
+        None: {
+            goSourceFail(&emitter, "go-source cannot render a contract slot of " + method.name,
+                span)
+            return .None
+        }
+        Some(found): found
+    }
+    if !named {
+        goSourceFail(&emitter, "go-source cannot render a contract slot of " + method.name, span)
+        return .None
+    }
+    const pointer = goForwarderPointer(&program, &method, &target)
+    var output = "func (self " + ("*" if pointer else "") +
+        goStructTypeName(&emitter, &program, &concrete) + ") " + goContractMethodName(&method) +
+        "("
+    var used = newArena<String>()
+    var arguments = newArena<String>()
+    var index u64 = 0
+    while index < method.parameters.len() {
+        var parameterType = semanticTypeArgumentOf(&method.parameters, index)
+        var substituted = substituteSemanticType(&parameterType, &contractType.arguments)
+        const parameter = match goSourceParameterType(&emitter, &program, &substituted) {
+            None: ""
+            Some(found): found
+        }
+        if text.IsEmpty(parameter) {
+            goSourceFail(&emitter, "go-source cannot render a contract parameter of " +
+                method.name, span)
+            return .None
+        }
+        var base = ""
+        if index < method.parameterNames.len() {
+            base = goIdentifier(goTextAt(&method.parameterNames, index))
+        }
+        if text.IsEmpty(base) {
+            base = "value"
+        }
+        var candidate = text.Copy(base)
+        var suffix u64 = 2
+        while arenaContainsString(&emitter.usedNames, candidate) ||
+            arenaContainsString(&used, candidate) {
+            candidate = base + format.U64(suffix)
+            suffix += 1
+        }
+        discard used.add(text.Copy(candidate))
+        if index != 0 {
+            output = output + ", "
+        }
+        output = output + candidate + " " + parameter
+        discard arguments.add($candidate)
+        index += 1
+    }
+    output = output + ")"
+    if !text.IsEmpty(result) {
+        output = output + " " + result
+    }
+    output = output + " {\n\t"
+    if !text.IsEmpty(result) {
+        output = output + "return "
+    }
+    const call = match goForwarderCall(&emitter, &program, &concrete, &target, &arguments, span) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    .Some(output + call + ")\n}\n")
+}
+
+fn goRecordForwarder(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &concrete semanticType,
+    &method goContractMethod,
+    &target firContractMethodTarget,
+    forwarder String,
+    span sourceSpan
+) bool {
+    const name = goContractMethodName(&method)
+    var declaration = goStructDeclaration(&program, concrete.declaration)
+    var field u64 = 0
+    while field < declaration.fields.len() {
+        if goFieldName(&emitter, &program, concrete.declaration, field) == name {
+            goSourceFail(&emitter, "go-source cannot add method " + method.name +
+                " beside field " + goStructFieldName(&declaration, field) + " of " +
+                declaration.name, span)
+            return false
+        }
+        field += 1
+    }
+    const key = goSourceTypeKey(&concrete) + ":" + name
+    if !goEntryInsert(&emitter.forwarders, key, forwarder) &&
+        goEntryText(&emitter.forwarders, key) != forwarder {
+        goSourceFail(&emitter, "go-source cannot give " + declaration.name + " two different " +
+            method.name + " methods", span)
+        return false
+    }
+    if target.contractDefault {
+        goEntryPut(&emitter.forwarderDefaults, key,
+            goFunctionDeclarationName(&program, target.function))
+    }
+    true
+}
+
+// Scans a conversion of a concrete struct to a contract. A slot that the
+// struct does not declare becomes a Go method on it.
+fn goScanContract(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &conversion firContractExpression,
+    &expressionType semanticType,
+    span sourceSpan
+) bool {
+    var concrete = copySemanticType(&conversion.concreteType)
+    var contractType = copySemanticType(&conversion.contractType)
+    const valid = concrete.kind.Matches("StructValue") &&
+        concrete.declaration < program.structs.len() &&
+        contractType.kind.Matches("ContractValue") &&
+        contractType.declaration < program.contracts.len() &&
+        conversion.methodTargets.len() == goContractMethodCount(&program, contractType.declaration)
+    if !valid {
+        goSourceFail(&emitter, "go-source found invalid contract conversion metadata", span)
+        return false
+    }
+    if !goScanExpression(&emitter, &program, &function, conversion.value) ||
+        !goScanType(&emitter, &program, &expressionType, span) ||
+        !goScanType(&emitter, &program, &concrete, span) {
+        return false
+    }
+    const count = goContractMethodCount(&program, contractType.declaration)
+    var slot u64 = 0
+    while slot < count {
+        var target = goMethodTargetAt(&conversion.methodTargets, slot)
+        if !goScanFunction(&emitter, &program, target.function) return false
+        if target.contractDefault || target.delegatePath.len() != 0 {
+            var method = goContractMethodAt(&program, contractType.declaration, slot)
+            const forwarder = match goContractForwarder(
+                &emitter, &program, &concrete, &contractType, &method, &target, span) {
+                None: {
+                    return false
+                }
+                Some(found): found
+            }
+            if !goRecordForwarder(
+                &emitter, &program, &concrete, &method, &target, forwarder, span) {
+                return false
+            }
+        }
+        slot += 1
+    }
+    true
+}

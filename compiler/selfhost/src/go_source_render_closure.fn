@@ -1,0 +1,206 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+// Names the locals of one function, avoiding package-level names and the
+// prefix that generated temporaries use.
+fn goLocalNames(&emitter goSourceEmitter, &function firFunction) own arena<String> {
+    var used = copyFirStringArena(&emitter.usedNames)
+    var result = newArena<String>()
+    var local u64 = 0
+    while local < function.locals.len() {
+        var base = goIdentifier(goLocalName(&function, local))
+        if text.IsEmpty(base) {
+            base = "value"
+        }
+        if text.StartsWith(base, "foundation") {
+            base = base + "Value"
+        }
+        discard result.add(goSuffixed(&used, base))
+        local += 1
+    }
+    result
+}
+
+fn goTemporaryLocal(&emitter goSourceEmitter, purpose String) String {
+    const base = "foundation" + exportTypeName(purpose)
+    var candidate = text.Copy(base)
+    var suffix u64 = 2
+    while arenaContainsString(&emitter.currentGeneratedLocals, candidate) {
+        candidate = base + format.U64(suffix)
+        suffix += 1
+    }
+    discard emitter.currentGeneratedLocals.add(text.Copy(candidate))
+    candidate
+}
+
+struct goClosureCaptures {
+    parameters own arena<String>
+    arguments own arena<String>
+}
+
+// Captured loans become pointer parameters of a wrapping function literal, so
+// the closure body reads and edits the captured places through them.
+fn goRenderClosureCaptures(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &outer firFunction,
+    &target firFunction,
+    &closure firClosureExpression,
+    &targetLocals arena<String>,
+    &rawTargetLocals arena<String>,
+    &outerLocals arena<String>,
+    span sourceSpan
+) Option<own goClosureCaptures> {
+    var captureLocals = goCapturedLocals(&target)
+    if captureLocals.len() != closure.captures.len() {
+        goSourceFail(&emitter, "go-source cannot render closure capture metadata", span)
+        return .None
+    }
+    var parameters = newArena<String>()
+    var arguments = newArena<String>()
+    var index u64 = 0
+    while index < closure.captures.len() {
+        const captured = goCaptureAt(&closure.captures, index)
+        if captured.local >= outer.locals.len() || captured.local >= outerLocals.len() {
+            goSourceFail(&emitter, "go-source cannot render an invalid closure capture", span)
+            return .None
+        }
+        var outerType = cLocalTypeAt(&outer, captured.local)
+        const renderedType = match goSourceType(&emitter, &program, &outerType) {
+            None: ""
+            Some(found): found
+        }
+        if text.IsEmpty(renderedType) {
+            goSourceFail(&emitter, "go-source cannot render a closure capture type", span)
+            return .None
+        }
+        const targetLocal = goU64At(&captureLocals, index)
+        const name = goTextAt(&rawTargetLocals, targetLocal)
+        const outerName = goTextAt(&outerLocals, captured.local)
+        if goCaptureModeLoan(captured.mode) {
+            discard parameters.add(name + " *" + renderedType)
+            discard arguments.add("&(" + outerName + ")")
+            goTextSet(&targetLocals, targetLocal, "*" + name)
+        } else {
+            discard parameters.add(name + " " + renderedType)
+            discard arguments.add($outerName)
+        }
+        index += 1
+    }
+    .Some(own goClosureCaptures { parameters = parameters arguments = arguments })
+}
+
+fn goRenderClosureParameters(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &target firFunction,
+    &targetLocals arena<String>,
+    &rawTargetLocals arena<String>,
+    span sourceSpan
+) Option<own arena<String>> {
+    var parameters = newArena<String>()
+    var parameter u64 = 0
+    while parameter < target.parameters.len() {
+        const local = goParameterAt(&target, parameter)
+        if local >= target.locals.len() || local >= rawTargetLocals.len() {
+            goSourceFail(&emitter, "go-source cannot render closure parameter metadata", span)
+            return .None
+        }
+        var localType = cLocalTypeAt(&target, local)
+        const renderedType = match goSourceParameterType(&emitter, &program, &localType) {
+            None: ""
+            Some(found): found
+        }
+        if text.IsEmpty(renderedType) {
+            goSourceFail(&emitter, "go-source cannot render a closure parameter type", span)
+            return .None
+        }
+        const name = goTextAt(&rawTargetLocals, local)
+        discard parameters.add(name + " " + renderedType)
+        if goPointerParameter(&localType) {
+            goTextSet(&targetLocals, local, "*" + name)
+        }
+        parameter += 1
+    }
+    .Some(parameters)
+}
+
+fn goRenderClosure(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &outer firFunction,
+    &closure firClosureExpression,
+    &callableType semanticType,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    if closure.function >= program.functions.len() {
+        goSourceFail(&emitter, "go-source cannot render an invalid closure", span)
+        return .None
+    }
+    var target = cFunctionAt(&program, closure.function)
+    var targetLocals = goLocalNames(&emitter, &target)
+    var rawTargetLocals = copyFirStringArena(&targetLocals)
+    var outerLocals = copyFirStringArena(&emitter.currentLocals)
+    var outerGeneratedLocals = copyFirStringArena(&emitter.currentGeneratedLocals)
+    var captures = match goRenderClosureCaptures(&emitter, &program, &outer, &target, &closure,
+        &targetLocals, &rawTargetLocals, &outerLocals, span) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    var parameters = match goRenderClosureParameters(
+        &emitter, &program, &target, &targetLocals, &rawTargetLocals, span) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    const callable = match goSourceType(&emitter, &program, &callableType) {
+        None: ""
+        Some(found): found
+    }
+    var returnType = copySemanticType(&target.returnType)
+    const renderedResult = goSourceType(&emitter, &program, &returnType)
+    const result = match renderedResult {
+        None: {
+            goSourceFail(&emitter, "go-source cannot render a closure signature", span)
+            return .None
+        }
+        Some(found): found
+    }
+    if text.IsEmpty(callable) {
+        goSourceFail(&emitter, "go-source cannot render a closure signature", span)
+        return .None
+    }
+    emitter.currentLocals = targetLocals
+    emitter.currentGeneratedLocals = copyFirStringArena(&rawTargetLocals)
+    const wrapped = captures.parameters.len() != 0
+    var output = text.NewBuilder()
+    var bodyDepth = depth + 1
+    var closingDepth = depth
+    if wrapped {
+        goWrite(&output, "func(" + goJoin(&captures.parameters, ", ") + ") " + callable + " {\n" +
+            goIndent(depth + 1) + "return ")
+        bodyDepth = depth + 2
+        closingDepth = depth + 1
+    }
+    goWrite(&output, "func(" + goJoin(&parameters, ", ") + ")")
+    if !text.IsEmpty(result) {
+        goWrite(&output, " " + result)
+    }
+    goWrite(&output, " {\n")
+    const body = target.body
+    goRenderBlock(&emitter, &program, &target, &output, body, bodyDepth)
+    goWrite(&output, goIndent(closingDepth) + "}")
+    if wrapped {
+        goWrite(&output, "\n" + goIndent(depth) + "}(" + goJoin(&captures.arguments, ", ") + ")")
+    }
+    emitter.currentLocals = outerLocals
+    emitter.currentGeneratedLocals = outerGeneratedLocals
+    if emitter.failed return .None
+    .Some(goFinish(&output))
+}

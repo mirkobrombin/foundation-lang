@@ -67,7 +67,7 @@ fn compilerPackageInterface(
     const built = buildPackageInterface(&lowered.program, &project, &found)
     var result = match built {
         None: {
-            writeCompilerDiagnostics($found, &lowered.loaded.sources, input)
+            writeCompilerFoundDiagnostics($found, &lowered.loaded.sources)
             return .None
         }
         Some(value): value
@@ -78,7 +78,7 @@ fn compilerPackageInterface(
             "native library exports no C ABI functions",
             sourceSpan { offset = 0 length = 0 line = 1 column = 1 source = 0 }
         )
-        writeCompilerDiagnostics($found, &lowered.loaded.sources, input)
+        writeCompilerFoundDiagnostics($found, &lowered.loaded.sources)
         discard result
         return .None
     }

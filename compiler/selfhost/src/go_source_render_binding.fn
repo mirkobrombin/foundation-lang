@@ -1,0 +1,100 @@
+package foundation.compiler
+
+import std.text
+
+fn goRenderResultCheck(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    expression u64,
+    errorLocal u64,
+    elseBlock u64,
+    depth u64
+) Option<String> {
+    const rendered = match goRenderExpression(&emitter, &program, &function, expression, depth) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    var resultType = cExpressionTypeAt(&function, expression)
+    const indentation = goIndent(depth)
+    const temporary = goTemporaryLocal(&emitter, "result")
+    const errorName = goTextAt(&emitter.currentLocals, errorLocal)
+    goWrite(&output, indentation + temporary + " := " + rendered + "\n" +
+        indentation + "if " + temporary + ".tag == 1 {\n" +
+        indentation + "\t" + errorName + " := " +
+        goPayloadRead(&emitter, &program, &resultType, 1, temporary) + "\n" +
+        indentation + "\t_ = " + errorName + "\n")
+    goRenderBlock(&emitter, &program, &function, &output, elseBlock, depth + 1)
+    goWrite(&output, indentation + "}\n")
+    .Some(temporary)
+}
+
+fn goRenderLetElse(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    &binding firLetElseStatement,
+    depth u64
+) void {
+    const temporary = match goRenderResultCheck(&emitter, &program, &function, &output,
+        binding.initializer, binding.errorLocal, binding.elseBlock, depth) {
+        None: {
+            return
+        }
+        Some(found): found
+    }
+    var resultType = cExpressionTypeAt(&function, binding.initializer)
+    const indentation = goIndent(depth)
+    const localName = goTextAt(&emitter.currentLocals, binding.local)
+    goWrite(&output, indentation + localName + " := " +
+        goPayloadRead(&emitter, &program, &resultType, 0, temporary) + "\n" +
+        indentation + "_ = " + localName + "\n")
+}
+
+fn goRenderDestructure(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &output text.Builder,
+    &destructure firStructDestructureStatement,
+    span sourceSpan,
+    depth u64
+) void {
+    const rendered = goRenderExpression(
+        &emitter, &program, &function, destructure.initializer, depth)
+    var destructured = goOwnedValue(&destructure.type)
+    const valid = destructured.kind.Matches("StructValue") &&
+        destructured.declaration < program.structs.len()
+    const initializer = match rendered {
+        None: ""
+        Some(found): found
+    }
+    if text.IsEmpty(initializer) || !valid {
+        const failed = emitter.failed
+        if !failed {
+            goSourceFail(&emitter, "go-source cannot render struct destructuring", span)
+        }
+        return
+    }
+    const indentation = goIndent(depth)
+    const temporary = goTemporaryLocal(&emitter, "destructure")
+    goWrite(&output, indentation + temporary + " := " + initializer + "\n")
+    var index u64 = 0
+    while index < destructure.bindings.len() {
+        const binding = goStructBindingAt(&destructure.bindings, index)
+        if binding.local >= emitter.currentLocals.len() {
+            goSourceFail(&emitter, "go-source found an invalid struct binding while rendering",
+                span)
+            return
+        }
+        const local = goTextAt(&emitter.currentLocals, binding.local)
+        goWrite(&output, indentation + local + " := (" + temporary + ")." +
+            goFieldName(&emitter, &program, destructured.declaration, binding.field) + "\n" +
+            indentation + "_ = " + local + "\n")
+        index += 1
+    }
+}

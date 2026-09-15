@@ -1,0 +1,264 @@
+package foundation.compiler
+
+import std.text
+
+fn exportZigScalar(kind piiTypeKind) Option<String> {
+    if piiScalarKind(kind) return .Some(piiTypeKindName(kind))
+    if piiKindIs(kind, "void") return .Some("void")
+    if piiKindIs(kind, "string") return .Some("FoundationString")
+    .None
+}
+
+fn exportRustScalar(kind piiTypeKind) Option<String> {
+    if piiScalarKind(kind) return .Some(piiTypeKindName(kind))
+    if piiKindIs(kind, "void") return .Some("()")
+    if piiKindIs(kind, "string") return .Some("FoundationString")
+    .None
+}
+
+fn exportGoScalar(kind piiTypeKind) Option<String> {
+    match kind {
+        Void: .Some("")
+        I8: .Some("int8")
+        I16: .Some("int16")
+        I32: .Some("int32")
+        I64: .Some("int64")
+        ISize: .Some("int")
+        U8: .Some("uint8")
+        U16: .Some("uint16")
+        U32: .Some("uint32")
+        U64: .Some("uint64")
+        USize: .Some("uint")
+        F32: .Some("float32")
+        F64: .Some("float64")
+        Bool: .Some("bool")
+        StringValue: .Some("string")
+        _: .None
+    }
+}
+
+fn exportCScalar(kind piiTypeKind) Option<String> {
+    match kind {
+        Void: .Some("void")
+        I8: .Some("int8_t")
+        I16: .Some("int16_t")
+        I32: .Some("int32_t")
+        I64: .Some("int64_t")
+        ISize: .Some("intptr_t")
+        U8: .Some("uint8_t")
+        U16: .Some("uint16_t")
+        U32: .Some("uint32_t")
+        U64: .Some("uint64_t")
+        USize: .Some("uintptr_t")
+        F32: .Some("float")
+        F64: .Some("double")
+        Bool: .Some("bool")
+        StringValue: .Some("fdn_string")
+        _: .None
+    }
+}
+
+fn exportZigFunctionType(&type piiType) Option<String> {
+    if type.abi != "c11" || type.arguments.len() == 0 return .None
+    var resultType = piiTypeArgument(&type, 0)
+    const result = match exportZigType(&resultType) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    var parameters = ""
+    var index u64 = 1
+    while index < type.arguments.len() {
+        var argument = piiTypeArgument(&type, index)
+        const mapped = match exportZigType(&argument) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if index != 1 {
+            parameters = parameters + ", "
+        }
+        parameters = parameters + mapped
+        index += 1
+    }
+    .Some("*const fn (" + parameters + ") callconv(.c) " + result)
+}
+
+fn exportZigType(&type piiType) Option<String> {
+    match exportZigScalar(type.kind) {
+        Some(found): {
+            return .Some(found)
+        }
+        None: {}
+    }
+    if piiKindIs(type.kind, "struct") return .Some(exportTypeName(type.name))
+    if exportRawKind(type.kind) && type.arguments.len() == 1 {
+        var target = piiTypeArgument(&type, 0)
+        const mapped = match exportZigType(&target) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        const pointee = "anyopaque" if mapped == "void" else mapped
+        const qualifier = "const " if piiKindIs(type.kind, "raw_const") else ""
+        return .Some("?*" + qualifier + pointee)
+    }
+    if piiKindIs(type.kind, "function") return exportZigFunctionType(&type)
+    .None
+}
+
+fn exportRustFunctionType(&type piiType) Option<String> {
+    if type.abi != "c11" || type.arguments.len() == 0 return .None
+    var resultType = piiTypeArgument(&type, 0)
+    const result = match exportRustType(&resultType) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    var parameters = ""
+    var index u64 = 1
+    while index < type.arguments.len() {
+        var argument = piiTypeArgument(&type, index)
+        const mapped = match exportRustType(&argument) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if index != 1 {
+            parameters = parameters + ", "
+        }
+        parameters = parameters + mapped
+        index += 1
+    }
+    .Some("unsafe extern \"C\" fn(" + parameters + ") -> " + result)
+}
+
+fn exportRustType(&type piiType) Option<String> {
+    match exportRustScalar(type.kind) {
+        Some(found): {
+            return .Some(found)
+        }
+        None: {}
+    }
+    if piiKindIs(type.kind, "struct") return .Some(exportTypeName(type.name))
+    if exportRawKind(type.kind) && type.arguments.len() == 1 {
+        var target = piiTypeArgument(&type, 0)
+        const mapped = match exportRustType(&target) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        const pointee = "core::ffi::c_void" if mapped == "()" else mapped
+        const qualifier = "*const " if piiKindIs(type.kind, "raw_const") else "*mut "
+        return .Some(qualifier + pointee)
+    }
+    if piiKindIs(type.kind, "function") return exportRustFunctionType(&type)
+    .None
+}
+
+fn exportGoFunctionType(&type piiType, &callbacks arena<exportCallback>) Option<String> {
+    if type.abi != "c11" || type.arguments.len() == 0 return .None
+    var parameters = ""
+    var index u64 = 1
+    while index < type.arguments.len() {
+        var argument = piiTypeArgument(&type, index)
+        const mapped = match exportGoType(&argument, &callbacks, true, false) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if index != 1 {
+            parameters = parameters + ", "
+        }
+        parameters = parameters + mapped
+        index += 1
+    }
+    var resultType = piiTypeArgument(&type, 0)
+    const result = match exportGoType(&resultType, &callbacks, true, false) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    const suffix = "" if text.IsEmpty(result) else " " + result
+    .Some("func(" + parameters + ")" + suffix)
+}
+
+// Maps a boundary type to Go. A dynamic binding spells function types out,
+// except in layout fields; every other function type is a numbered callback.
+fn exportGoType(
+    &type piiType,
+    &callbacks arena<exportCallback>,
+    dynamicFunction bool,
+    layoutField bool
+) Option<String> {
+    match exportGoScalar(type.kind) {
+        Some(found): {
+            return .Some(found)
+        }
+        None: {}
+    }
+    if piiKindIs(type.kind, "struct") return .Some(exportTypeName(type.name))
+    if exportRawKind(type.kind) && type.arguments.len() == 1 {
+        var target = piiTypeArgument(&type, 0)
+        const mapped = match exportGoType(&target, &callbacks, dynamicFunction, false) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if text.IsEmpty(mapped) return .Some("unsafe.Pointer")
+        return .Some("*" + mapped)
+    }
+    if piiKindIs(type.kind, "function") {
+        if dynamicFunction && !layoutField return exportGoFunctionType(&type, &callbacks)
+        return .Some("Callback" + exportCallbackNumber(&callbacks, &type))
+    }
+    .None
+}
+
+fn exportLayoutCName(&value packageInterface, name String) Option<String> {
+    var index u64 = 0
+    while index < value.layouts.len() {
+        const layout = match value.layouts.take(index) {
+            None: panic("package export layout slot is empty")
+            Some(found): found
+        }
+        const same = layout.foundationName == name
+        const cName = text.Copy(layout.cName)
+        value.layouts.restore(index, $layout)
+        if same return .Some(cName)
+        index += 1
+    }
+    .None
+}
+
+fn exportCGoType(&type piiType, &value packageInterface) Option<String> {
+    match exportCScalar(type.kind) {
+        Some(found): {
+            return .Some(found)
+        }
+        None: {}
+    }
+    if piiKindIs(type.kind, "struct") return exportLayoutCName(&value, type.name)
+    if exportRawKind(type.kind) && type.arguments.len() == 1 {
+        var target = piiTypeArgument(&type, 0)
+        const mapped = match exportCGoType(&target, &value) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        const qualifier = "const " if piiKindIs(type.kind, "raw_const") else ""
+        return .Some(qualifier + mapped + " *")
+    }
+    if piiKindIs(type.kind, "function") return .Some("uintptr_t")
+    .None
+}

@@ -1,0 +1,157 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn goCollectStructMembers(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &members arena<goSourceEntry>,
+    &owners arena<goSourceEntry>
+) void {
+    var index u64 = 0
+    while index < emitter.reachableStructs.len() {
+        var entry = goTypeEntryAt(&emitter.reachableStructs, index)
+        const declarationId = entry.type.declaration
+        var declaration = goStructDeclaration(&program, declarationId)
+        goEntryPut(&owners, entry.key, declaration.name)
+        var field u64 = 0
+        while field < declaration.fields.len() {
+            const member = entry.key + ":" + goFieldName(&emitter, &program, declarationId, field)
+            discard goEntryInsert(&members, member,
+                "field " + goStructFieldName(&declaration, field))
+            field += 1
+        }
+        index += 1
+    }
+}
+
+fn goCollectEnumMembers(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &members arena<goSourceEntry>,
+    &owners arena<goSourceEntry>
+) void {
+    var index u64 = 0
+    while index < emitter.reachableEnums.len() {
+        var entry = goTypeEntryAt(&emitter.reachableEnums, index)
+        var declaration = goEnumDeclaration(&program, entry.type.declaration)
+        goEntryPut(&owners, entry.key, declaration.name)
+        discard goEntryInsert(&members, entry.key + ":tag", "tag field")
+        var variant u64 = 0
+        while variant < declaration.variants.len() {
+            const name = goEnumVariantName(&declaration, variant)
+            const method = goEnumMethodName(&emitter, &program, &entry.type, variant)
+            discard goEntryInsert(&members, entry.key + ":Is" + method, "variant test for " + name)
+            if goHasEnumPayload(&program, &entry.type, variant) {
+                discard goEntryInsert(&members, entry.key + ":Get" + method,
+                    "payload getter for " + name)
+                const field = goEnumFieldName(&emitter, &program, &entry.type, variant)
+                discard goEntryInsert(&members, entry.key + ":" + field,
+                    "payload field for " + name)
+            }
+            variant += 1
+        }
+        index += 1
+    }
+}
+
+fn goOwnerName(&owners arena<goSourceEntry>, key String) String {
+    match goEntryFind(&owners, key) {
+        None: ""
+        Some(found): found
+    }
+}
+
+fn goLastColon(value String) u64 {
+    var index = text.ByteLen(value)
+    while index > 0 {
+        index -= 1
+        if applicationByteAt(value, index) == 58 return index
+    }
+    0
+}
+
+fn goReconcileDeclaredMethods(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &members arena<goSourceEntry>,
+    &owners arena<goSourceEntry>,
+    &declaredMethods arena<goSourceCount>
+) void {
+    var position u64 = 0
+    while position < emitter.order.len() {
+        const id = goU64At(&emitter.order, position)
+        position += 1
+        var function = cFunctionAt(&program, id)
+        if goFunctionHasReceiver(&function) && !goHasDefaultReceiver(&program, &function) {
+            const receiverId = goParameterAt(&function, 0)
+            var receiverLocal = cLocalTypeAt(&function, receiverId)
+            var receiverType = goOwnedValue(&receiverLocal)
+            const receiver = goSourceTypeKey(&receiverType)
+            const key = receiver + ":" + goTextAt(&emitter.names, id)
+            const owner = goOwnerName(&owners, receiver)
+            const member = metadataShortName(function.name)
+            match goEntryFind(&members, key) {
+                Some(existing): {
+                    goSourceFail(&emitter, "go-source cannot give " + owner + " method " + member +
+                        " beside its " + existing, function.sourceSpan)
+                }
+                None: {
+                    match goCountFind(&declaredMethods, key) {
+                        Some(previous): {
+                            discard previous
+                            goSourceFail(&emitter, "go-source cannot give " + owner + " two " +
+                                member + " methods", function.sourceSpan)
+                        }
+                        None: {
+                            goCountSet(&declaredMethods, key, id)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A Go type has one namespace for its fields and methods. A static call
+// specializes a default for one struct under the default's own name, and that
+// specialization resolves every slot as the forwarder would, so it serves the
+// contract slot too. Any other repeated name is rejected instead of emitting
+// Go that does not compile.
+fn goReconcileMethods(&emitter goSourceEmitter, &program firProgram) void {
+    sortArena<goSourceTypeEntry>(&emitter.reachableStructs, compareGoSourceTypeEntry)
+    sortArena<goSourceTypeEntry>(&emitter.reachableEnums, compareGoSourceTypeEntry)
+    sortArena<goSourceEntry>(&emitter.forwarders, compareGoSourceEntry)
+    var members = newArena<goSourceEntry>()
+    var owners = newArena<goSourceEntry>()
+    goCollectStructMembers(&emitter, &program, &members, &owners)
+    goCollectEnumMembers(&emitter, &program, &members, &owners)
+    var declaredMethods = newArena<goSourceCount>()
+    goReconcileDeclaredMethods(&emitter, &program, &members, &owners, &declaredMethods)
+    var index u64 = 0
+    while index < emitter.forwarders.len() {
+        const entry = goEntryAt(&emitter.forwarders, index)
+        index += 1
+        const selected = goCountFind(&declaredMethods, entry.key)
+        match selected {
+            None: {}
+            Some(id): {
+                const functionName = goFunctionDeclarationName(&program, id)
+                const origin = match goEntryFind(&emitter.forwarderDefaults, entry.key) {
+                    None: ""
+                    Some(found): found
+                }
+                if !text.IsEmpty(origin) && origin == functionName {
+                    goEntryPut(&emitter.forwarders, entry.key, "")
+                } else {
+                    const receiver = applicationSlice(entry.key, 0, goLastColon(entry.key))
+                    var function = cFunctionAt(&program, id)
+                    goSourceFail(&emitter, "go-source cannot give " +
+                        goOwnerName(&owners, receiver) + " two " +
+                        metadataShortName(function.name) + " methods", function.sourceSpan)
+                }
+            }
+        }
+    }
+}

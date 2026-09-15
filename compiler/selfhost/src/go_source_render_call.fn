@@ -1,0 +1,215 @@
+package foundation.compiler
+
+fn goRenderCallArgument(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    argument u64,
+    &parameter semanticType,
+    depth u64
+) Option<String> {
+    const rendered = match goRenderExpression(&emitter, &program, &function, argument, depth) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    if goPointerParameter(&parameter) return .Some("&(" + rendered + ")")
+    .Some(rendered)
+}
+
+fn goRenderContractCall(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &call firCallExpression,
+    &arguments arena<u64>,
+    depth u64
+) Option<String> {
+    var receiverLocal = cExpressionTypeAt(&function, goU64At(&arguments, 0))
+    var receiverType = goOwnedValue(&receiverLocal)
+    var method = goContractMethodAt(&program, receiverType.declaration, call.method)
+    const receiver = match goRenderExpression(
+        &emitter, &program, &function, goU64At(&arguments, 0), depth) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    var output = "(" + receiver + ")." + goContractMethodName(&method) + "("
+    var index u64 = 1
+    while index < arguments.len() {
+        var parameterType = semanticTypeArgumentOf(&method.parameters, index - 1)
+        var substituted = substituteSemanticType(&parameterType, &receiverType.arguments)
+        const argument = match goRenderCallArgument(&emitter, &program, &function,
+            goU64At(&arguments, index), &substituted, depth) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if index != 1 {
+            output = output + ", "
+        }
+        output = output + argument
+        index += 1
+    }
+    .Some(output + ")")
+}
+
+fn goRenderFunctionValueCall(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &call firCallExpression,
+    &arguments arena<u64>,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    if call.local >= function.locals.len() || call.local >= emitter.currentLocals.len() {
+        goSourceFail(&emitter, "go-source cannot resolve a function value call", span)
+        return .None
+    }
+    var localType = cLocalTypeAt(&function, call.local)
+    var callable = goWithoutLoan(&localType)
+    if !callable.kind.Matches("Function") || callable.arguments.len() != arguments.len() + 1 {
+        goSourceFail(&emitter, "go-source cannot render a function value call", span)
+        return .None
+    }
+    var output = "(" + goTextAt(&emitter.currentLocals, call.local) + ")("
+    var index u64 = 0
+    while index < arguments.len() {
+        var parameter = semanticTypeArgument(&callable, index + 1)
+        const argument = match goRenderCallArgument(&emitter, &program, &function,
+            goU64At(&arguments, index), &parameter, depth) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if index != 0 {
+            output = output + ", "
+        }
+        output = output + argument
+        index += 1
+    }
+    .Some(output + ")")
+}
+
+fn goRenderFunctionCall(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &call firCallExpression,
+    &arguments arena<u64>,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    if !goFunctionNamed(&emitter, call.function) || call.function >= program.functions.len() {
+        const failed = emitter.failed
+        if !failed {
+            goSourceFail(&emitter, "go-source cannot resolve a called function", span)
+        }
+        return .None
+    }
+    var target = cFunctionAt(&program, call.function)
+    const targetName = goTextAt(&emitter.names, call.function)
+    var output = targetName + "("
+    var first u64 = 0
+    if goFunctionHasReceiver(&target) {
+        if arguments.len() == 0 {
+            goSourceFail(&emitter, "go-source cannot render a method call without a receiver",
+                span)
+            return .None
+        }
+        const receiver = match goRenderExpression(
+            &emitter, &program, &function, goU64At(&arguments, 0), depth) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        output = "(" + receiver + ")." + targetName + "("
+        first = 1
+    }
+    var index = first
+    while index < arguments.len() {
+        if index >= target.parameters.len() ||
+            goParameterAt(&target, index) >= target.locals.len() {
+            goSourceFail(&emitter, "go-source cannot render function parameter metadata", span)
+            return .None
+        }
+        const parameterId = goParameterAt(&target, index)
+        var parameterType = cLocalTypeAt(&target, parameterId)
+        const argument = match goRenderCallArgument(&emitter, &program, &function,
+            goU64At(&arguments, index), &parameterType, depth) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if index != first {
+            output = output + ", "
+        }
+        output = output + argument
+        index += 1
+    }
+    .Some(output + ")")
+}
+
+fn goRenderCall(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &call firCallExpression,
+    &expressionType semanticType,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    var arguments = match goOrderedArguments(&emitter, &call, span) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    const kind = goCallKindName(call.kind)
+    if kind == "Len" {
+        if arguments.len() != 1 {
+            goSourceFail(&emitter, "go-source cannot render len arguments", span)
+            return .None
+        }
+        const argument = match goRenderExpression(
+            &emitter, &program, &function, goU64At(&arguments, 0), depth) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        return .Some(goScalarText(&expressionType) + "(len(" + argument + "))")
+    }
+    if kind == "Print" || kind == "NumericConversion" {
+        const argument = match goRenderExpression(
+            &emitter, &program, &function, goU64At(&arguments, 0), depth) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if kind == "Print" return .Some(goPrintHelper(&emitter) + "(" + argument + ")")
+        var targetType = semanticTypeArgumentOf(&call.typeArguments, 1)
+        if sameSemanticType(&expressionType, &targetType) {
+            return .Some(goScalarText(&targetType) + "(" + argument + ")")
+        }
+        var sourceType = semanticTypeArgumentOf(&call.typeArguments, 0)
+        return .Some(goConversionHelper(&emitter, &program, &sourceType, &targetType,
+            &expressionType) + "(" + argument + ")")
+    }
+    if kind == "ContractValue" {
+        return goRenderContractCall(&emitter, &program, &function, &call, &arguments, depth)
+    }
+    if kind == "FunctionValue" {
+        return goRenderFunctionValueCall(&emitter, &program, &function, &call, &arguments, span,
+            depth)
+    }
+    goRenderFunctionCall(&emitter, &program, &function, &call, &arguments, span, depth)
+}

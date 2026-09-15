@@ -1,0 +1,295 @@
+package foundation.compiler
+
+import std.text
+
+// Copies of the declaration parts that go-source reads. The copies leave the
+// program intact while another function is being scanned or rendered.
+struct goContractMethod {
+    receiver firReceiverKind
+    name String
+    returnType semanticType
+    parameters own arena<semanticType>
+    parameterNames own arena<String>
+    exported bool
+}
+
+fn goStructDeclaration(&program firProgram, id u64) firStruct {
+    const selected = match program.structs.take(id) {
+        None: panic("go-source struct slot is empty")
+        Some(found): found
+    }
+    const firStructCopy { original value } = copyFirStruct($selected)
+    program.structs.restore(id, $original)
+    value
+}
+
+fn goEnumDeclaration(&program firProgram, id u64) firEnum {
+    const selected = match program.enums.take(id) {
+        None: panic("go-source enum slot is empty")
+        Some(found): found
+    }
+    const firEnumCopy { original value } = copyFirEnum($selected)
+    program.enums.restore(id, $original)
+    value
+}
+
+fn goStructDeclarationName(&program firProgram, id u64) String {
+    const selected = match program.structs.take(id) {
+        None: panic("go-source struct slot is empty")
+        Some(found): found
+    }
+    const name = text.Copy(selected.name)
+    program.structs.restore(id, $selected)
+    name
+}
+
+fn goEnumDeclarationName(&program firProgram, id u64) String {
+    const selected = match program.enums.take(id) {
+        None: panic("go-source enum slot is empty")
+        Some(found): found
+    }
+    const name = text.Copy(selected.name)
+    program.enums.restore(id, $selected)
+    name
+}
+
+fn goEnumBuiltin(&program firProgram, id u64) bool {
+    const selected = match program.enums.take(id) {
+        None: panic("go-source enum slot is empty")
+        Some(found): found
+    }
+    const builtin = selected.builtin
+    program.enums.restore(id, $selected)
+    builtin
+}
+
+fn goEnumVariantCount(&program firProgram, id u64) u64 {
+    const selected = match program.enums.take(id) {
+        None: panic("go-source enum slot is empty")
+        Some(found): found
+    }
+    const count = selected.variants.len()
+    program.enums.restore(id, $selected)
+    count
+}
+
+fn goContractDeclarationName(&program firProgram, id u64) String {
+    const selected = match program.contracts.take(id) {
+        None: panic("go-source contract slot is empty")
+        Some(found): found
+    }
+    const name = text.Copy(selected.name)
+    program.contracts.restore(id, $selected)
+    name
+}
+
+fn goContractTypeParameterCount(&program firProgram, id u64) u64 {
+    const selected = match program.contracts.take(id) {
+        None: panic("go-source contract slot is empty")
+        Some(found): found
+    }
+    const count = selected.typeParameterCount
+    program.contracts.restore(id, $selected)
+    count
+}
+
+fn goContractMethodCount(&program firProgram, id u64) u64 {
+    const selected = match program.contracts.take(id) {
+        None: panic("go-source contract slot is empty")
+        Some(found): found
+    }
+    const count = selected.methodList.len()
+    program.contracts.restore(id, $selected)
+    count
+}
+
+fn goContractMethodAt(&program firProgram, id u64, index u64) goContractMethod {
+    var selected = match program.contracts.take(id) {
+        None: panic("go-source contract slot is empty")
+        Some(found): found
+    }
+    var method = match selected.methodList.take(index) {
+        None: panic("go-source contract method slot is empty")
+        Some(found): found
+    }
+    var parameters = newArena<semanticType>()
+    var parameter u64 = 0
+    while parameter < method.parameters.len() {
+        discard parameters.add(semanticTypeArgumentOf(&method.parameters, parameter))
+        parameter += 1
+    }
+    const result = goContractMethod {
+        receiver = method.receiver
+        name = text.Copy(method.name)
+        returnType = copySemanticType(&method.returnType)
+        parameters = parameters
+        parameterNames = copyFirStringArena(&method.parameterNames)
+        exported = method.exported
+    }
+    selected.methodList.restore(index, $method)
+    program.contracts.restore(id, $selected)
+    result
+}
+
+fn semanticTypeArgumentOf(&values arena<semanticType>, index u64) semanticType {
+    var selected = match values.take(index) {
+        None: panic("semantic type slot is empty")
+        Some(found): found
+    }
+    const result = copySemanticType(&selected)
+    values.restore(index, $selected)
+    result
+}
+
+fn goStructFieldTotal(&program firProgram, id u64) u64 {
+    const selected = match program.structs.take(id) {
+        None: panic("go-source struct slot is empty")
+        Some(found): found
+    }
+    const count = selected.fields.len()
+    program.structs.restore(id, $selected)
+    count
+}
+
+fn goJoin(&values arena<String>, separator String) String {
+    var result = ""
+    var index u64 = 0
+    while index < values.len() {
+        if index != 0 {
+            result = result + separator
+        }
+        result = result + goTextAt(&values, index)
+        index += 1
+    }
+    result
+}
+
+fn goStructFieldName(&declaration firStruct, index u64) String {
+    const field = match declaration.fields.take(index) {
+        None: panic("go-source field slot is empty")
+        Some(found): found
+    }
+    const name = text.Copy(field.name)
+    declaration.fields.restore(index, $field)
+    name
+}
+
+fn goStructFieldExported(&declaration firStruct, index u64) bool {
+    const field = match declaration.fields.take(index) {
+        None: panic("go-source field slot is empty")
+        Some(found): found
+    }
+    const exported = field.exported
+    declaration.fields.restore(index, $field)
+    exported
+}
+
+fn goStructFieldType(&declaration firStruct, index u64) semanticType {
+    var field = match declaration.fields.take(index) {
+        None: panic("go-source field slot is empty")
+        Some(found): found
+    }
+    const result = copySemanticType(&field.type)
+    declaration.fields.restore(index, $field)
+    result
+}
+
+fn goEnumVariantName(&declaration firEnum, index u64) String {
+    const variant = match declaration.variants.take(index) {
+        None: panic("go-source variant slot is empty")
+        Some(found): found
+    }
+    const name = text.Copy(variant.name)
+    declaration.variants.restore(index, $variant)
+    name
+}
+
+fn goEnumVariantPayload(&declaration firEnum, index u64) Option<semanticType> {
+    var variant = match declaration.variants.take(index) {
+        None: panic("go-source variant slot is empty")
+        Some(found): found
+    }
+    var result Option<semanticType> = .None
+    match replace variant.payload with .None {
+        None: {}
+        Some(payload): {
+            var original = payload
+            result = .Some(copySemanticType(&original))
+            variant.payload = .Some(original)
+        }
+    }
+    declaration.variants.restore(index, $variant)
+    result
+}
+
+fn goEnumPayloadAt(&program firProgram, id u64, variant u64) Option<semanticType> {
+    var selected = match program.enums.take(id) {
+        None: panic("go-source enum slot is empty")
+        Some(found): found
+    }
+    var result Option<semanticType> = .None
+    if variant < selected.variants.len() {
+        result = goEnumVariantPayload(&selected, variant)
+    }
+    program.enums.restore(id, $selected)
+    result
+}
+
+fn goFunctionDeclarationName(&program firProgram, id u64) String {
+    const selected = match program.functions.take(id) {
+        None: panic("go-source function slot is empty")
+        Some(found): found
+    }
+    const name = text.Copy(selected.name)
+    program.functions.restore(id, $selected)
+    name
+}
+
+fn goParameterAt(&function firFunction, index u64) u64 {
+    goU64At(&function.parameters, index)
+}
+
+fn goLocalName(&function firFunction, local u64) String {
+    const selected = cLocalAt(&function, local)
+    text.Copy(selected.name)
+}
+
+fn goFunctionHasReceiver(&function firFunction) bool {
+    match copyFirReceiverOption(function.receiver) {
+        None: false
+        Some(kind): {
+            discard kind
+            true
+        }
+    }
+}
+
+fn goFunctionReceiverEdits(&function firFunction) bool {
+    match copyFirReceiverOption(function.receiver) {
+        None: false
+        Some(kind): match kind {
+            Edit: true
+            _: false
+        }
+    }
+}
+
+fn goReceiverEdits(kind firReceiverKind) bool {
+    match kind {
+        Edit: true
+        _: false
+    }
+}
+
+fn goCapturedLocals(&function firFunction) own arena<u64> {
+    var result = newArena<u64>()
+    var local u64 = 0
+    while local < function.locals.len() {
+        const selected = cLocalAt(&function, local)
+        if selected.captured {
+            discard result.add(local)
+        }
+        local += 1
+    }
+    result
+}

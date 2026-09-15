@@ -1,0 +1,286 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn exportStaticLibraryPath(&value packageInterface) String {
+    "native/lib/" + compilerStaticLibraryFilename(value.library)
+}
+
+fn exportCrc32(value String) u64 {
+    var result u64 = 4294967295
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        result = result ^ applicationByteAt(value, index)
+        var bit u64 = 0
+        while bit < 8 {
+            if (result & 1) != 0 {
+                result = (result >> 1) ^ 3988292384
+            } else {
+                result = result >> 1
+            }
+            bit += 1
+        }
+        index += 1
+    }
+    (~result) & 4294967295
+}
+
+// Derives the second half of a Zig package fingerprint from the package
+// name, avoiding the two values Zig reserves.
+fn exportFingerprintId(packageName String) u64 {
+    const digest = packageSha256Text("foundation-zig-package:" + packageName)
+    var result u64 = 0
+    var index u64 = 7
+    while index < 15 {
+        const raw = applicationByteAt(digest, index)
+        var digit u64 = 0
+        if exportDigit(raw) {
+            digit = raw - 48
+        } else {
+            digit = raw - 87
+        }
+        result = (result << 4) | digit
+        index += 1
+    }
+    if result == 0 || result == 4294967295 {
+        result = result ^ 1511508451
+    }
+    result
+}
+
+fn exportHex32(value u64) String {
+    var builder = text.NewBuilder()
+    const highest u64 = 28
+    var index u64 = 0
+    while index < 8 {
+        const shift = highest - index * 4
+        discard packageBuilderCodePoint(&builder, packageHexDigit((value >> shift) & 15))
+        index += 1
+    }
+    packageBuilderFinish(&builder)
+}
+
+fn zigExportParameters(&function piiFunction, typed bool) String {
+    var result = ""
+    var index u64 = 0
+    while index < function.parameters.len() {
+        var parameter = exportParameterAt(&function, index)
+        if index != 0 {
+            result = result + ", "
+        }
+        result = result + exportZigIdentifier(parameter.name)
+        if typed {
+            result = result + ": " + exportMapped(exportZigType(&parameter.type))
+        }
+        index += 1
+    }
+    result
+}
+
+fn zigExportFunction(&function piiFunction) String {
+    const typed = zigExportParameters(&function, true)
+    const names = zigExportParameters(&function, false)
+    const result = exportMapped(exportZigType(&function.result))
+    const returns = !piiKindIs(function.result.kind, "void")
+    const name = exportZigIdentifier(metadataShortName(function.foundationName))
+    const symbol = text.Copy(function.cSymbol)
+    "extern fn " + symbol + "(" + typed + ") callconv(.c) " + result + ";\n" +
+        "pub fn " + name + "(" + typed + ") " + result + " {\n    " +
+        ("return " if returns else "") + symbol + "(" + names + ");\n}\n"
+}
+
+fn renderZigExportSource(&value packageInterface) String {
+    var output = "pub const FoundationString = extern struct {\n" +
+        "    data: [*c]const u8,\n" +
+        "    length: usize,\n" +
+        "    owned: u8,\n" +
+        "};\n\n"
+    var layoutIndex u64 = 0
+    while layoutIndex < value.layouts.len() {
+        var layout = exportLayoutAt(&value, layoutIndex)
+        output = output + "pub const " + exportTypeName(layout.foundationName) +
+            " = extern struct {\n"
+        var field u64 = 0
+        while field < layout.fields.len() {
+            var selected = exportFieldAt(&layout, field)
+            const name = exportZigIdentifier(selected.foundationName)
+            const mapped = exportMapped(exportZigType(&selected.type))
+            output = output + "    " + name + ": " + mapped + ",\n"
+            field += 1
+        }
+        output = output + "};\n\n"
+        layoutIndex += 1
+    }
+    var index u64 = 0
+    while index < value.exports.len() {
+        var function = match value.exports.take(index) {
+            None: panic("package export function slot is empty")
+            Some(found): found
+        }
+        output = output + zigExportFunction(&function)
+        value.exports.restore(index, $function)
+        if index + 1 != value.exports.len() {
+            output = output + "\n"
+        }
+        index += 1
+    }
+    output
+}
+
+fn renderZigExportBuild(&value packageInterface) String {
+    var output = "const std = @import(\"std\");\n\n" +
+        "pub fn build(b: *std.Build) void {\n" +
+        "    const target = b.standardTargetOptions(.{});\n" +
+        "    const module = b.addModule(\"" + exportSnakeName(value.library) + "\", .{\n" +
+        "        .root_source_file = b.path(\"src/root.zig\"),\n" +
+        "        .target = target,\n" +
+        "    });\n" +
+        "    module.addObjectFile(b.path(\"" + exportStaticLibraryPath(&value) + "\"));\n" +
+        "    module.link_libc = true;\n"
+    var index u64 = 0
+    while index < value.links.len() {
+        output = output + "    module.linkSystemLibrary(\"" + exportLinkNameAt(&value, index) +
+            "\", .{ .use_pkg_config = .no });\n"
+        index += 1
+    }
+    output + "}\n"
+}
+
+fn renderZigExportManifest(&value packageInterface) String {
+    const name = exportSnakeName(value.library)
+    const fingerprint = exportHex32(exportCrc32(name)) +
+        exportHex32(exportFingerprintId(value.packageName))
+    ".{\n" +
+        "    .name = ." + name + ",\n" +
+        "    .version = \"" + packageVersionString(value.version) + "\",\n" +
+        "    .fingerprint = 0x" + fingerprint + ",\n" +
+        "    .minimum_zig_version = \"0.16.0\",\n" +
+        "    .dependencies = .{},\n" +
+        "    .paths = .{ \"build.zig\", \"build.zig.zon\", \"src\", \"native\", " +
+        "\"foundation.pii.json\" },\n" +
+        "}\n"
+}
+
+fn rustExportParameters(&function piiFunction, typed bool) String {
+    var result = ""
+    var index u64 = 0
+    while index < function.parameters.len() {
+        var parameter = exportParameterAt(&function, index)
+        if index != 0 {
+            result = result + ", "
+        }
+        result = result + exportRustIdentifier(parameter.name)
+        if typed {
+            result = result + ": " + exportMapped(exportRustType(&parameter.type))
+        }
+        index += 1
+    }
+    result
+}
+
+fn exportRawBoundary(&function piiFunction) bool {
+    if exportRawKind(function.result.kind) return true
+    var index u64 = 0
+    while index < function.parameters.len() {
+        const parameter = exportParameterAt(&function, index)
+        if exportRawKind(parameter.type.kind) return true
+        index += 1
+    }
+    false
+}
+
+fn rustExportDeclaration(&function piiFunction, index u64) String {
+    const typed = rustExportParameters(&function, true)
+    const result = exportMapped(exportRustType(&function.result))
+    "    #[link_name = \"" + function.cSymbol + "\"]\n" +
+        "    fn ffi_" + format.U64(index) + "(" + typed + ") -> " + result + ";\n"
+}
+
+fn rustExportFunction(&function piiFunction, index u64) String {
+    const typed = rustExportParameters(&function, true)
+    const names = rustExportParameters(&function, false)
+    const result = exportMapped(exportRustType(&function.result))
+    const qualifier = "pub unsafe fn " if exportRawBoundary(&function) else "pub fn "
+    const name = exportRustIdentifier(metadataShortName(function.foundationName))
+    qualifier + name + "(" + typed + ") -> " + result + " {\n    unsafe { ffi_" +
+        format.U64(index) + "(" + names + ") }\n}\n"
+}
+
+fn renderRustExportSource(&value packageInterface) String {
+    var output = "#[repr(C)]\n" +
+        "#[derive(Clone, Copy)]\n" +
+        "pub struct FoundationString {\n" +
+        "    pub data: *const u8,\n" +
+        "    pub length: usize,\n" +
+        "    pub owned: u8,\n" +
+        "}\n\n"
+    var layoutIndex u64 = 0
+    while layoutIndex < value.layouts.len() {
+        var layout = exportLayoutAt(&value, layoutIndex)
+        output = output + "#[repr(C)]\n#[derive(Clone, Copy)]\npub struct " +
+            exportTypeName(layout.foundationName) + " {\n"
+        var field u64 = 0
+        while field < layout.fields.len() {
+            var selected = exportFieldAt(&layout, field)
+            const name = exportRustIdentifier(selected.foundationName)
+            const mapped = exportMapped(exportRustType(&selected.type))
+            output = output + "    pub " + name + ": " + mapped + ",\n"
+            field += 1
+        }
+        output = output + "}\n\n"
+        layoutIndex += 1
+    }
+    output = output + "#[link(name = \"" + value.library +
+        "\", kind = \"static\")]\nunsafe extern \"C\" {\n"
+    var index u64 = 0
+    while index < value.exports.len() {
+        var function = match value.exports.take(index) {
+            None: panic("package export function slot is empty")
+            Some(found): found
+        }
+        output = output + rustExportDeclaration(&function, index)
+        value.exports.restore(index, $function)
+        index += 1
+    }
+    output = output + "}\n\n"
+    index = 0
+    while index < value.exports.len() {
+        var function = match value.exports.take(index) {
+            None: panic("package export function slot is empty")
+            Some(found): found
+        }
+        output = output + rustExportFunction(&function, index)
+        value.exports.restore(index, $function)
+        if index + 1 != value.exports.len() {
+            output = output + "\n"
+        }
+        index += 1
+    }
+    output
+}
+
+fn renderRustExportManifest(&value packageInterface) String {
+    "[package]\n" +
+        "name = \"" + exportSnakeName(value.library) + "\"\n" +
+        "version = \"" + packageVersionString(value.version) + "\"\n" +
+        "edition = \"2024\"\n" +
+        "links = \"" + value.library + "\"\n" +
+        "build = \"build.rs\"\n\n" +
+        "[lib]\npath = \"src/lib.rs\"\n"
+}
+
+fn renderRustExportBuild(&value packageInterface) String {
+    var output = "fn main() {\n" +
+        "    println!(\"cargo:rerun-if-changed=native\");\n" +
+        "    println!(\"cargo:rustc-link-search=native={}/native/lib\", " +
+        "env!(\"CARGO_MANIFEST_DIR\"));\n" +
+        "    println!(\"cargo:rustc-link-lib=static=" + value.library + "\");\n"
+    var index u64 = 0
+    while index < value.links.len() {
+        output = output + "    println!(\"cargo:rustc-link-lib=" + exportLinkNameAt(&value, index) +
+            "\");\n"
+        index += 1
+    }
+    output + "}\n"
+}

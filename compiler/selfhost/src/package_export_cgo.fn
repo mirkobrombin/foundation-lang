@@ -1,0 +1,264 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn exportCGoMapped(&type piiType, &value packageInterface) String {
+    exportMapped(exportCGoType(&type, &value))
+}
+
+fn cgoExportCallbackType(&type piiType, &value packageInterface, index u64) String {
+    var resultType = piiTypeArgument(&type, 0)
+    var output = "typedef " + exportCGoMapped(&resultType, &value) + " (*fdn_go_callback_" +
+        format.U64(index) + ")("
+    if type.arguments.len() == 1 {
+        output = output + "void"
+    } else {
+        var argument u64 = 1
+        while argument < type.arguments.len() {
+            var selected = piiTypeArgument(&type, argument)
+            if argument != 1 {
+                output = output + ", "
+            }
+            output = output + exportCGoMapped(&selected, &value)
+            argument += 1
+        }
+    }
+    output + ");\n"
+}
+
+// Renders the C wrapper that Go calls for one export. Callback arguments
+// travel as uintptr_t and are cast back to their C function type.
+fn cgoExportCallHelper(
+    &function piiFunction,
+    &value packageInterface,
+    &callbacks arena<exportCallback>,
+    index u64
+) String {
+    var output = "static inline " + exportCGoMapped(&function.result, &value) + " fdn_go_call_" +
+        format.U64(index) + "("
+    if function.parameters.len() == 0 {
+        output = output + "void"
+    }
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        var selected = exportParameterAt(&function, parameter)
+        if parameter != 0 {
+            output = output + ", "
+        }
+        output = output + exportCGoMapped(&selected.type, &value) + " arg" + format.U64(parameter)
+        parameter += 1
+    }
+    output = output + ") {\n    "
+    if !piiKindIs(function.result.kind, "void") {
+        output = output + "return "
+    }
+    output = output + function.cSymbol + "("
+    var argument u64 = 0
+    while argument < function.parameters.len() {
+        var selected = exportParameterAt(&function, argument)
+        if argument != 0 {
+            output = output + ", "
+        }
+        if piiKindIs(selected.type.kind, "function") {
+            const callback = exportCallbackNumber(&callbacks, &selected.type)
+            output = output + "(fdn_go_callback_" + callback + ")"
+        }
+        output = output + "arg" + format.U64(argument)
+        argument += 1
+    }
+    output + ");\n}\n"
+}
+
+fn cgoExportCallHelpers(&value packageInterface, &callbacks arena<exportCallback>) String {
+    var output = ""
+    var index u64 = 0
+    while index < callbacks.len() {
+        var entry = match callbacks.take(index) {
+            None: panic("package export callback slot is empty")
+            Some(found): found
+        }
+        const rendered = cgoExportCallbackType(&entry.type, &value, index)
+        callbacks.restore(index, $entry)
+        output = output + rendered
+        index += 1
+    }
+    if callbacks.len() != 0 {
+        output = output + "\n"
+    }
+    index = 0
+    while index < value.exports.len() {
+        var function = match value.exports.take(index) {
+            None: panic("package export function slot is empty")
+            Some(found): found
+        }
+        const rendered = cgoExportCallHelper(&function, &value, &callbacks, index)
+        value.exports.restore(index, $function)
+        output = output + rendered
+        index += 1
+    }
+    output
+}
+
+fn cgoExportLinkFlags(&value packageInterface) String {
+    var output = "-L${SRCDIR}/native/lib -l" + value.library
+    var index u64 = 0
+    while index < value.links.len() {
+        output = output + " -l" + exportLinkNameAt(&value, index)
+        index += 1
+    }
+    output
+}
+
+fn cgoExportArgument(&parameter piiParameter, &value packageInterface) String {
+    const name = exportCamelName(parameter.name)
+    const kind = parameter.type.kind
+    if piiScalarKind(kind) return "C." + exportMapped(exportCScalar(kind)) + "(" + name + ")"
+    if piiKindIs(kind, "string") return "foundationBorrowString(" + name + ")"
+    if piiKindIs(kind, "function") return "C.uintptr_t(" + name + ")"
+    if exportRawKind(kind) {
+        var target = piiTypeArgument(&parameter.type, 0)
+        if piiKindIs(target.kind, "void") return name
+        const cName = match exportLayoutCName(&value, target.name) {
+            None: panic("package export pointer target has no layout")
+            Some(found): found
+        }
+        return "(*C." + cName + ")(unsafe.Pointer(" + name + "))"
+    }
+    name
+}
+
+fn cgoExportResult(&type piiType, expression String) String {
+    if piiScalarKind(type.kind) {
+        return exportMapped(exportGoScalar(type.kind)) + "(" + expression + ")"
+    }
+    if exportRawKind(type.kind) {
+        var target = piiTypeArgument(&type, 0)
+        if piiKindIs(target.kind, "void") return "unsafe.Pointer(" + expression + ")"
+        return "(*" + exportTypeName(target.name) + ")(unsafe.Pointer(" + expression + "))"
+    }
+    text.Copy(expression)
+}
+
+fn cgoExportPreamble(&value packageInterface, &callbacks arena<exportCallback>) String {
+    var output = "/*\n" +
+        "#cgo CFLAGS: -I${SRCDIR}/native/include\n" +
+        "#cgo LDFLAGS: " + cgoExportLinkFlags(&value) + "\n" +
+        "#include <stddef.h>\n" +
+        "#include <stdint.h>\n" +
+        "#include \"" + value.library + ".h\"\n\n" +
+        cgoExportCallHelpers(&value, &callbacks)
+    var layoutIndex u64 = 0
+    while layoutIndex < value.layouts.len() {
+        var layout = exportLayoutAt(&value, layoutIndex)
+        const number = format.U64(layoutIndex)
+        output = output + "enum { fdn_go_size_" + number + " = sizeof(" + layout.cName + ") };\n"
+        var field u64 = 0
+        while field < layout.fields.len() {
+            var selected = exportFieldAt(&layout, field)
+            output = output + "enum { fdn_go_offset_" + number + "_" + format.U64(field) +
+                " = offsetof(" + layout.cName + ", " + selected.cName + ") };\n"
+            field += 1
+        }
+        layoutIndex += 1
+    }
+    output + "*/\nimport \"C\"\n"
+}
+
+// Asserts at Go compile time that every Go struct matches the size and field
+// offsets of its C layout.
+fn cgoExportAssertions(&value packageInterface) String {
+    var output = ""
+    var layoutIndex u64 = 0
+    while layoutIndex < value.layouts.len() {
+        var layout = exportLayoutAt(&value, layoutIndex)
+        const name = exportTypeName(layout.foundationName)
+        const number = format.U64(layoutIndex)
+        output = output + "const _ = uint8(unsafe.Sizeof(" + name + "{}) - C.fdn_go_size_" +
+            number + ")\n" + "const _ = uint8(C.fdn_go_size_" + number + " - unsafe.Sizeof(" +
+            name + "{}))\n"
+        var field u64 = 0
+        while field < layout.fields.len() {
+            var selected = exportFieldAt(&layout, field)
+            const fieldName = exportTypeName(selected.foundationName)
+            const offset = number + "_" + format.U64(field)
+            output = output + "const _ = uint8(unsafe.Offsetof(" + name + "{}." + fieldName +
+                ") - C.fdn_go_offset_" + offset + ")\n" + "const _ = uint8(C.fdn_go_offset_" +
+                offset + " - unsafe.Offsetof(" + name + "{}." + fieldName + "))\n"
+            field += 1
+        }
+        output = output + "\n"
+        layoutIndex += 1
+    }
+    output
+}
+
+fn cgoExportFunction(
+    &function piiFunction,
+    &value packageInterface,
+    &callbacks arena<exportCallback>,
+    index u64
+) String {
+    var output = "func " + exportTypeName(metadataShortName(function.foundationName)) +
+        goExportSignature(&function, &callbacks, false) + "\t"
+    const returns = !piiKindIs(function.result.kind, "void")
+    if returns {
+        output = output + "result := "
+    }
+    output = output + "C.fdn_go_call_" + format.U64(index) + "("
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        var selected = exportParameterAt(&function, parameter)
+        if parameter != 0 {
+            output = output + ", "
+        }
+        output = output + cgoExportArgument(&selected, &value)
+        parameter += 1
+    }
+    output = output + ")\n" + goExportKeepAlive(&function)
+    if piiKindIs(function.result.kind, "string") {
+        output = output + "\tvalue := C.GoStringN(result.data, C.int(result.length))\n" +
+            "\tC.fdn_string_drop(&result)\n" +
+            "\treturn value\n"
+    } else {
+        if returns {
+            output = output + "\treturn " + cgoExportResult(&function.result, "result") + "\n"
+        }
+    }
+    output + "}\n"
+}
+
+// Renders a Go package that links the static library through cgo.
+fn renderCgoExportSource(&value packageInterface) String {
+    var callbacks = exportCallbacks(&value)
+    const usesString = exportGoUsesString(&value)
+    const usesUnsafe = exportGoUsesUnsafe(&value)
+    var output = "package " + exportGoPackageName(&value) + "\n\n" +
+        cgoExportPreamble(&value, &callbacks) +
+        renderGoExportImports(usesString, usesUnsafe, false) + "\n" +
+        renderGoExportTypes(&value, &callbacks) + cgoExportAssertions(&value)
+    if usesString {
+        output = output + "func foundationBorrowString(value string) C.fdn_string {\n" +
+            "\tvar data *C.char\n" +
+            "\tif len(value) != 0 {\n" +
+            "\t\tdata = (*C.char)(unsafe.Pointer(unsafe.StringData(value)))\n" +
+            "\t}\n" +
+            "\treturn C.fdn_string_static(data, C.size_t(len(value)))\n" +
+            "}\n\n"
+    }
+    var index u64 = 0
+    while index < value.exports.len() {
+        var function = match value.exports.take(index) {
+            None: panic("package export function slot is empty")
+            Some(found): found
+        }
+        const rendered = cgoExportFunction(&function, &value, &callbacks, index)
+        value.exports.restore(index, $function)
+        output = output + rendered
+        if index + 1 != value.exports.len() {
+            output = output + "\n"
+        }
+        index += 1
+    }
+    output
+}

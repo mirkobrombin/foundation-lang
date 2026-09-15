@@ -1,0 +1,201 @@
+package foundation.compiler
+
+fn goBinaryName(operation firBinaryOperator) String {
+    match operation {
+        Add: "Add"
+        Subtract: "Subtract"
+        Multiply: "Multiply"
+        Divide: "Divide"
+        Remainder: "Remainder"
+        ShiftLeft: "ShiftLeft"
+        ShiftRight: "ShiftRight"
+        BitwiseAnd: "BitwiseAnd"
+        BitwiseXor: "BitwiseXor"
+        BitwiseOr: "BitwiseOr"
+        Equal: "Equal"
+        NotEqual: "NotEqual"
+        Less: "Less"
+        LessEqual: "LessEqual"
+        Greater: "Greater"
+        GreaterEqual: "GreaterEqual"
+        And: "And"
+        Or: "Or"
+    }
+}
+
+fn goBinarySymbol(operation firBinaryOperator) String {
+    match operation {
+        Add: "+"
+        Subtract: "-"
+        Multiply: "*"
+        Divide: "/"
+        Remainder: "%"
+        ShiftLeft: "<<"
+        ShiftRight: ">>"
+        BitwiseAnd: "&"
+        BitwiseXor: "^"
+        BitwiseOr: "|"
+        Equal: "=="
+        NotEqual: "!="
+        Less: "<"
+        LessEqual: "<="
+        Greater: ">"
+        GreaterEqual: ">="
+        And: "&&"
+        Or: "||"
+    }
+}
+
+// Reports operators that Go source routes through a checked integer helper.
+fn goCheckedArithmetic(name String) bool {
+    name == "Add" || name == "Subtract" || name == "Multiply" || name == "Divide" ||
+        name == "Remainder" || name == "ShiftLeft" || name == "ShiftRight"
+}
+
+fn goBitwiseArithmetic(name String) bool {
+    name == "BitwiseAnd" || name == "BitwiseXor" || name == "BitwiseOr"
+}
+
+fn goShiftArithmetic(name String) bool {
+    name == "ShiftLeft" || name == "ShiftRight"
+}
+
+fn goUnaryName(operation firUnaryOperator) String {
+    match operation {
+        Negate: "Negate"
+        Not: "Not"
+        BitwiseNot: "BitwiseNot"
+        Empty: "Empty"
+        Dereference: "Dereference"
+    }
+}
+
+fn goCallKindName(kind firCallKind) String {
+    match kind {
+        Function: "Function"
+        FunctionValue: "FunctionValue"
+        ContractValue: "ContractValue"
+        Constrained: "Constrained"
+        Print: "Print"
+        Panic: "Panic"
+        Len: "Len"
+        Null: "Null"
+        IsNull: "IsNull"
+        CString: "CString"
+        SizeOf: "SizeOf"
+        PointerCast: "PointerCast"
+        NumericConversion: "NumericConversion"
+    }
+}
+
+fn goOwnershipEdits(operation firOwnershipOperator) bool {
+    match operation {
+        Edit: true
+        _: false
+    }
+}
+
+enum goPlaceShape {
+    LocalPlace
+    FieldPlace
+    IndexPlace
+    OtherPlace
+}
+
+fn goPlaceShapeOf(&function firFunction, id u64) goPlaceShape {
+    const firExpression { value type span } = cExpressionAt(&function, id)
+    discard type
+    discard span
+    match value {
+        Local(local): {
+            discard local
+            .LocalPlace
+        }
+        Read(read): {
+            discard read
+            .LocalPlace
+        }
+        Move(moved): {
+            discard moved
+            .LocalPlace
+        }
+        Field(field): {
+            discard field
+            .FieldPlace
+        }
+        Index(indexed): {
+            discard indexed
+            .IndexPlace
+        }
+        _: .OtherPlace
+    }
+}
+
+fn goLiteralExpression(&function firFunction, id u64) bool {
+    const firExpression { value type span } = cExpressionAt(&function, id)
+    discard type
+    discard span
+    match value {
+        Integer(literal): {
+            discard literal
+            true
+        }
+        Floating(literal): {
+            discard literal
+            true
+        }
+        Boolean(literal): {
+            discard literal
+            true
+        }
+        StringValue(literal): {
+            discard literal
+            true
+        }
+        _: false
+    }
+}
+
+fn goOwnershipOperand(&function firFunction, id u64) Option<u64> {
+    const firExpression { value type span } = cExpressionAt(&function, id)
+    discard type
+    discard span
+    match value {
+        Ownership(ownership): .Some(ownership.operand)
+        _: .None
+    }
+}
+
+fn goStructBindingAt(&bindings arena<firStructBinding>, index u64) firStructBinding {
+    const selected = match bindings.take(index) {
+        None: panic("go-source struct binding slot is empty")
+        Some(found): found
+    }
+    const result = firStructBinding { field = selected.field local = selected.local }
+    bindings.restore(index, $selected)
+    result
+}
+
+fn goFieldValueAt(&fields arena<firStructFieldValue>, index u64) firStructFieldValue {
+    const selected = match fields.take(index) {
+        None: panic("go-source field value slot is empty")
+        Some(found): found
+    }
+    const result = firStructFieldValue { field = selected.field value = selected.value }
+    fields.restore(index, $selected)
+    result
+}
+
+fn goBoolAt(&values arena<bool>, index u64) bool {
+    const value = match values.take(index) {
+        None: panic("go-source flag slot is empty")
+        Some(found): found
+    }
+    values.restore(index, value)
+    value
+}
+
+fn goBoolSet(&values arena<bool>, index u64, value bool) void {
+    discard values.take(index)
+    values.restore(index, value)
+}

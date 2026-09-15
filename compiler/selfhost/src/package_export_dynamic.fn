@@ -1,0 +1,206 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn dynamicExportAbiType(&type piiType, &callbacks arena<exportCallback>) String {
+    if piiKindIs(type.kind, "string") return "foundationString"
+    exportMapped(exportGoType(&type, &callbacks, true, false))
+}
+
+fn dynamicExportArgument(&parameter piiParameter) String {
+    const name = exportCamelName(parameter.name)
+    if piiKindIs(parameter.type.kind, "string") return "foundationBorrowString(" + name + ")"
+    name
+}
+
+fn dynamicExportField(
+    &function piiFunction,
+    &callbacks arena<exportCallback>,
+    width u64,
+    index u64
+) String {
+    const field = "call" + format.U64(index)
+    var output = "\t" + field + exportSpaces(width - text.ByteLen(field) + 1) + "func("
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        var selected = exportParameterAt(&function, parameter)
+        if parameter != 0 {
+            output = output + ", "
+        }
+        output = output + dynamicExportAbiType(&selected.type, &callbacks)
+        parameter += 1
+    }
+    output = output + ")"
+    const result = dynamicExportAbiType(&function.result, &callbacks)
+    if !text.IsEmpty(result) {
+        output = output + " " + result
+    }
+    output + "\n"
+}
+
+fn dynamicExportMethod(&function piiFunction, &callbacks arena<exportCallback>, index u64) String {
+    var output = "\nfunc (library *Library) " +
+        exportTypeName(metadataShortName(function.foundationName)) +
+        goExportSignature(&function, &callbacks, true) + "\tlibrary.requireOpen()\n\t"
+    const returnsString = piiKindIs(function.result.kind, "string")
+    const returns = !piiKindIs(function.result.kind, "void")
+    const stringParameter = exportParametersUse(&function, .StringText)
+    const storesResult = returns && (stringParameter || returnsString)
+    if storesResult {
+        output = output + "result := "
+    } else {
+        if returns {
+            output = output + "return "
+        }
+    }
+    output = output + "library.call" + format.U64(index) + "("
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        var selected = exportParameterAt(&function, parameter)
+        if parameter != 0 {
+            output = output + ", "
+        }
+        output = output + dynamicExportArgument(&selected)
+        parameter += 1
+    }
+    output = output + ")\n" + goExportKeepAlive(&function)
+    if returnsString {
+        output = output + "\tvalue := unsafe.String(result.Data, result.Length)\n" +
+            "\tcopy := string([]byte(value))\n" +
+            "\tlibrary.stringDrop(&result)\n" +
+            "\treturn copy\n"
+    } else {
+        if storesResult {
+            output = output + "\treturn result\n"
+        }
+    }
+    output + "}\n"
+}
+
+fn dynamicExportBindings(&value packageInterface) String {
+    var output = ""
+    var index u64 = 0
+    while index < value.exports.len() {
+        const function = match value.exports.take(index) {
+            None: panic("package export function slot is empty")
+            Some(found): found
+        }
+        const symbol = text.Copy(function.cSymbol)
+        value.exports.restore(index, $function)
+        output = output + "\tif err := bind(&library.call" + format.U64(index) + ", handle, \"" +
+            symbol + "\"); err != nil {\n" +
+            "\t\t_ = purego.Dlclose(handle)\n" +
+            "\t\treturn nil, err\n" +
+            "\t}\n"
+        index += 1
+    }
+    output
+}
+
+fn dynamicExportLibraryFields(&value packageInterface, &callbacks arena<exportCallback>) String {
+    var width = text.ByteLen("handle")
+    var index u64 = 0
+    while index < value.exports.len() {
+        const fieldLength = text.ByteLen("call" + format.U64(index))
+        if fieldLength > width {
+            width = fieldLength
+        }
+        index += 1
+    }
+    var output = "\thandle" + exportSpaces(width - text.ByteLen("handle") + 1) + "uintptr\n"
+    index = 0
+    while index < value.exports.len() {
+        var function = match value.exports.take(index) {
+            None: panic("package export function slot is empty")
+            Some(found): found
+        }
+        output = output + dynamicExportField(&function, &callbacks, width, index)
+        value.exports.restore(index, $function)
+        index += 1
+    }
+    output
+}
+
+// Renders a Go package that loads the shared library at run time through
+// purego instead of linking it with cgo.
+fn renderGoDynamicExportSource(&value packageInterface) String {
+    var callbacks = exportCallbacks(&value)
+    const usesString = exportGoUsesString(&value)
+    const returnsString = exportGoReturnsString(&value)
+    const unsafePackage = usesString || exportGoUsesUnsafePointer(&value)
+    var output = "package " + exportGoPackageName(&value) + "\n" +
+        renderGoExportImports(usesString, unsafePackage, true) + "\n"
+    if usesString {
+        output = output + "type foundationString struct {\n" +
+            "\tData *byte\n" +
+            "\tLength uint\n" +
+            "\tOwned uint8\n" +
+            "}\n\n"
+    }
+    output = output + renderGoExportTypes(&value, &callbacks) + "type Library struct {\n" +
+        dynamicExportLibraryFields(&value, &callbacks)
+    if returnsString {
+        output = output + "\tstringDrop func(*foundationString)\n"
+    }
+    output = output + "}\n\n" +
+        "func Open(path string) (*Library, error) {\n" +
+        "\thandle, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_LOCAL)\n" +
+        "\tif err != nil {\n" +
+        "\t\treturn nil, err\n" +
+        "\t}\n" +
+        "\tlibrary := &Library{handle: handle}\n" +
+        dynamicExportBindings(&value)
+    if returnsString {
+        output = output +
+            "\tif err := bind(&library.stringDrop, handle, \"fdn_string_drop\"); err != nil {\n" +
+            "\t\t_ = purego.Dlclose(handle)\n" +
+            "\t\treturn nil, err\n" +
+            "\t}\n"
+    }
+    output = output + "\treturn library, nil\n" +
+        "}\n\n" +
+        "func bind(target any, handle uintptr, symbol string) error {\n" +
+        "\taddress, err := purego.Dlsym(handle, symbol)\n" +
+        "\tif err != nil {\n" +
+        "\t\treturn fmt.Errorf(\"foundation symbol %s: %w\", symbol, err)\n" +
+        "\t}\n" +
+        "\tpurego.RegisterFunc(target, address)\n" +
+        "\treturn nil\n" +
+        "}\n\n" +
+        "func (library *Library) Close() error {\n" +
+        "\tif library.handle == 0 {\n" +
+        "\t\treturn nil\n" +
+        "\t}\n" +
+        "\terr := purego.Dlclose(library.handle)\n" +
+        "\tif err == nil {\n" +
+        "\t\tlibrary.handle = 0\n" +
+        "\t}\n" +
+        "\treturn err\n" +
+        "}\n\n" +
+        "func (library *Library) requireOpen() {\n" +
+        "\tif library.handle == 0 {\n" +
+        "\t\tpanic(\"foundation library is closed\")\n" +
+        "\t}\n" +
+        "}\n"
+    if usesString {
+        output = output + "\nfunc foundationBorrowString(value string) foundationString {\n" +
+            "\tvar data *byte\n" +
+            "\tif len(value) != 0 {\n" +
+            "\t\tdata = unsafe.StringData(value)\n" +
+            "\t}\n" +
+            "\treturn foundationString{Data: data, Length: uint(len(value))}\n" +
+            "}\n"
+    }
+    var index u64 = 0
+    while index < value.exports.len() {
+        var function = match value.exports.take(index) {
+            None: panic("package export function slot is empty")
+            Some(found): found
+        }
+        output = output + dynamicExportMethod(&function, &callbacks, index)
+        value.exports.restore(index, $function)
+        index += 1
+    }
+    output
+}

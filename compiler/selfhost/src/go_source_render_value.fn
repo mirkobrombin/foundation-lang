@@ -1,0 +1,177 @@
+package foundation.compiler
+
+import std.format
+
+fn goRenderArray(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &elements arena<u64>,
+    &expressionType semanticType,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    const rendered = match goSourceType(&emitter, &program, &expressionType) {
+        None: {
+            goSourceFail(&emitter, "go-source cannot render an array type", span)
+            return .None
+        }
+        Some(found): found
+    }
+    const values = match goRenderList(&emitter, &program, &function, &elements, depth) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    .Some(rendered + "{" + values + "}")
+}
+
+// Converts an array loan to a slice. A temporary array is copied into a
+// function parameter first because Go cannot slice an unaddressable value.
+fn goRenderOwnership(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    operation firOwnershipOperator,
+    operand u64,
+    &expressionType semanticType,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    const rendered = match goRenderExpression(&emitter, &program, &function, operand, depth) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    var operandType = cExpressionTypeAt(&function, operand)
+    var sourceType = goWithoutOwnership(&operandType)
+    var targetType = goWithoutLoan(&expressionType)
+    if !sourceType.kind.Matches("Array") || !targetType.kind.Matches("Slice") {
+        return .Some(rendered)
+    }
+    if goAddressable(&function, operand) return .Some("(" + rendered + ")[:]")
+    if goOwnershipEdits(operation) {
+        goSourceFail(&emitter, "go-source cannot edit a temporary array", span)
+        return .None
+    }
+    const sourceName = goSourceType(&emitter, &program, &sourceType)
+    const targetName = goSourceType(&emitter, &program, &targetType)
+    match sourceName {
+        None: {}
+        Some(source): match targetName {
+            None: {}
+            Some(target): {
+                return .Some("func(value " + source + ") " + target + " { return value[:] }(" +
+                    rendered + ")")
+            }
+        }
+    }
+    goSourceFail(&emitter, "go-source cannot render an array-to-slice conversion", span)
+    .None
+}
+
+fn goRenderContractValue(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &conversion firContractExpression,
+    depth u64
+) Option<String> {
+    const operand = match goRenderExpression(
+        &emitter, &program, &function, conversion.value, depth) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    var contractType = copySemanticType(&conversion.contractType)
+    const name = goContractTypeName(&emitter, &program, &contractType)
+    if !goPointerContract(&program, &contractType) return .Some(name + "(" + operand + ")")
+    if goAddressable(&function, conversion.value) return .Some(name + "(&(" + operand + "))")
+    .Some(name + "(" + goAddressHelper(&emitter) + "(" + operand + "))")
+}
+
+fn goRenderEnumValue(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &enumValue firEnumExpression,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    const variant = enumValue.variant
+    if enumValue.type.declaration >= program.enums.len() ||
+        variant >= goEnumVariantCount(&program, enumValue.type.declaration) {
+        goSourceFail(&emitter, "go-source cannot render an enum value", span)
+        return .None
+    }
+    var enumType = copySemanticType(&enumValue.type)
+    match copyFirU64Option(enumValue.payload) {
+        None: {}
+        Some(payload): {
+            if goIndirectPayload(&program, &enumType, variant) {
+                const rendered = match goRenderExpression(
+                    &emitter, &program, &function, payload, depth) {
+                    None: {
+                        return .None
+                    }
+                    Some(found): found
+                }
+                return .Some(goEnumConstructorName(&emitter, &program, &enumType, variant) + "(" +
+                    rendered + ")")
+            }
+        }
+    }
+    var output = goEnumTypeName(&emitter, &program, &enumType) + "{tag: " + format.U64(variant)
+    match copyFirU64Option(enumValue.payload) {
+        None: {}
+        Some(payload): {
+            const rendered = match goRenderExpression(
+                &emitter, &program, &function, payload, depth) {
+                None: {
+                    return .None
+                }
+                Some(found): found
+            }
+            output = output + ", " + goEnumFieldName(&emitter, &program, &enumType, variant) +
+                ": " + rendered
+        }
+    }
+    .Some(output + "}")
+}
+
+fn goRenderStructValue(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    &structValue firStructExpression,
+    span sourceSpan,
+    depth u64
+) Option<String> {
+    if structValue.type.declaration >= program.structs.len() {
+        goSourceFail(&emitter, "go-source cannot render a struct value", span)
+        return .None
+    }
+    var structType = copySemanticType(&structValue.type)
+    var output = goStructTypeName(&emitter, &program, &structType) + "{"
+    var index u64 = 0
+    while index < structValue.fields.len() {
+        const field = goFieldValueAt(&structValue.fields, index)
+        const rendered = match goRenderExpression(
+            &emitter, &program, &function, field.value, depth) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if index != 0 {
+            output = output + ", "
+        }
+        output = output + goFieldName(&emitter, &program, structType.declaration, field.field) +
+            ": " + rendered
+        index += 1
+    }
+    .Some(output + "}")
+}

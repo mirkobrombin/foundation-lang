@@ -1,0 +1,57 @@
+package foundation.compiler
+
+import std.text
+
+// Rejects exported generic functions of the package, which Go source cannot
+// expose without a concrete wrapper.
+fn goRejectOpenGenerics(
+    &program firProgram,
+    &described packageInterface,
+    &found diagnostics
+) bool {
+    var rejected = false
+    var index u64 = 0
+    while index < program.functions.len() {
+        const function = match program.functions.take(index) {
+            None: panic("go-source function slot is empty")
+            Some(selected): selected
+        }
+        const open = function.hasBody && function.exported && !function.method &&
+            function.packageName == described.packageName && function.typeParameterCount != 0
+        const name = text.Copy(function.name)
+        const span = goCopySpan(function.sourceSpan)
+        program.functions.restore(index, $function)
+        if open {
+            found.reportError("FDN4120",
+                "go-source cannot expose open generic function " + name +
+                "; add a non-generic exported wrapper or use go-cgo or go-dynamic for this " +
+                "boundary", span)
+            rejected = true
+        }
+        index += 1
+    }
+    rejected
+}
+
+// Translates one package to dependency-free Go source, or reports every
+// construct that the translation rejects.
+fn translateGoSourcePackage(
+    &program firProgram,
+    &described packageInterface,
+    &found diagnostics
+) Option<String> {
+    if goRejectOpenGenerics(&program, &described, &found) return .None
+    var specialized = monomorphizeSourcePackage(&program, described.packageName)
+    var emitter = newGoSourceEmitter(described.packageName, specialized.functions.len())
+    const source = goSourceEmit(&emitter, &specialized, &described)
+    var index u64 = 0
+    while index < emitter.messages.len() {
+        const goSourceMessage { message span } = match emitter.messages.take(index) {
+            None: panic("go-source message slot is empty")
+            Some(selected): selected
+        }
+        found.reportError("FDN4120", $message, goCopySpan(span))
+        index += 1
+    }
+    source
+}

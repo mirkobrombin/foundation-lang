@@ -1,0 +1,195 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn goRenderStructs(&emitter goSourceEmitter, &program firProgram) String {
+    sortArena<goSourceTypeEntry>(&emitter.reachableStructs, compareGoSourceTypeEntry)
+    var output = text.NewBuilder()
+    var index u64 = 0
+    while index < emitter.reachableStructs.len() {
+        if index != 0 {
+            goWrite(&output, "\n")
+        }
+        var entry = goTypeEntryAt(&emitter.reachableStructs, index)
+        const id = entry.type.declaration
+        goWrite(&output, "type " + goStructTypeName(&emitter, &program, &entry.type) +
+            " struct {\n")
+        var declaration = goStructDeclaration(&program, id)
+        var width u64 = 0
+        var field u64 = 0
+        while field < declaration.fields.len() {
+            const length = text.ByteLen(goFieldName(&emitter, &program, id, field))
+            if length > width {
+                width = length
+            }
+            field += 1
+        }
+        field = 0
+        while field < declaration.fields.len() {
+            const name = goFieldName(&emitter, &program, id, field)
+            var fieldType = goStructFieldType(&declaration, field)
+            var substituted = substituteSemanticType(&fieldType, &entry.type.arguments)
+            goWrite(&output, "\t" + name + exportSpaces(width - text.ByteLen(name) + 1) +
+                goSourceText(&emitter, &program, &substituted) + "\n")
+            field += 1
+        }
+        goWrite(&output, "}\n")
+        index += 1
+    }
+    goFinish(&output)
+}
+
+fn goRenderEnumVariant(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &output text.Builder,
+    &value semanticType,
+    generatedType String,
+    variant u64
+) void {
+    const number = format.U64(variant)
+    const indirect = goIndirectPayload(&program, &value, variant)
+    goWrite(&output, "func " + goEnumConstructorName(&emitter, &program, &value, variant) + "(")
+    var payload = goEnumPayloadType(&program, &value, variant)
+    match replace payload with .None {
+        None: {}
+        Some(found): {
+            var selected = found
+            goWrite(&output, "value " + goSourceText(&emitter, &program, &selected))
+            payload = .Some(selected)
+        }
+    }
+    goWrite(&output, ") " + generatedType + " {\n\treturn " + generatedType + "{tag: " + number)
+    const present = goHasEnumPayload(&program, &value, variant)
+    if present {
+        goWrite(&output, ", " + goEnumFieldName(&emitter, &program, &value, variant) +
+            (": &value" if indirect else ": value"))
+    }
+    goWrite(&output, "}\n}\n\n")
+    const method = goEnumMethodName(&emitter, &program, &value, variant)
+    goWrite(&output, "func (value " + generatedType + ") Is" + method +
+        "() bool {\n\treturn value.tag == " + number + "\n}\n")
+    match payload {
+        None: {}
+        Some(found): {
+            var selected = found
+            const payloadType = goSourceText(&emitter, &program, &selected)
+            if indirect {
+                goWrite(&output, "\nfunc (value " + generatedType + ") Get" + method + "() (" +
+                    payloadType + ", bool) {\n\tif value.tag != " + number + " {\n\t\tvar zero " +
+                    payloadType + "\n\t\treturn zero, false\n\t}\n\treturn *value." +
+                    goEnumFieldName(&emitter, &program, &value, variant) + ", true\n}\n")
+            } else {
+                goWrite(&output, "\nfunc (value " + generatedType + ") Get" + method + "() (" +
+                    payloadType + ", bool) {\n\treturn value." +
+                    goEnumFieldName(&emitter, &program, &value, variant) + ", value.tag == " +
+                    number + "\n}\n")
+            }
+        }
+    }
+}
+
+// Renders one enum as a tagged struct with a constructor, a variant test, and
+// a payload getter for each variant.
+fn goRenderEnum(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &output text.Builder,
+    &value semanticType
+) void {
+    const generatedType = goEnumTypeName(&emitter, &program, &value)
+    const count = goEnumVariantCount(&program, value.declaration)
+    var width u64 = 3
+    var variant u64 = 0
+    while variant < count {
+        if goHasEnumPayload(&program, &value, variant) {
+            const length = text.ByteLen(goEnumFieldName(&emitter, &program, &value, variant))
+            if length > width {
+                width = length
+            }
+        }
+        variant += 1
+    }
+    goWrite(&output, "type " + generatedType + " struct {\n" + "\ttag" +
+        exportSpaces(width - 2) + "uint32\n")
+    variant = 0
+    while variant < count {
+        match goEnumPayloadType(&program, &value, variant) {
+            None: {}
+            Some(found): {
+                var payload = found
+                const field = goEnumFieldName(&emitter, &program, &value, variant)
+                const pointer = "*" if goIndirectPayload(&program, &value, variant) else ""
+                goWrite(&output, "\t" + field + exportSpaces(width - text.ByteLen(field) + 1) +
+                    pointer + goSourceText(&emitter, &program, &payload) + "\n")
+            }
+        }
+        variant += 1
+    }
+    goWrite(&output, "}\n\n")
+    variant = 0
+    while variant < count {
+        goRenderEnumVariant(&emitter, &program, &output, &value, generatedType, variant)
+        if variant + 1 != count {
+            goWrite(&output, "\n")
+        }
+        variant += 1
+    }
+}
+
+fn goRenderEnums(&emitter goSourceEmitter, &program firProgram) String {
+    sortArena<goSourceTypeEntry>(&emitter.reachableEnums, compareGoSourceTypeEntry)
+    var output = text.NewBuilder()
+    var index u64 = 0
+    while index < emitter.reachableEnums.len() {
+        if index != 0 {
+            goWrite(&output, "\n")
+        }
+        var entry = goTypeEntryAt(&emitter.reachableEnums, index)
+        goRenderEnum(&emitter, &program, &output, &entry.type)
+        index += 1
+    }
+    goFinish(&output)
+}
+
+fn goRenderContracts(&emitter goSourceEmitter, &program firProgram) String {
+    sortArena<goSourceTypeEntry>(&emitter.reachableContracts, compareGoSourceTypeEntry)
+    var output = text.NewBuilder()
+    var index u64 = 0
+    while index < emitter.reachableContracts.len() {
+        if index != 0 {
+            goWrite(&output, "\n")
+        }
+        var entry = goTypeEntryAt(&emitter.reachableContracts, index)
+        goWrite(&output, "type " + goContractTypeName(&emitter, &program, &entry.type) +
+            " interface {\n")
+        const count = goContractMethodCount(&program, entry.type.declaration)
+        var slot u64 = 0
+        while slot < count {
+            var method = goContractMethodAt(&program, entry.type.declaration, slot)
+            goWrite(&output, "\t" + goContractMethodName(&method) + "(")
+            var parameter u64 = 0
+            while parameter < method.parameters.len() {
+                var parameterType = semanticTypeArgumentOf(&method.parameters, parameter)
+                var substituted = substituteSemanticType(&parameterType, &entry.type.arguments)
+                if parameter != 0 {
+                    goWrite(&output, ", ")
+                }
+                goWrite(&output, goSourceParameterText(&emitter, &program, &substituted))
+                parameter += 1
+            }
+            goWrite(&output, ")")
+            var returnType = substituteSemanticType(&method.returnType, &entry.type.arguments)
+            const result = goSourceText(&emitter, &program, &returnType)
+            if !text.IsEmpty(result) {
+                goWrite(&output, " " + result)
+            }
+            goWrite(&output, "\n")
+            slot += 1
+        }
+        goWrite(&output, "}\n")
+        index += 1
+    }
+    goFinish(&output)
+}

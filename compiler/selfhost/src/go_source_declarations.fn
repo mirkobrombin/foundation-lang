@@ -1,0 +1,293 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+// A contract with an editing method maps to a Go interface implemented by a
+// pointer to the concrete struct, so an edit loan changes the borrowed place.
+// Otherwise the struct value implements it, and an owned contract holds a
+// copy that no method can change.
+fn goPointerContract(&program firProgram, &value semanticType) bool {
+    var selected = match program.contracts.take(value.declaration) {
+        None: panic("go-source contract slot is empty")
+        Some(found): found
+    }
+    var edits = false
+    var index u64 = 0
+    while index < selected.methodList.len() {
+        const method = match selected.methodList.take(index) {
+            None: panic("go-source contract method slot is empty")
+            Some(found): found
+        }
+        if goReceiverEdits(method.receiver) {
+            edits = true
+        }
+        selected.methodList.restore(index, $method)
+        index += 1
+    }
+    program.contracts.restore(value.declaration, $selected)
+    edits
+}
+
+// A contract default receives its dynamic receiver as a contract value, so its
+// body becomes a Go function that takes the interface.
+fn goDefaultReceiver(&program firProgram, &function firFunction) Option<semanticType> {
+    if !goFunctionHasReceiver(&function) || function.parameters.len() == 0 return .None
+    const first = goParameterAt(&function, 0)
+    if first >= function.locals.len() return .None
+    var localType = cLocalTypeAt(&function, first)
+    var owned = goOwnedValue(&localType)
+    if !owned.kind.Matches("ContractValue") || owned.declaration >= program.contracts.len() {
+        return .None
+    }
+    .Some(owned)
+}
+
+fn goHasDefaultReceiver(&program firProgram, &function firFunction) bool {
+    match goDefaultReceiver(&program, &function) {
+        None: false
+        Some(found): {
+            discard found
+            true
+        }
+    }
+}
+
+fn goAssignUniqueName(&emitter goSourceEmitter, id u64, base String) void {
+    const unique = goUniqueName(&emitter, base)
+    goTextSet(&emitter.names, id, unique)
+}
+
+fn goPrepareFunctionName(&emitter goSourceEmitter, &program firProgram, id u64) void {
+    if !text.IsEmpty(goTextAt(&emitter.names, id)) return
+    var function = cFunctionAt(&program, id)
+    const member = metadataShortName(function.name)
+    match goDefaultReceiver(&program, &function) {
+        Some(receiver): {
+            var selected = receiver
+            const base = goLowerFirst(goContractTypeName(&emitter, &program, &selected) +
+                exportTypeName(member))
+            goAssignUniqueName(&emitter, id, base)
+            return
+        }
+        None: {}
+    }
+    if goFunctionHasReceiver(&function) {
+        const name = exportTypeName(member) if function.exported else goIdentifier(member)
+        goTextSet(&emitter.names, id, name)
+        return
+    }
+    if function.constructor {
+        var owner = exportTypeName(goMemberOwnerName(function.name))
+        var constructed = copySemanticType(&function.returnType)
+        if constructed.kind.Matches("EnumValue") && constructed.declaration < program.enums.len() &&
+            goEnumBuiltin(&program, constructed.declaration) &&
+            goEnumDeclarationName(&program, constructed.declaration) == "Result" &&
+            constructed.arguments.len() != 0 {
+            const inner = semanticTypeArgument(&constructed, 0)
+            constructed = inner
+        }
+        if constructed.kind.Matches("StructValue") &&
+            constructed.declaration < program.structs.len() {
+            owner = goStructTypeName(&emitter, &program, &constructed)
+        }
+        const constructorName = exportTypeName(member)
+        var base = "New" + owner
+        if constructorName != "New" {
+            base = base + constructorName
+        }
+        if !function.exported {
+            base = goLowerFirst(base)
+        }
+        goAssignUniqueName(&emitter, id, base)
+        return
+    }
+    if function.method {
+        var base = exportTypeName(goMemberOwnerName(function.name)) + exportTypeName(member)
+        if !function.exported {
+            base = goLowerFirst(base)
+        }
+        goAssignUniqueName(&emitter, id, base)
+        return
+    }
+    const base = exportTypeName(member) if function.exported else goIdentifier(member)
+    goAssignUniqueName(&emitter, id, base)
+}
+
+fn goFunctionNamed(&emitter goSourceEmitter, id u64) bool {
+    id < emitter.names.len() && !text.IsEmpty(goTextAt(&emitter.names, id))
+}
+
+fn goEnumPayloadType(
+    &program firProgram,
+    &value semanticType,
+    variant u64
+) Option<semanticType> {
+    if !value.kind.Matches("EnumValue") || value.declaration >= program.enums.len() return .None
+    var payload = match goEnumPayloadAt(&program, value.declaration, variant) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    var substituted = substituteSemanticType(&payload, &value.arguments)
+    if goIsVoidType(&substituted) &&
+        goEnumDeclarationName(&program, value.declaration) == "Result" {
+        return .None
+    }
+    .Some(substituted)
+}
+
+fn goHasEnumPayload(&program firProgram, &value semanticType, variant u64) bool {
+    match goEnumPayloadType(&program, &value, variant) {
+        None: false
+        Some(found): {
+            discard found
+            true
+        }
+    }
+}
+
+fn goBuiltinEnum(&program firProgram, &value semanticType, name String) bool {
+    value.kind.Matches("EnumValue") && value.declaration < program.enums.len() &&
+        goEnumBuiltin(&program, value.declaration) &&
+        goEnumDeclarationName(&program, value.declaration) == name
+}
+
+// An owned enum payload lives behind a Go pointer that only its variant
+// constructor allocates. Reads copy the pointee and nothing writes through the
+// pointer, so the payload stays immutable, copies of the enum stay
+// independent values, and the pointer can close a recursive type.
+fn goIndirectPayload(&program firProgram, &value semanticType, variant u64) bool {
+    match goEnumPayloadType(&program, &value, variant) {
+        None: false
+        Some(found): found.kind.Matches("Own")
+    }
+}
+
+fn goPayloadRead(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType,
+    variant u64,
+    base String
+) String {
+    const field = base + "." + goEnumFieldName(&emitter, &program, &value, variant)
+    if goIndirectPayload(&program, &value, variant) return "*" + field
+    field
+}
+
+fn goSourceParameterType(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType
+) Option<String> {
+    if goOwnershipKind(&value) && value.arguments.len() == 1 {
+        const pointer = goPointerParameter(&value)
+        var inner = semanticTypeArgument(&value, 0)
+        const rendered = match goSourceType(&emitter, &program, &inner) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if text.IsEmpty(rendered) return .None
+        if pointer return .Some("*" + rendered)
+        return .Some(rendered)
+    }
+    goSourceType(&emitter, &program, &value)
+}
+
+fn goSourceFunctionType(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType
+) Option<String> {
+    var output = "func("
+    var index u64 = 1
+    while index < value.arguments.len() {
+        var argument = semanticTypeArgument(&value, index)
+        const parameter = match goSourceParameterType(&emitter, &program, &argument) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if text.IsEmpty(parameter) return .None
+        if index != 1 {
+            output = output + ", "
+        }
+        output = output + parameter
+        index += 1
+    }
+    output = output + ")"
+    var resultType = semanticTypeArgument(&value, 0)
+    const result = match goSourceType(&emitter, &program, &resultType) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    if !text.IsEmpty(result) {
+        output = output + " " + result
+    }
+    .Some(output)
+}
+
+// Renders a Foundation type as Go. Ownership wrappers disappear; an empty
+// result is void.
+fn goSourceType(&emitter goSourceEmitter, &program firProgram, &value semanticType) Option<String> {
+    var selected = goOwnedValue(&value)
+    match goScalarType(&selected) {
+        Some(found): {
+            return .Some(found)
+        }
+        None: {}
+    }
+    if selected.kind.Matches("StructValue") && selected.declaration < program.structs.len() {
+        return .Some(goStructTypeName(&emitter, &program, &selected))
+    }
+    if selected.kind.Matches("EnumValue") && selected.declaration < program.enums.len() {
+        return .Some(goEnumTypeName(&emitter, &program, &selected))
+    }
+    if selected.kind.Matches("ContractValue") && selected.declaration < program.contracts.len() {
+        return .Some(goContractTypeName(&emitter, &program, &selected))
+    }
+    if goSequenceKind(&selected) && selected.arguments.len() == 1 {
+        var element = semanticTypeArgument(&selected, 0)
+        const rendered = match goSourceType(&emitter, &program, &element) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        if text.IsEmpty(rendered) return .None
+        if selected.kind.Matches("Array") {
+            return .Some("[" + format.U64(selected.declaration) + "]" + rendered)
+        }
+        return .Some("[]" + rendered)
+    }
+    if selected.kind.Matches("Function") && !isCSemanticFunction(&selected) &&
+        selected.arguments.len() != 0 {
+        return goSourceFunctionType(&emitter, &program, &selected)
+    }
+    .None
+}
+
+fn goSourceText(&emitter goSourceEmitter, &program firProgram, &value semanticType) String {
+    match goSourceType(&emitter, &program, &value) {
+        None: panic("go-source type was not validated")
+        Some(found): found
+    }
+}
+
+fn goSourceParameterText(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &value semanticType
+) String {
+    match goSourceParameterType(&emitter, &program, &value) {
+        None: panic("go-source parameter type was not validated")
+        Some(found): found
+    }
+}

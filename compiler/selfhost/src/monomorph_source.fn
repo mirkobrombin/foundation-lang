@@ -1,0 +1,292 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+struct monomorphSourceStruct {
+    key String
+    type semanticType
+}
+
+fn compareMonomorphSourceStruct(left monomorphSourceStruct, right monomorphSourceStruct) i32 {
+    text.Compare(left.key, right.key)
+}
+
+fn monomorphSourceDeclarationName(&source firProgram, &value semanticType) Option<String> {
+    if value.kind.Matches("StructValue") && value.declaration < source.structs.len() {
+        return .Some("struct:" + goStructDeclarationName(&source, value.declaration))
+    }
+    if value.kind.Matches("EnumValue") && value.declaration < source.enums.len() {
+        return .Some("enum:" + goEnumDeclarationName(&source, value.declaration))
+    }
+    if value.kind.Matches("ContractValue") && value.declaration < source.contracts.len() {
+        return .Some("contract:" + goContractDeclarationName(&source, value.declaration))
+    }
+    .None
+}
+
+// Keys a type by declaration name. A copyable view parameter keys as its
+// target, the way a monomorphized parameter drops the view.
+fn monomorphSourceTypeKey(&source firProgram, &value semanticType) String {
+    if value.kind.Matches("View") && value.declaration == 1 && value.arguments.len() == 1 {
+        var target = semanticTypeArgument(&value, 0)
+        if monomorphSourceTypeCopy(&source, &target) {
+            return monomorphSourceTypeKey(&source, &target)
+        }
+    }
+    var result = match monomorphSourceDeclarationName(&source, &value) {
+        Some(found): found
+        None: format.U64(cPackageTypeKindCode(value.kind)) + ":" + format.U64(value.declaration)
+    }
+    if value.arguments.len() != 0 {
+        result = result + "<"
+        var index u64 = 0
+        while index < value.arguments.len() {
+            var argument = semanticTypeArgument(&value, index)
+            result = result + monomorphSourceTypeKey(&source, &argument) + ";"
+            index += 1
+        }
+        result = result + ">"
+    }
+    result
+}
+
+fn monomorphSourceStructKnown(&types arena<monomorphSourceStruct>, key String) bool {
+    var index u64 = 0
+    while index < types.len() {
+        const entry = match types.take(index) {
+            None: panic("source struct slot is empty")
+            Some(found): found
+        }
+        const same = entry.key == key
+        types.restore(index, $entry)
+        if same return true
+        index += 1
+    }
+    false
+}
+
+// Collects the struct types that one type reaches through its arguments,
+// struct fields, and enum payloads.
+fn collectMonomorphSourceStructs(
+    &source firProgram,
+    &value semanticType,
+    &types arena<monomorphSourceStruct>
+) void {
+    var index u64 = 0
+    while index < value.arguments.len() {
+        var argument = semanticTypeArgument(&value, index)
+        collectMonomorphSourceStructs(&source, &argument, &types)
+        index += 1
+    }
+    if value.kind.Matches("StructValue") && value.declaration < source.structs.len() {
+        const key = monomorphSourceTypeKey(&source, &value)
+        if monomorphSourceStructKnown(&types, key) return
+        discard types.add(monomorphSourceStruct { key = key type = copySemanticType(&value) })
+        var declaration = goStructDeclaration(&source, value.declaration)
+        if value.arguments.len() != declaration.typeParameterCount return
+        var field u64 = 0
+        while field < declaration.fields.len() {
+            var fieldType = goStructFieldType(&declaration, field)
+            var substituted = substituteSemanticType(&fieldType, &value.arguments)
+            collectMonomorphSourceStructs(&source, &substituted, &types)
+            field += 1
+        }
+        return
+    }
+    if !value.kind.Matches("EnumValue") || value.declaration >= source.enums.len() return
+    var declaration = goEnumDeclaration(&source, value.declaration)
+    if value.arguments.len() != declaration.typeParameterCount return
+    var variant u64 = 0
+    while variant < declaration.variants.len() {
+        match goEnumVariantPayload(&declaration, variant) {
+            None: {}
+            Some(payload): {
+                var original = payload
+                var substituted = substituteSemanticType(&original, &value.arguments)
+                collectMonomorphSourceStructs(&source, &substituted, &types)
+            }
+        }
+        variant += 1
+    }
+}
+
+fn collectMonomorphFunctionStructs(
+    &source firProgram,
+    &function firFunction,
+    &types arena<monomorphSourceStruct>
+) void {
+    collectMonomorphSourceStructs(&source, &function.returnType, &types)
+    var local u64 = 0
+    while local < function.locals.len() {
+        var localType = cLocalTypeAt(&function, local)
+        collectMonomorphSourceStructs(&source, &localType, &types)
+        local += 1
+    }
+    var expression u64 = 0
+    while expression < function.expressions.len() {
+        var expressionType = cExpressionTypeAt(&function, expression)
+        collectMonomorphSourceStructs(&source, &expressionType, &types)
+        expression += 1
+    }
+}
+
+fn monomorphSourceMethodOf(
+    &source firProgram,
+    id u64,
+    packageName String,
+    owner String,
+    argumentCount u64
+) bool {
+    const function = match source.functions.take(id) {
+        None: panic("source function slot is empty")
+        Some(found): found
+    }
+    const name = text.Copy(function.name)
+    const candidate = function.method && function.exported && function.hasBody &&
+        function.packageName == packageName && function.typeParameterCount == argumentCount
+    source.functions.restore(id, $function)
+    if !candidate return false
+    const member = metadataShortName(name)
+    if text.ByteLen(member) == text.ByteLen(name) return false
+    applicationSlice(name, 0, text.ByteLen(name) - text.ByteLen(member) - 1) == owner
+}
+
+// Instantiates the exported methods of every struct type the specialized
+// functions reach, until no new struct type appears.
+fn instantiateMonomorphSourceMembers(
+    &state monomorphizer,
+    &source firProgram,
+    packageName String
+) void {
+    var handled = newArena<String>()
+    while true {
+        var types = newArena<monomorphSourceStruct>()
+        var function u64 = 0
+        while function < state.result.functions.len() {
+            var selected = cFunctionAt(&state.result, function)
+            collectMonomorphFunctionStructs(&source, &selected, &types)
+            function += 1
+        }
+        sortArena<monomorphSourceStruct>(&types, compareMonomorphSourceStruct)
+        var instantiated = false
+        var index u64 = 0
+        while index < types.len() {
+            var entry = match types.take(index) {
+                None: panic("source struct slot is empty")
+                Some(found): found
+            }
+            const key = text.Copy(entry.key)
+            var arguments = copyMonomorphArguments(&entry.type.arguments)
+            const declaration = entry.type.declaration
+            types.restore(index, $entry)
+            index += 1
+            if arenaContainsString(&handled, key) || declaration >= source.structs.len() {
+                if !arenaContainsString(&handled, key) {
+                    discard handled.add(text.Copy(key))
+                }
+                continue
+            }
+            discard handled.add(text.Copy(key))
+            const owner = goStructDeclarationName(&source, declaration)
+            var candidate u64 = 0
+            while candidate < source.functions.len() {
+                if monomorphSourceMethodOf(
+                    &source, candidate, packageName, owner, arguments.len()) {
+                    var instanceArguments = copyMonomorphArguments(&arguments)
+                    discard instantiateMonomorphFunction(
+                        &state, &source, candidate, &instanceArguments)
+                    instantiated = true
+                }
+                candidate += 1
+            }
+        }
+        if !instantiated return
+    }
+}
+
+fn copyMonomorphArguments(&values arena<semanticType>) own arena<semanticType> {
+    var result = newArena<semanticType>()
+    var index u64 = 0
+    while index < values.len() {
+        discard result.add(semanticTypeArgumentOf(&values, index))
+        index += 1
+    }
+    result
+}
+
+fn copyMonomorphSourceDeclarations(&state monomorphizer, &source firProgram) void {
+    var index u64 = 0
+    while index < source.structs.len() {
+        discard state.result.structs.add(goStructDeclaration(&source, index))
+        index += 1
+    }
+    index = 0
+    while index < source.enums.len() {
+        discard state.result.enums.add(goEnumDeclaration(&source, index))
+        index += 1
+    }
+    index = 0
+    while index < source.contracts.len() {
+        const selected = match source.contracts.take(index) {
+            None: panic("source contract slot is empty")
+            Some(found): found
+        }
+        const firContractCopy { original value } = copyFirContract($selected)
+        source.contracts.restore(index, $original)
+        discard state.result.contracts.add($value)
+        index += 1
+    }
+    index = 0
+    while index < source.attributeDeclarations.len() {
+        var selected = match source.attributeDeclarations.take(index) {
+            None: panic("source attribute slot is empty")
+            Some(found): found
+        }
+        discard state.result.attributeDeclarations.add(copyFirAttributeDeclaration(&selected))
+        source.attributeDeclarations.restore(index, $selected)
+        index += 1
+    }
+}
+
+fn monomorphSourceRoot(&source firProgram, id u64, packageName String) bool {
+    const function = match source.functions.take(id) {
+        None: panic("source function slot is empty")
+        Some(found): found
+    }
+    const root = function.exported && function.hasBody && function.packageName == packageName &&
+        function.typeParameterCount == 0
+    source.functions.restore(id, $function)
+    root
+}
+
+// Specializes one package for source translation. Declarations keep their
+// source identities, so generic types stay parameterized by their arguments,
+// and exported methods of every reachable struct are instantiated.
+fn monomorphizeSourcePackage(&source firProgram, packageName String) own firProgram {
+    var state = newMonomorphizer()
+    state.preserveSourceTypes = true
+    copyMonomorphSourceDeclarations(&state, &source)
+    var index u64 = 0
+    while index < source.functions.len() {
+        if monomorphSourceRoot(&source, index, packageName) {
+            var arguments = newArena<semanticType>()
+            discard instantiateMonomorphFunction(&state, &source, index, &arguments)
+        }
+        index += 1
+    }
+    instantiateMonomorphSourceMembers(&state, &source, packageName)
+    index = 0
+    while index < state.result.functions.len() {
+        var function = match state.result.functions.take(index) {
+            None: panic("source function slot is empty")
+            Some(found): found
+        }
+        if function.generic && !function.method {
+            function.exported = false
+        }
+        state.result.functions.restore(index, $function)
+        index += 1
+    }
+    finishMonomorphizer($state)
+}

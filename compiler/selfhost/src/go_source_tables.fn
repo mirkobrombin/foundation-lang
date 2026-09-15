@@ -1,0 +1,193 @@
+package foundation.compiler
+
+import std.text
+
+fn goEntryIndex(&entries arena<goSourceEntry>, key String) Option<u64> {
+    var index u64 = 0
+    while index < entries.len() {
+        const entry = match entries.take(index) {
+            None: panic("go-source entry slot is empty")
+            Some(found): found
+        }
+        const same = entry.key == key
+        entries.restore(index, $entry)
+        if same return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn goEntryFind(&entries arena<goSourceEntry>, key String) Option<String> {
+    const position = match goEntryIndex(&entries, key) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    const entry = match entries.take(position) {
+        None: panic("go-source entry slot is empty")
+        Some(found): found
+    }
+    const value = text.Copy(entry.value)
+    entries.restore(position, $entry)
+    .Some(value)
+}
+
+fn goEntryText(&entries arena<goSourceEntry>, key String) String {
+    match goEntryFind(&entries, key) {
+        None: panic("go-source name was not prepared")
+        Some(found): found
+    }
+}
+
+fn goEntryPut(&entries arena<goSourceEntry>, key String, value String) void {
+    const replacement = goSourceEntry { key = text.Copy(key) value = text.Copy(value) }
+    match goEntryIndex(&entries, key) {
+        None: {
+            discard entries.add($replacement)
+        }
+        Some(position): {
+            discard entries.take(position)
+            entries.restore(position, $replacement)
+        }
+    }
+}
+
+// Adds an entry unless the key is present, like an insertion that keeps the
+// first value.
+fn goEntryInsert(&entries arena<goSourceEntry>, key String, value String) bool {
+    match goEntryIndex(&entries, key) {
+        None: {
+            discard entries.add(goSourceEntry { key = text.Copy(key) value = text.Copy(value) })
+            true
+        }
+        Some(position): {
+            discard position
+            false
+        }
+    }
+}
+
+fn goEntryAt(&entries arena<goSourceEntry>, index u64) goSourceEntry {
+    const entry = match entries.take(index) {
+        None: panic("go-source entry slot is empty")
+        Some(found): found
+    }
+    const result = goSourceEntry { key = text.Copy(entry.key) value = text.Copy(entry.value) }
+    entries.restore(index, $entry)
+    result
+}
+
+fn goCountFind(&entries arena<goSourceCount>, key String) Option<u64> {
+    var index u64 = 0
+    while index < entries.len() {
+        const entry = match entries.take(index) {
+            None: panic("go-source count slot is empty")
+            Some(found): found
+        }
+        const same = entry.key == key
+        const value = entry.value
+        entries.restore(index, $entry)
+        if same return .Some(value)
+        index += 1
+    }
+    .None
+}
+
+fn goCountValue(&entries arena<goSourceCount>, key String) u64 {
+    match goCountFind(&entries, key) {
+        None: 0
+        Some(found): found
+    }
+}
+
+fn goCountSet(&entries arena<goSourceCount>, key String, value u64) void {
+    var index u64 = 0
+    while index < entries.len() {
+        const entry = match entries.take(index) {
+            None: panic("go-source count slot is empty")
+            Some(found): found
+        }
+        const same = entry.key == key
+        entries.restore(index, $entry)
+        if same {
+            discard entries.take(index)
+            entries.restore(index, goSourceCount { key = text.Copy(key) value = value })
+            return
+        }
+        index += 1
+    }
+    discard entries.add(goSourceCount { key = text.Copy(key) value = value })
+}
+
+fn goTypeEntryPut(&entries arena<goSourceTypeEntry>, key String, &type semanticType) void {
+    var index u64 = 0
+    while index < entries.len() {
+        const entry = match entries.take(index) {
+            None: panic("go-source type slot is empty")
+            Some(found): found
+        }
+        const same = entry.key == key
+        entries.restore(index, $entry)
+        if same {
+            discard entries.take(index)
+            entries.restore(index,
+                goSourceTypeEntry { key = text.Copy(key) type = copySemanticType(&type) })
+            return
+        }
+        index += 1
+    }
+    discard entries.add(goSourceTypeEntry { key = text.Copy(key) type = copySemanticType(&type) })
+}
+
+fn goTypeEntryAt(&entries arena<goSourceTypeEntry>, index u64) goSourceTypeEntry {
+    var entry = match entries.take(index) {
+        None: panic("go-source type slot is empty")
+        Some(found): found
+    }
+    const key = text.Copy(entry.key)
+    const copied = copySemanticType(&entry.type)
+    entries.restore(index, $entry)
+    goSourceTypeEntry { key = key type = copied }
+}
+
+fn compareGoSourceEntry(left goSourceEntry, right goSourceEntry) i32 {
+    text.Compare(left.key, right.key)
+}
+
+fn compareGoSourceTypeEntry(left goSourceTypeEntry, right goSourceTypeEntry) i32 {
+    text.Compare(left.key, right.key)
+}
+
+fn compareGoSourceText(left String, right String) i32 {
+    text.Compare(left, right)
+}
+
+fn goTextAt(&values arena<String>, index u64) String {
+    exportTextAt(&values, index)
+}
+
+fn goTextSet(&values arena<String>, index u64, value String) void {
+    discard values.take(index)
+    values.restore(index, text.Copy(value))
+}
+
+fn goTextAdd(&values arena<String>, value String) bool {
+    if arenaContainsString(&values, value) return false
+    discard values.add(text.Copy(value))
+    true
+}
+
+fn goU64At(&values arena<u64>, index u64) u64 {
+    const value = match values.take(index) {
+        None: panic("go-source index slot is empty")
+        Some(found): found
+    }
+    values.restore(index, value)
+    value
+}
+
+fn goU64Set(&values arena<u64>, index u64, value u64) void {
+    discard values.take(index)
+    values.restore(index, value)
+}

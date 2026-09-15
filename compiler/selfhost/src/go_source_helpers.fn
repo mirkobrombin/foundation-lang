@@ -1,0 +1,201 @@
+package foundation.compiler
+
+import std.text
+
+fn goRegisteredHelper(&emitter goSourceEmitter, key String) Option<String> {
+    goEntryFind(&emitter.helperNames, key)
+}
+
+// Returns the checked Go helper for one integer operation, adding it on first
+// use. Only the operations Foundation checks have helpers.
+fn goIntegerHelper(
+    &emitter goSourceEmitter,
+    operation firBinaryOperator,
+    &value semanticType
+) String {
+    const name = goBinaryName(operation)
+    if !goCheckedArithmetic(name) return ""
+    const key = name + goSourceTypeTag(&value)
+    match goRegisteredHelper(&emitter, key) {
+        Some(found): {
+            return found
+        }
+        None: {}
+    }
+    const helper = goUniqueName(&emitter, "foundation" + key)
+    goEntryPut(&emitter.helperNames, key, helper)
+    goEntryPut(&emitter.helpers, helper, goRenderIntegerHelper(helper, operation, &value))
+    helper
+}
+
+fn goOverflowPanic(label String) String {
+    "\t\tpanic(\"" + label + " overflow\")\n\t}\n"
+}
+
+fn goRenderShiftHelper(
+    header String,
+    name String,
+    &value semanticType,
+    label String
+) String {
+    var output = header + "\tif "
+    if isSignedSemanticInteger(&value) {
+        output = output + "right < 0 || "
+    }
+    output = output + "uint64(right) >= uint64(" + goIntegerTypeWidth(&value) + ") {\n" +
+        "\t\tpanic(\"shift count out of range\")\n" +
+        "\t}\n" +
+        "\tresult := left " + ("<<" if name == "ShiftLeft" else ">>") + " uint(right)\n"
+    if name == "ShiftLeft" {
+        output = output + "\tif right != 0 && result>>uint(right) != left {\n" +
+            goOverflowPanic(label)
+    }
+    output + "\treturn result\n}\n"
+}
+
+fn goRenderIntegerHelper(helper String, operation firBinaryOperator, &value semanticType) String {
+    const goType = goScalarText(&value)
+    const label = exportSnakeName(goSourceTypeTag(&value))
+    const signedType = isSignedSemanticInteger(&value)
+    const name = goBinaryName(operation)
+    const header = "func " + helper + "(left, right " + goType + ") " + goType + " {\n"
+    if goShiftArithmetic(name) return goRenderShiftHelper(header, name, &value, label)
+    var output = header
+    if name == "Divide" || name == "Remainder" {
+        output = output + "\tif right == 0 {\n" +
+            "\t\tpanic(\"division by zero\")\n" +
+            "\t}\n"
+    }
+    if name == "Subtract" && !signedType {
+        output = output + "\tif right > left {\n" + goOverflowPanic(label)
+    }
+    if name == "Multiply" {
+        output = output + "\tif left == 0 || right == 0 {\n" +
+            "\t\treturn 0\n" +
+            "\t}\n"
+    }
+    output = output + "\tresult := left " + goBinarySymbol(operation) + " right\n"
+    if name == "Add" {
+        if signedType {
+            output = output + "\tif (right > 0 && result < left) || " +
+                "(right < 0 && result > left) {\n"
+        } else {
+            output = output + "\tif result < left {\n"
+        }
+        output = output + goOverflowPanic(label)
+    }
+    if name == "Subtract" && signedType {
+        output = output + "\tif (right > 0 && result > left) || " +
+            "(right < 0 && result < left) {\n" + goOverflowPanic(label)
+    }
+    if name == "Multiply" {
+        if signedType {
+            output = output + "\tif (left == -1 && result == right) || result/left != right {\n"
+        } else {
+            output = output + "\tif result/left != right {\n"
+        }
+        output = output + goOverflowPanic(label)
+    }
+    if name == "Divide" && signedType {
+        output = output + "\tif left < 0 && right == -1 && result == left {\n" +
+            goOverflowPanic(label)
+    }
+    output + "\treturn result\n}\n"
+}
+
+fn goNegateHelper(&emitter goSourceEmitter, &value semanticType) String {
+    const tag = goSourceTypeTag(&value)
+    const key = "Negate" + tag
+    match goRegisteredHelper(&emitter, key) {
+        Some(found): {
+            return found
+        }
+        None: {}
+    }
+    const helper = goUniqueName(&emitter, "foundation" + key)
+    goEntryPut(&emitter.helperNames, key, helper)
+    const goType = goScalarText(&value)
+    goEntryPut(&emitter.helpers, helper, "func " + helper + "(value " + goType + ") " + goType +
+        " {\n" +
+        "\tresult := -value\n" +
+        "\tif value < 0 && result < 0 {\n" +
+        goOverflowPanic(exportSnakeName(tag)) +
+        "\treturn result\n" +
+        "}\n")
+    helper
+}
+
+fn goAddressHelper(&emitter goSourceEmitter) String {
+    match goRegisteredHelper(&emitter, "Address") {
+        Some(found): {
+            return found
+        }
+        None: {}
+    }
+    const helper = goUniqueName(&emitter, "foundationAddress")
+    goEntryPut(&emitter.helperNames, "Address", helper)
+    goEntryPut(&emitter.helpers, helper,
+        "func " + helper + "[T any](value T) *T {\n\treturn &value\n}\n")
+    helper
+}
+
+fn goPrintHelper(&emitter goSourceEmitter) String {
+    match goRegisteredHelper(&emitter, "Print") {
+        Some(found): {
+            return found
+        }
+        None: {}
+    }
+    const helper = goUniqueName(&emitter, "foundationPrint")
+    goEntryPut(&emitter.helperNames, "Print", helper)
+    discard goTextAdd(&emitter.imports, "os")
+    goEntryPut(&emitter.helpers, helper, "func " + helper + "(value string) {\n" +
+        "\t_, _ = os.Stdout.WriteString(value + \"\\n\")\n" +
+        "}\n")
+    helper
+}
+
+// Foundation panic does not unwind, so the helper exits before any deferred
+// Go function or recover can run. It returns a value only so the call site
+// can wrap it in a Go panic, which Go accepts as a terminating statement.
+fn goPanicHelper(&emitter goSourceEmitter) String {
+    match goRegisteredHelper(&emitter, "Panic") {
+        Some(found): {
+            return found
+        }
+        None: {}
+    }
+    const helper = goUniqueName(&emitter, "foundationPanic")
+    goEntryPut(&emitter.helperNames, "Panic", helper)
+    discard goTextAdd(&emitter.imports, "os")
+    goEntryPut(&emitter.helpers, helper, "func " + helper + "(message string) any {\n" +
+        "\t_, _ = os.Stderr.WriteString(\"foundation panic: \" + message + \"\\n\")\n" +
+        "\tos.Exit(1)\n" +
+        "\treturn nil\n" +
+        "}\n")
+    helper
+}
+
+fn goRenderPanic(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &function firFunction,
+    id u64,
+    depth u64
+) Option<String> {
+    const firExpression { value type span } = cExpressionAt(&function, id)
+    discard type
+    discard span
+    const message = match value {
+        Call(call): {
+            var selected = call
+            goRenderExpression(&emitter, &program, &function, goU64At(&selected.arguments, 0),
+                depth)
+        }
+        _: .None
+    }
+    match message {
+        None: .None
+        Some(found): .Some("panic(" + goPanicHelper(&emitter) + "(" + found + "))")
+    }
+}

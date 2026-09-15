@@ -1,0 +1,201 @@
+package foundation.compiler
+
+import std.text
+
+fn goRenderFunction(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &output text.Builder,
+    id u64,
+    last bool
+) void {
+    var function = cFunctionAt(&program, id)
+    var locals = goLocalNames(&emitter, &function)
+    emitter.currentLocals = copyFirStringArena(&locals)
+    emitter.currentGeneratedLocals = copyFirStringArena(&locals)
+    const name = goTextAt(&emitter.names, id)
+    var first u64 = 0
+    if goFunctionHasReceiver(&function) && !goHasDefaultReceiver(&program, &function) {
+        const local = goParameterAt(&function, 0)
+        var localType = cLocalTypeAt(&function, local)
+        const pointer = "*" if goFunctionReceiverEdits(&function) else ""
+        goWrite(&output, "func (" + goTextAt(&locals, local) + " " + pointer +
+            goSourceText(&emitter, &program, &localType) + ") " + name + "(")
+        first = 1
+    } else {
+        goWrite(&output, "func " + name + "(")
+    }
+    var index = first
+    while index < function.parameters.len() {
+        const local = goParameterAt(&function, index)
+        if index != first {
+            goWrite(&output, ", ")
+        }
+        var localType = cLocalTypeAt(&function, local)
+        goWrite(&output, goTextAt(&locals, local) + " " +
+            goSourceParameterText(&emitter, &program, &localType))
+        if goPointerParameter(&localType) {
+            goTextSet(&emitter.currentLocals, local, "*" + goTextAt(&locals, local))
+        }
+        index += 1
+    }
+    goWrite(&output, ")")
+    var returnType = copySemanticType(&function.returnType)
+    const result = goSourceText(&emitter, &program, &returnType)
+    if !text.IsEmpty(result) {
+        goWrite(&output, " " + result)
+    }
+    goWrite(&output, " {\n")
+    const body = function.body
+    goRenderBlock(&emitter, &program, &function, &output, body, 1)
+    goWrite(&output, "}\n")
+    if !last {
+        goWrite(&output, "\n")
+    }
+}
+
+fn goRenderDefinitions(&definitions arena<goSourceEntry>) String {
+    sortArena<goSourceEntry>(&definitions, compareGoSourceEntry)
+    var output = ""
+    var index u64 = 0
+    while index < definitions.len() {
+        const entry = goEntryAt(&definitions, index)
+        if !text.IsEmpty(entry.value) {
+            if !text.IsEmpty(output) {
+                output = output + "\n"
+            }
+            output = output + entry.value
+        }
+        index += 1
+    }
+    output
+}
+
+fn goRenderImports(&emitter goSourceEmitter) String {
+    sortArena<String>(&emitter.imports, compareGoSourceText)
+    if emitter.imports.len() == 0 return ""
+    if emitter.imports.len() == 1 return "import \"" + goTextAt(&emitter.imports, 0) + "\"\n\n"
+    var output = "import (\n"
+    var index u64 = 0
+    while index < emitter.imports.len() {
+        output = output + "\t\"" + goTextAt(&emitter.imports, index) + "\"\n"
+        index += 1
+    }
+    output + ")\n\n"
+}
+
+fn goPiiSpan(&function piiFunction) sourceSpan {
+    if function.source.line == 0 return goEmptySpan()
+    sourceSpan {
+        offset = function.source.offset
+        length = function.source.length
+        line = function.source.line
+        column = function.source.column
+        source = 0
+    }
+}
+
+fn goRejectNativeInterface(&emitter goSourceEmitter, &described packageInterface) void {
+    var index u64 = 0
+    while index < described.imports.len() {
+        var imported = match described.imports.take(index) {
+            None: panic("go-source import slot is empty")
+            Some(found): found
+        }
+        const name = text.Copy(imported.foundationName)
+        const span = goPiiSpan(&imported)
+        described.imports.restore(index, $imported)
+        goSourceFail(&emitter, "go-source cannot translate external function " + name, span)
+        index += 1
+    }
+    if described.foreign.len() != 0 {
+        goSourceFail(&emitter, "go-source cannot translate foreign package metadata",
+            goEmptySpan())
+    }
+    if described.links.len() != 0 {
+        goSourceFail(&emitter, "go-source cannot translate native link requirements",
+            goEmptySpan())
+    }
+}
+
+fn goSourceRoot(&emitter goSourceEmitter, &program firProgram, id u64) bool {
+    const function = match program.functions.take(id) {
+        None: panic("go-source function slot is empty")
+        Some(found): found
+    }
+    const root = function.hasBody && function.exported &&
+        function.packageName == emitter.packageName
+    program.functions.restore(id, $function)
+    root
+}
+
+fn goJoinSections(&sections arena<String>) String {
+    var output = ""
+    var first = true
+    var index u64 = 0
+    while index < sections.len() {
+        const section = goTextAt(&sections, index)
+        if !text.IsEmpty(section) {
+            if !first {
+                output = output + "\n"
+            }
+            first = false
+            output = output + section
+        }
+        index += 1
+    }
+    output
+}
+
+// Translates the exported functions of one package, and everything they
+// reach, to one Go source file.
+fn goSourceEmit(
+    &emitter goSourceEmitter,
+    &program firProgram,
+    &described packageInterface
+) Option<String> {
+    goRejectNativeInterface(&emitter, &described)
+    if emitter.failed return .None
+    var roots = newArena<u64>()
+    var index u64 = 0
+    while index < program.functions.len() {
+        if goSourceRoot(&emitter, &program, index) {
+            goPrepareFunctionName(&emitter, &program, index)
+            discard roots.add(index)
+        }
+        index += 1
+    }
+    if roots.len() == 0 {
+        goSourceFail(&emitter, "go-source package exports no Foundation functions", goEmptySpan())
+    }
+    index = 0
+    while index < roots.len() {
+        discard goScanFunction(&emitter, &program, goU64At(&roots, index))
+        index += 1
+    }
+    const scanned = emitter.failed
+    if !scanned {
+        goReconcileMethods(&emitter, &program)
+    }
+    if emitter.failed return .None
+    var functions = text.NewBuilder()
+    index = 0
+    while index < emitter.order.len() {
+        const id = goU64At(&emitter.order, index)
+        const last = index + 1 == emitter.order.len()
+        goRenderFunction(&emitter, &program, &functions, id, last)
+        if emitter.failed return .None
+        index += 1
+    }
+    const functionText = goFinish(&functions)
+    const header = "package " + exportGoPackageName(&described) + "\n\n" +
+        goRenderImports(&emitter)
+    var sections = newArena<String>()
+    discard sections.add(goRenderContracts(&emitter, &program))
+    discard sections.add(goRenderStructs(&emitter, &program))
+    discard sections.add(goRenderEnums(&emitter, &program))
+    discard sections.add($functionText)
+    discard sections.add(goRenderDefinitions(&emitter.forwarders))
+    discard sections.add(goRenderDefinitions(&emitter.helpers))
+    .Some(header + goJoinSections(&sections))
+}
