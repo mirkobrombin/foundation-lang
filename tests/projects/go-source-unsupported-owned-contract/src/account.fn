@@ -1,0 +1,22 @@
+package sample.owned_contract
+
+contract Account {
+    fn deposit(&self, amount i32) void
+    fn balance(self) i32
+}
+
+struct Wallet implements Account {
+    coins i32
+
+    fn deposit(&self, amount i32) void {
+        self.coins = self.coins + amount
+    }
+
+    fn balance(self) i32 {
+        self.coins
+    }
+}
+
+fn OpenAccount(coins i32) own Account {
+    own Wallet { coins = coins }
+}

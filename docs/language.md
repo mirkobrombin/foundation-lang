@@ -1620,8 +1620,8 @@ resolving one. Path and SDK packages remain in `foundation.lock` but are not reg
 same canonical PII, but no native directory. It exports normal public Foundation functions and does
 not require `native_library c`, `native_name`, or `extern c` declarations. The current accepted
 subset contains scalar, String, fixed-array, read/edit slice-view, value-struct, enum,
-`Option`, or `Result` parameters, results, and locals, and `own T` owners of those types;
-same-package body functions; non-generic
+`Option`, or `Result` parameters, results, and locals, `own T` owners of those types, and
+borrowed and owned contract values; same-package body functions; non-generic
 roots plus reachable closed generic constructors, associated functions, and `self` or `&self`
 instance methods; struct, array, and enum construction; complete value-struct and owner
 destructuring; field and sequence access; named function
@@ -1701,6 +1701,19 @@ becomes `NewType`; another constructor becomes `NewTypeName`, and an associated 
 `TypeName`. A `$self` method receives its own copy of the consumed owner. Go cannot stop a caller
 from using its original afterward, but that use observes the value from before the call: owners are
 Go values, owned enum payloads are immutable, and closure captures cannot be reassigned.
+A contract instantiation maps to a Go interface with one method per effective slot, named like the
+Foundation method; a generic contract carries its type arguments in its name as an enum does. A
+contract without an `&self` method is implemented by the concrete struct value: a borrowed contract
+receives a copy of the borrowed value, and an owned contract holds a copy that no method can change,
+so Go copies of it stay independent. A contract with an `&self` method is implemented by a pointer
+to the struct: a borrow passes the address of the borrowed place, so an edit reaches that place.
+An owned value of such a contract is rejected because Go copies of it would share the value its
+editing methods change. A slot that the struct does not declare becomes a Go method on it. A default
+calls a Go function that takes the interface and receives the implementing value itself, also when
+the slot is reached through delegation; a delegated method calls the method of the delegate field.
+Dispatch therefore selects the same method as the other backends. Two contracts that give one
+struct different default or delegated methods with the same name are rejected, as is such a method
+beside a field with the same Go name.
 Custom-drop structs, raw pointers, callbacks, native imports, foreign metadata,
 native links, open generic exports, tasks, actions, and
 other runtime-backed FIR nodes are rejected with `FDN4120`. A rejection does not stop the scan: one

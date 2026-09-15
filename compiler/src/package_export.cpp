@@ -1633,30 +1633,67 @@ class GoSourceEmitter {
             }
             output << ")\n\n";
         }
-        renderStructs(output);
-        if (!reachableStructs_.empty() && !reachableEnums_.empty()) {
-            output << '\n';
-        }
-        renderEnums(output);
-        if ((!reachableStructs_.empty() || !reachableEnums_.empty()) && !order_.empty()) {
-            output << '\n';
-        }
-        output << functions.str();
-        if (!helpers_.empty()) {
-            if (!order_.empty()) {
+        std::ostringstream contracts;
+        renderContracts(contracts);
+        std::ostringstream structs;
+        renderStructs(structs);
+        std::ostringstream enums;
+        renderEnums(enums);
+        auto first = true;
+        for (const auto &section : {contracts.str(), structs.str(), enums.str(), functions.str(),
+                                    renderDefinitions(forwarders_), renderDefinitions(helpers_)}) {
+            if (section.empty()) {
+                continue;
+            }
+            if (!first) {
                 output << '\n';
             }
-            auto first = true;
-            for (const auto &[key, helper] : helpers_) {
-                static_cast<void>(key);
-                if (!first) {
-                    output << '\n';
-                }
-                first = false;
-                output << helper;
-            }
+            first = false;
+            output << section;
         }
         return output.str();
+    }
+
+    static std::string renderDefinitions(const std::map<std::string, std::string> &definitions) {
+        std::string output;
+        for (const auto &[key, definition] : definitions) {
+            static_cast<void>(key);
+            if (!output.empty()) {
+                output += '\n';
+            }
+            output += definition;
+        }
+        return output;
+    }
+
+    void renderContracts(std::ostringstream &output) {
+        auto first = true;
+        for (const auto &[key, type] : reachableContracts_) {
+            static_cast<void>(key);
+            if (!first) {
+                output << '\n';
+            }
+            first = false;
+            output << "type " << contractName(type) << " interface {\n";
+            for (const auto &method : program_.contracts[type.declaration].methods) {
+                output << '\t' << contractMethodName(method) << '(';
+                for (std::size_t index{}; index < method.parameters.size(); ++index) {
+                    if (index != 0) {
+                        output << ", ";
+                    }
+                    output << *sourceParameterType(
+                        substituteGoSourceType(method.parameters[index], type.arguments));
+                }
+                output << ')';
+                const auto result =
+                    *sourceType(substituteGoSourceType(method.returnType, type.arguments));
+                if (!result.empty()) {
+                    output << ' ' << result;
+                }
+                output << "\n";
+            }
+            output << "}\n";
+        }
     }
 
   private:
@@ -1704,6 +1741,13 @@ class GoSourceEmitter {
         }
         const auto &function = program_.functions[id];
         const auto member = shortName(function.name);
+        if (const auto receiver = defaultReceiver(function); receiver.has_value()) {
+            auto base = contractName(*receiver) + typeName(member);
+            base.front() =
+                static_cast<char>(std::tolower(static_cast<unsigned char>(base.front())));
+            names_[id] = uniqueName(std::move(base));
+            return;
+        }
         if (function.receiver.has_value()) {
             names_[id] = function.exported ? typeName(member) : goIdentifier(member);
             return;
@@ -1824,6 +1868,9 @@ class GoSourceEmitter {
         if (type.kind == TypeKind::Enum && type.declaration < program_.enums.size()) {
             return enumName(type);
         }
+        if (type.kind == TypeKind::Contract && type.declaration < program_.contracts.size()) {
+            return contractName(type);
+        }
         return "Value";
     }
 
@@ -1837,6 +1884,46 @@ class GoSourceEmitter {
             enumNames_[key] = uniqueName(std::move(base));
         }
         return enumNames_.at(key);
+    }
+
+    std::string contractName(const Type &type) {
+        const auto key = goSourceTypeKey(type);
+        if (!contractNames_.contains(key)) {
+            auto base = typeName(shortName(program_.contracts[type.declaration].name));
+            for (const auto &argument : type.arguments) {
+                base += enumTypeLabel(argument);
+            }
+            contractNames_[key] = uniqueName(std::move(base));
+        }
+        return contractNames_.at(key);
+    }
+
+    static std::string contractMethodName(const FirContractMethod &method) {
+        return method.exported ? typeName(method.name) : goIdentifier(method.name);
+    }
+
+    // A contract with an editing method maps to a Go interface implemented by a pointer to the
+    // concrete struct, so an edit loan changes the borrowed place. Otherwise the struct value
+    // implements it, and an owned contract holds a copy that no method can change.
+    bool pointerContract(const Type &type) const {
+        return std::ranges::any_of(program_.contracts[type.declaration].methods,
+                                   [](const FirContractMethod &method) {
+                                       return method.receiver == FirReceiverKind::Edit;
+                                   });
+    }
+
+    // A contract default receives its dynamic receiver as a contract value, so its body becomes
+    // a Go function that takes the interface.
+    std::optional<Type> defaultReceiver(const FirFunction &function) const {
+        if (!function.receiver.has_value() || function.parameters.empty() ||
+            function.parameters.front() >= function.locals.size()) {
+            return std::nullopt;
+        }
+        const auto type = ownedValue(function.locals[function.parameters.front()].type);
+        if (type.kind != TypeKind::Contract || type.declaration >= program_.contracts.size()) {
+            return std::nullopt;
+        }
+        return type;
     }
 
     void prepareEnum(const Type &type) {
@@ -1934,7 +2021,8 @@ class GoSourceEmitter {
 
     static bool pointerParameter(const Type &type) {
         return type.kind == TypeKind::Edit && type.arguments.size() == 1 &&
-               type.arguments.front().kind != TypeKind::Slice;
+               type.arguments.front().kind != TypeKind::Slice &&
+               type.arguments.front().kind != TypeKind::Contract;
     }
 
     std::optional<std::string> sourceParameterType(Type type) {
@@ -1962,6 +2050,9 @@ class GoSourceEmitter {
         }
         if (type.kind == TypeKind::Enum && type.declaration < program_.enums.size()) {
             return enumName(type);
+        }
+        if (type.kind == TypeKind::Contract && type.declaration < program_.contracts.size()) {
+            return contractName(type);
         }
         if ((type.kind == TypeKind::Array || type.kind == TypeKind::Slice) &&
             type.arguments.size() == 1) {
@@ -2003,9 +2094,27 @@ class GoSourceEmitter {
     // A type that reaches itself is accepted only when an owned enum payload lies on the cycle,
     // because that payload is the only owner stored behind a Go pointer.
     bool scanType(Type type, SourceSpan span) {
+        auto borrowed = type;
+        while ((borrowed.kind == TypeKind::View || borrowed.kind == TypeKind::Edit) &&
+               borrowed.arguments.size() == 1) {
+            borrowed = borrowed.arguments.front();
+        }
+        if (borrowed.kind == TypeKind::Own && borrowed.arguments.size() == 1 &&
+            borrowed.arguments.front().kind == TypeKind::Contract &&
+            borrowed.arguments.front().declaration < program_.contracts.size() &&
+            pointerContract(borrowed.arguments.front())) {
+            fail("go-source cannot translate an owned " +
+                     program_.contracts[borrowed.arguments.front().declaration].name +
+                     " because Go copies of it would share the value its editing methods change",
+                 span);
+            return false;
+        }
         type = ownedValue(type);
         if (goSourceType(type).has_value()) {
             return true;
+        }
+        if (type.kind == TypeKind::Contract) {
+            return scanContractType(type, span);
         }
         if (type.kind == TypeKind::Array || type.kind == TypeKind::Slice) {
             if (type.arguments.size() != 1) {
@@ -2127,6 +2236,34 @@ class GoSourceEmitter {
         return true;
     }
 
+    // Go interfaces may refer to themselves, so a contract already under scan is accepted.
+    bool scanContractType(const Type &type, SourceSpan span) {
+        if (type.declaration >= program_.contracts.size() ||
+            type.arguments.size() != program_.contracts[type.declaration].typeParameterCount) {
+            fail("go-source reached an incomplete contract type", span);
+            return false;
+        }
+        const auto key = goSourceTypeKey(type);
+        if (contractStates_[key] != 0) {
+            return true;
+        }
+        contractStates_[key] = 1;
+        contractName(type);
+        for (const auto &method : program_.contracts[type.declaration].methods) {
+            auto valid = scanType(substituteGoSourceType(method.returnType, type.arguments), span);
+            for (const auto &parameter : method.parameters) {
+                valid = valid && scanType(substituteGoSourceType(parameter, type.arguments), span);
+            }
+            if (!valid) {
+                contractStates_[key] = 0;
+                return false;
+            }
+        }
+        contractStates_[key] = 2;
+        reachableContracts_[key] = type;
+        return true;
+    }
+
     bool validFunction(const FirFunction &function, bool closure = false) {
         if (!function.hasBody || function.packageName != packageInterface_.package) {
             fail("go-source reached a function without a same-package body", function.sourceSpan);
@@ -2154,7 +2291,8 @@ class GoSourceEmitter {
                 return false;
             }
             const auto receiverType = ownedValue(function.locals[receiver].type);
-            if (receiverType.kind != TypeKind::Struct && receiverType.kind != TypeKind::Enum) {
+            if (receiverType.kind != TypeKind::Struct && receiverType.kind != TypeKind::Enum &&
+                receiverType.kind != TypeKind::Contract) {
                 fail("go-source requires a nominal method receiver", function.sourceSpan);
                 return false;
             }
@@ -2252,6 +2390,182 @@ class GoSourceEmitter {
         }
         states_[closure.function] = 2;
         return true;
+    }
+
+    // A slot that the concrete struct does not declare becomes a Go method on it. A default
+    // receives the outer value and a delegated method runs on the delegate field, which matches
+    // the slot tables of the other backends. The receiver is a pointer only when the slot or
+    // the contract of its default can edit.
+    bool scanContract(const FirFunction &function, const FirContractExpression &contract,
+                      const FirExpression &expression) {
+        const auto &concrete = contract.concreteType;
+        const auto &contractType = contract.contractType;
+        if (concrete.kind != TypeKind::Struct || concrete.declaration >= program_.structs.size() ||
+            contractType.kind != TypeKind::Contract ||
+            contractType.declaration >= program_.contracts.size() ||
+            contract.methods.size() !=
+                program_.contracts[contractType.declaration].methods.size()) {
+            fail("go-source found invalid contract conversion metadata", expression.span);
+            return false;
+        }
+        if (!scanExpression(function, contract.value) ||
+            !scanType(expression.type, expression.span) || !scanType(concrete, expression.span)) {
+            return false;
+        }
+        const auto &methods = program_.contracts[contractType.declaration].methods;
+        for (std::size_t slot{}; slot < methods.size(); ++slot) {
+            const auto &target = contract.methods[slot];
+            if (!scanFunction(target.function)) {
+                return false;
+            }
+            if (!target.contractDefault && target.delegatePath.empty()) {
+                continue;
+            }
+            const auto forwarder =
+                contractForwarder(concrete, contractType, methods[slot], target, expression.span);
+            if (!forwarder.has_value()) {
+                return false;
+            }
+            const auto name = contractMethodName(methods[slot]);
+            const auto &declaration = program_.structs[concrete.declaration];
+            for (FirFieldId field{}; field < declaration.fields.size(); ++field) {
+                if (fieldName(concrete.declaration, field) == name) {
+                    fail("go-source cannot add method " + methods[slot].name + " beside field " +
+                             declaration.fields[field].name + " of " + declaration.name,
+                         expression.span);
+                    return false;
+                }
+            }
+            const auto [found, inserted] =
+                forwarders_.emplace(goSourceTypeKey(concrete) + ':' + name, *forwarder);
+            if (!inserted && found->second != *forwarder) {
+                fail("go-source cannot give " + declaration.name + " two different " +
+                         methods[slot].name + " methods",
+                     expression.span);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    std::optional<std::string> contractForwarder(const Type &concrete, const Type &contractType,
+                                                 const FirContractMethod &method,
+                                                 const FirContractMethodTarget &target,
+                                                 SourceSpan span) {
+        const auto result =
+            sourceType(substituteGoSourceType(method.returnType, contractType.arguments));
+        if (!result.has_value() || !names_.contains(target.function)) {
+            fail("go-source cannot render a contract slot of " + method.name, span);
+            return std::nullopt;
+        }
+        auto pointer = method.receiver == FirReceiverKind::Edit;
+        if (target.contractDefault) {
+            const auto origin = defaultReceiver(program_.functions[target.function]);
+            pointer = origin.has_value() && pointerContract(*origin);
+        }
+        std::ostringstream output;
+        output << "func (self " << (pointer ? "*" : "") << structName(concrete) << ") "
+               << contractMethodName(method) << '(';
+        std::set<std::string> used;
+        std::vector<std::string> arguments;
+        for (std::size_t index{}; index < method.parameters.size(); ++index) {
+            const auto parameter = sourceParameterType(
+                substituteGoSourceType(method.parameters[index], contractType.arguments));
+            if (!parameter.has_value() || parameter->empty()) {
+                fail("go-source cannot render a contract parameter of " + method.name, span);
+                return std::nullopt;
+            }
+            auto base = index < method.parameterNames.size()
+                            ? goIdentifier(method.parameterNames[index])
+                            : std::string{};
+            if (base.empty()) {
+                base = "value";
+            }
+            auto candidate = base;
+            for (std::size_t suffix = 2; usedNames_.contains(candidate) || used.contains(candidate);
+                 ++suffix) {
+                candidate = base + std::to_string(suffix);
+            }
+            used.insert(candidate);
+            if (index != 0) {
+                output << ", ";
+            }
+            output << candidate << ' ' << *parameter;
+            arguments.push_back(candidate);
+        }
+        output << ')';
+        if (!result->empty()) {
+            output << ' ' << *result;
+        }
+        output << " {\n\t";
+        if (!result->empty()) {
+            output << "return ";
+        }
+        if (target.contractDefault) {
+            output << names_.at(target.function) << "(self";
+            for (const auto &argument : arguments) {
+                output << ", " << argument;
+            }
+        } else {
+            output << "self";
+            auto owner = concrete;
+            for (const auto field : target.delegatePath) {
+                if (owner.kind != TypeKind::Struct ||
+                    owner.declaration >= program_.structs.size() ||
+                    field >= program_.structs[owner.declaration].fields.size()) {
+                    fail("go-source found an invalid contract delegate path", span);
+                    return std::nullopt;
+                }
+                output << '.' << fieldName(owner.declaration, field);
+                owner = ownedValue(substituteGoSourceType(
+                    program_.structs[owner.declaration].fields[field].type, owner.arguments));
+            }
+            output << '.' << names_.at(target.function) << '(';
+            for (std::size_t index{}; index < arguments.size(); ++index) {
+                if (index != 0) {
+                    output << ", ";
+                }
+                output << arguments[index];
+            }
+        }
+        output << ")\n}\n";
+        return output.str();
+    }
+
+    bool scanContractCall(const FirFunction &function, const FirCallExpression &call,
+                          SourceSpan span) {
+        if (call.arguments.empty() || !call.typeArguments.empty()) {
+            fail("go-source found invalid contract call metadata", span);
+            return false;
+        }
+        for (const auto argument : call.arguments) {
+            if (!scanExpression(function, argument)) {
+                return false;
+            }
+        }
+        const auto arguments = orderedArguments(call, span);
+        if (!arguments.has_value()) {
+            return false;
+        }
+        const auto receiver = ownedValue(function.expressions[arguments->front()].type);
+        if (receiver.kind != TypeKind::Contract ||
+            receiver.declaration >= program_.contracts.size() ||
+            call.method >= program_.contracts[receiver.declaration].methods.size() ||
+            program_.contracts[receiver.declaration].methods[call.method].parameters.size() + 1 !=
+                arguments->size()) {
+            fail("go-source found invalid contract call metadata", span);
+            return false;
+        }
+        const auto &method = program_.contracts[receiver.declaration].methods[call.method];
+        for (std::size_t index = 1; index < arguments->size(); ++index) {
+            if (pointerParameter(
+                    substituteGoSourceType(method.parameters[index - 1], receiver.arguments)) &&
+                !addressableExpression(function, (*arguments)[index])) {
+                fail("go-source cannot preserve an editable contract argument", span);
+                return false;
+            }
+        }
+        return scanType(receiver, span);
     }
 
     bool scanBlock(const FirFunction &function, FirBlockId id) {
@@ -2776,6 +3090,9 @@ class GoSourceEmitter {
             }
             return scanBranches(function, id, false);
         }
+        if (const auto *value = std::get_if<FirContractExpression>(&expression.value)) {
+            return scanContract(function, *value, expression);
+        }
         if (const auto *value = std::get_if<FirStructExpression>(&expression.value)) {
             if (!scanType(value->type, expression.span)) {
                 return false;
@@ -2908,6 +3225,9 @@ class GoSourceEmitter {
                     return false;
                 }
                 return scanType(expression.type, expression.span);
+            }
+            if (call->kind == FirCallKind::Contract) {
+                return scanContractCall(function, *call, expression.span);
             }
             if ((call->kind != FirCallKind::Function && call->kind != FirCallKind::FunctionValue) ||
                 !call->typeArguments.empty()) {
@@ -3085,6 +3405,15 @@ class GoSourceEmitter {
             helpers_[name] = output.str();
         }
         return helperNames_.at(key);
+    }
+
+    std::string addressHelper() {
+        if (!helperNames_.contains("Address")) {
+            const auto name = uniqueName("foundationAddress");
+            helperNames_["Address"] = name;
+            helpers_[name] = "func " + name + "[T any](value T) *T {\n\treturn &value\n}\n";
+        }
+        return helperNames_.at("Address");
     }
 
     std::string printHelper() {
@@ -3881,6 +4210,20 @@ class GoSourceEmitter {
             }
             return operand;
         }
+        if (const auto *value = std::get_if<FirContractExpression>(&expression.value)) {
+            const auto operand = renderExpression(function, value->value, depth);
+            if (!operand.has_value()) {
+                return std::nullopt;
+            }
+            const auto name = contractName(value->contractType);
+            if (!pointerContract(value->contractType)) {
+                return name + '(' + *operand + ')';
+            }
+            if (addressableExpression(function, value->value)) {
+                return name + "(&(" + *operand + "))";
+            }
+            return name + '(' + addressHelper() + '(' + *operand + "))";
+        }
         if (const auto *value = std::get_if<FirEnumExpression>(&expression.value)) {
             if (value->type.declaration >= program_.enums.size() ||
                 value->variant >= program_.enums[value->type.declaration].variants.size()) {
@@ -4050,6 +4393,33 @@ class GoSourceEmitter {
                 }
                 return conversionHelper(call->typeArguments[0], target, expression.type) + '(' +
                        *argument + ')';
+            }
+            if (call->kind == FirCallKind::Contract) {
+                const auto receiverType = ownedValue(function.expressions[arguments->front()].type);
+                const auto &method =
+                    program_.contracts[receiverType.declaration].methods[call->method];
+                const auto receiver = renderExpression(function, arguments->front(), depth);
+                if (!receiver.has_value()) {
+                    return std::nullopt;
+                }
+                std::ostringstream output;
+                output << '(' << *receiver << ")." << contractMethodName(method) << '(';
+                for (std::size_t index = 1; index < arguments->size(); ++index) {
+                    const auto argument =
+                        renderCallArgument(function, (*arguments)[index],
+                                           substituteGoSourceType(method.parameters[index - 1],
+                                                                  receiverType.arguments),
+                                           depth);
+                    if (!argument.has_value()) {
+                        return std::nullopt;
+                    }
+                    if (index != 1) {
+                        output << ", ";
+                    }
+                    output << *argument;
+                }
+                output << ')';
+                return output.str();
             }
             if (call->kind == FirCallKind::FunctionValue) {
                 if (call->local >= function.locals.size() || call->local >= currentLocals_.size()) {
@@ -4446,7 +4816,7 @@ class GoSourceEmitter {
         const auto rawLocals = currentLocals_;
         currentGeneratedLocals_ = std::set<std::string>(rawLocals.begin(), rawLocals.end());
         std::size_t firstParameter{};
-        if (function.receiver.has_value()) {
+        if (function.receiver.has_value() && !defaultReceiver(function).has_value()) {
             const auto local = function.parameters.front();
             output << "func (" << rawLocals[local] << ' ';
             if (*function.receiver == FirReceiverKind::Edit) {
@@ -4584,6 +4954,10 @@ class GoSourceEmitter {
     std::map<std::string, std::string> helperNames_;
     std::map<std::string, std::string> helpers_;
     std::map<std::string, unsigned char> structStates_;
+    std::map<std::string, std::string> contractNames_;
+    std::map<std::string, unsigned char> contractStates_;
+    std::map<std::string, Type> reachableContracts_;
+    std::map<std::string, std::string> forwarders_;
     std::map<std::string, std::size_t> scanDepths_;
     std::size_t scanDepth_{};
     std::size_t ownerBarrier_{};

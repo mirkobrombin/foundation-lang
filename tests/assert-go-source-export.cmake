@@ -2,6 +2,7 @@ if(NOT DEFINED COMPILER OR NOT DEFINED SOURCE OR NOT DEFINED UNSUPPORTED_SOURCE 
    NOT DEFINED RUNTIME_SOURCE OR NOT DEFINED ESCAPE_SOURCE OR
    NOT DEFINED OWNER_CYCLE_SOURCE OR NOT DEFINED OPEN_GENERIC_SOURCE OR
    NOT DEFINED GENERIC_STRUCT_SOURCE OR NOT DEFINED MULTIPLE_SOURCE OR
+   NOT DEFINED OWNED_CONTRACT_SOURCE OR NOT DEFINED CONTRACT_CONFLICT_SOURCE OR
    NOT DEFINED FIXTURE OR NOT DEFINED WORK OR NOT DEFINED GO_EXECUTABLE)
     message(FATAL_ERROR "go-source export test requires compiler, sources, fixture, work, and Go")
 endif()
@@ -55,7 +56,10 @@ foreach(signature IN ITEMS
         "func (self *BoxI32) Set("
         "func (self Profile) Display("
         "func (self *Profile) AddScore("
-        "func (self Wallet) Spend(")
+        "func (self Wallet) Spend("
+        "type Valued interface"
+        "func (self *Counter) addTwice("
+        "func (self OverridingTag) described(")
     string(FIND "${generated_source}" "${signature}" signature_offset)
     if(signature_offset EQUAL -1)
         message(FATAL_ERROR "go-source export omitted ${signature}")
@@ -367,4 +371,66 @@ if(NOT multiple_count EQUAL 5 OR
    NOT multiple_diagnostics MATCHES "function without a same-package body")
     message(FATAL_ERROR
         "go-source did not report every rejection in one run:\n${multiple_diagnostics}")
+endif()
+
+file(MAKE_DIRECTORY "${WORK}/owned-contract-source" "${WORK}/owned-contract-output")
+file(COPY "${OWNED_CONTRACT_SOURCE}/" DESTINATION "${WORK}/owned-contract-source")
+execute_process(
+    COMMAND "${COMPILER}" package resolve "${WORK}/owned-contract-source"
+    RESULT_VARIABLE owned_contract_resolve_status
+    OUTPUT_VARIABLE owned_contract_resolve_output
+    ERROR_VARIABLE owned_contract_resolve_error
+)
+if(NOT owned_contract_resolve_status EQUAL 0)
+    message(FATAL_ERROR
+        "cannot resolve owned contract fixture:\n${owned_contract_resolve_output}${owned_contract_resolve_error}")
+endif()
+execute_process(
+    COMMAND "${COMPILER}" package export "${WORK}/owned-contract-source"
+        -o "${WORK}/owned-contract-output"
+        --format go-source
+    RESULT_VARIABLE owned_contract_status
+    OUTPUT_VARIABLE owned_contract_output
+    ERROR_VARIABLE owned_contract_error
+)
+if(owned_contract_status EQUAL 0)
+    message(FATAL_ERROR "go-source accepted an owned contract with an editing method")
+endif()
+set(owned_contract_diagnostics "${owned_contract_output}${owned_contract_error}")
+if(NOT owned_contract_diagnostics MATCHES "FDN4120" OR
+   NOT owned_contract_diagnostics MATCHES "would share the value its editing methods change" OR
+   NOT owned_contract_diagnostics MATCHES "go-cgo or go-dynamic")
+    message(FATAL_ERROR
+        "owned contract rejection omitted its contract or alternatives:\n${owned_contract_diagnostics}")
+endif()
+
+file(MAKE_DIRECTORY "${WORK}/contract-conflict-source" "${WORK}/contract-conflict-output")
+file(COPY "${CONTRACT_CONFLICT_SOURCE}/" DESTINATION "${WORK}/contract-conflict-source")
+execute_process(
+    COMMAND "${COMPILER}" package resolve "${WORK}/contract-conflict-source"
+    RESULT_VARIABLE contract_conflict_resolve_status
+    OUTPUT_VARIABLE contract_conflict_resolve_output
+    ERROR_VARIABLE contract_conflict_resolve_error
+)
+if(NOT contract_conflict_resolve_status EQUAL 0)
+    message(FATAL_ERROR
+        "cannot resolve contract conflict fixture:\n${contract_conflict_resolve_output}${contract_conflict_resolve_error}")
+endif()
+execute_process(
+    COMMAND "${COMPILER}" package export "${WORK}/contract-conflict-source"
+        -o "${WORK}/contract-conflict-output"
+        --format go-source
+    RESULT_VARIABLE contract_conflict_status
+    OUTPUT_VARIABLE contract_conflict_output
+    ERROR_VARIABLE contract_conflict_error
+)
+if(contract_conflict_status EQUAL 0)
+    message(FATAL_ERROR "go-source accepted two different default methods with one name")
+endif()
+set(contract_conflict_diagnostics "${contract_conflict_output}${contract_conflict_error}")
+if(NOT contract_conflict_diagnostics MATCHES "FDN4120" OR
+   NOT contract_conflict_diagnostics MATCHES "two different rank methods" OR
+   NOT contract_conflict_diagnostics MATCHES "go-cgo or go-dynamic")
+    message(FATAL_ERROR
+        "contract conflict rejection omitted its contract or alternatives:\n${contract_conflict_diagnostics}")
 endif()

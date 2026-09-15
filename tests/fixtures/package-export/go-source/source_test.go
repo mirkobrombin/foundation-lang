@@ -699,6 +699,50 @@ func TestTranslatedConsumingReceiversUseGoValues(t *testing.T) {
 	}
 }
 
+var (
+	_ Valued      = Coin{}
+	_ Scored      = MetricWrapper{}
+	_ Accumulator = &Counter{}
+)
+
+func TestTranslatedContractsKeepFoundationDispatch(t *testing.T) {
+	tests := []struct {
+		name string
+		got  int32
+		want int32
+	}{
+		{"named", NamedValues(), 42},
+		{"doubled", Doubled(), 404210},
+		{"described", Described(), 10011008},
+		{"accumulate", Accumulate(), 42},
+		{"owned valued", OwnedValued(), 4540},
+		{"held valued", HeldValued(), 7},
+		{"heterogeneous", Heterogeneous(), 3099},
+		{"optional some", OptionalValued(true), 6},
+		{"optional none", OptionalValued(false), 0},
+	}
+	for _, test := range tests {
+		if test.got != test.want {
+			t.Errorf("%s = %d, want %d", test.name, test.got, test.want)
+		}
+	}
+	counter := Counter{value: 40}
+	AddTwiceTo(&counter, 1)
+	if counter.value != 42 {
+		t.Fatalf("AddTwiceTo left the edited value at %d", counter.value)
+	}
+	coin := MakeCoin(4)
+	copied := coin
+	concrete, ok := coin.(Coin)
+	if !ok {
+		t.Fatalf("MakeCoin returned %T", coin)
+	}
+	concrete.stored = 9
+	if ReadWorth(coin) != 4 || ReadWorth(copied) != 4 || ReadWorth(concrete) != 9 {
+		t.Fatal("an owned contract shared its value with a Go copy")
+	}
+}
+
 // behavior.out holds the output of the same Report function compiled by the C backend.
 func TestTranslatedReportMatchesFoundationBackends(t *testing.T) {
 	want, err := os.ReadFile("behavior.out")

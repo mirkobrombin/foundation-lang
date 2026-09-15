@@ -2610,6 +2610,8 @@ if(BUILD_TESTING)
                 -DOPEN_GENERIC_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-open-generic
                 -DGENERIC_STRUCT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-generic-struct
                 -DMULTIPLE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-multiple
+                -DOWNED_CONTRACT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-owned-contract
+                -DCONTRACT_CONFLICT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-contract-conflict
                 -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/package-export/go-source/source_test.go
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/go-source-export-test
                 -DGO_EXECUTABLE=${FOUNDATION_GO_EXPORT_EXECUTABLE}

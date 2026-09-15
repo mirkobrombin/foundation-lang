@@ -1017,6 +1017,202 @@ fn OwnedReceiver() i32 {
     owned.Total()
 }
 
+contract Named<T> {
+    fn value(self) T
+}
+
+contract Scored {
+    fn score(self) i32
+
+    fn doubled(self) i32 {
+        self.score() * 2
+    }
+}
+
+contract Labeled {
+    fn label(self) i32
+
+    fn described(self) i32 {
+        self.label() + 1000
+    }
+}
+
+contract Accumulator {
+    fn add(&self, amount i32) void
+
+    fn addTwice(&self, amount i32) void {
+        self.add(amount)
+        self.add(amount)
+    }
+}
+
+contract Valued {
+    fn worth(self) i32
+    fn take($self) i32
+
+    fn plusOne(self) i32 {
+        self.worth() + 1
+    }
+}
+
+struct Identity implements Named<i32> {
+    stored i32
+
+    fn value(self) i32 { self.stored }
+}
+
+struct DelegatedEntry implements Named<i32> {
+    identity Identity
+
+    delegate identity as Named<i32>
+}
+
+struct Metric implements Scored {
+    stored i32
+
+    fn score(self) i32 { self.stored }
+}
+
+struct CustomMetric implements Scored {
+    stored i32
+
+    fn score(self) i32 { self.stored }
+    fn doubled(self) i32 { self.stored + 2 }
+}
+
+struct MetricWrapper implements Scored {
+    inner Metric
+
+    delegate inner as Scored
+}
+
+struct Tag implements Labeled {
+    stored i32
+
+    fn label(self) i32 { self.stored }
+}
+
+struct OverridingTag implements Labeled {
+    inner Tag
+
+    delegate inner as Labeled
+
+    fn label(self) i32 { self.inner.stored + 1 }
+}
+
+struct Counter implements Accumulator {
+    value i32
+
+    fn add(&self, amount i32) void {
+        self.value = self.value + amount
+    }
+}
+
+struct Coin implements Valued {
+    stored i32
+
+    fn worth(self) i32 { self.stored }
+    fn take($self) i32 { self.stored * 10 }
+}
+
+struct Note implements Valued {
+    text String
+
+    fn worth(self) i32 { 99 }
+    fn take($self) i32 { 1 }
+}
+
+struct Pouch {
+    coin own Valued
+}
+
+fn readNamed(value Named<i32>) i32 {
+    value.value()
+}
+
+fn readDoubled(value Scored) i32 {
+    value.doubled()
+}
+
+fn readDescribed(value Labeled) i32 {
+    value.described()
+}
+
+fn AddTwiceTo(&value Accumulator, amount i32) void {
+    value.addTwice(amount)
+}
+
+fn ReadWorth(value Valued) i32 {
+    value.worth()
+}
+
+fn MakeCoin(value i32) own Valued {
+    own Coin { stored = value }
+}
+
+fn pick(flag bool) own Valued {
+    if flag {
+        own Coin { stored = 3 }
+    } else {
+        own Note { text = "note" }
+    }
+}
+
+fn maybeCoin(flag bool) Option<own Valued> {
+    if !flag return .None
+    .Some(MakeCoin(5))
+}
+
+fn NamedValues() i32 {
+    const identity = Identity { stored = 40 }
+    const delegated = DelegatedEntry { identity = Identity { stored = 2 } }
+    readNamed(identity) + readNamed(delegated)
+}
+
+fn Doubled() i32 {
+    const metric = Metric { stored = 20 }
+    const custom = CustomMetric { stored = 40 }
+    const wrapped = MetricWrapper { inner = Metric { stored = 5 } }
+    readDoubled(metric) * 10000 + readDoubled(custom) * 100 + readDoubled(wrapped)
+}
+
+fn Described() i32 {
+    const tag = Tag { stored = 1 }
+    const overriding = OverridingTag { inner = Tag { stored = 7 } }
+    readDescribed(tag) * 10000 + readDescribed(overriding)
+}
+
+fn Accumulate() i32 {
+    var counter = Counter { value = 40 }
+    AddTwiceTo(&counter, 1)
+    counter.value
+}
+
+fn OwnedValued() i32 {
+    const coin = MakeCoin(4)
+    const read = ReadWorth(coin)
+    const plus = coin.plusOne()
+    read * 1000 + plus * 100 + coin.take()
+}
+
+fn HeldValued() i32 {
+    const pouch = Pouch { coin = MakeCoin(7) }
+    ReadWorth(pouch.coin)
+}
+
+fn Heterogeneous() i32 {
+    const first = pick(true)
+    const second = pick(false)
+    first.worth() * 1000 + second.worth()
+}
+
+fn OptionalValued(flag bool) i32 {
+    match maybeCoin(flag) {
+        None: 0
+        Some(value): value.plusOne()
+    }
+}
+
 fn check(name String, actual i32, expected i32) void {
     if actual == expected {
         print(name + " ok")
@@ -1062,6 +1258,15 @@ fn Report() void {
     check("list sum", ListSum(BuildList(4)), 10)
     check("spend twice", SpendTwice(20), 13)
     check("owned receiver", OwnedReceiver(), 10)
+    check("named", NamedValues(), 42)
+    check("doubled", Doubled(), 404210)
+    check("described", Described(), 10011008)
+    check("accumulate", Accumulate(), 42)
+    check("owned valued", OwnedValued(), 4540)
+    check("held valued", HeldValued(), 7)
+    check("heterogeneous", Heterogeneous(), 3099)
+    check("optional some", OptionalValued(true), 6)
+    check("optional none", OptionalValued(false), 0)
 }
 
 fn main() i32 {

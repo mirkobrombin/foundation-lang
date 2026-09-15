@@ -1,0 +1,36 @@
+package sample.contract_conflict
+
+contract First {
+    fn weight(self) i32
+
+    fn rank(self) i32 {
+        self.weight() + 1
+    }
+}
+
+contract Second {
+    fn weight(self) i32
+
+    fn rank(self) i32 {
+        self.weight() + 2
+    }
+}
+
+struct Both implements First, Second {
+    stored i32
+
+    fn weight(self) i32 { self.stored }
+}
+
+fn readFirst(value First) i32 {
+    value.rank()
+}
+
+fn readSecond(value Second) i32 {
+    value.rank()
+}
+
+fn Ranks() i32 {
+    const both = Both { stored = 10 }
+    readFirst(both) * 100 + readSecond(both)
+}
