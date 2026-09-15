@@ -6,6 +6,7 @@
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
+#include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DIBuilder.h>
@@ -18,6 +19,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/MC/MCSubtargetInfo.h>
 #include <llvm/MC/TargetRegistry.h>
 #include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Passes/PassBuilder.h>
@@ -201,6 +203,10 @@ void initializeLlvmTargets() {
 }
 
 std::unique_ptr<llvm::TargetMachine> createTargetMachine(std::string triple,
+                                                         const std::string &cpu,
+                                                         const std::string &features,
+                                                         bool positionIndependent,
+                                                         bool sections,
                                                          Diagnostics &diagnostics) {
     initializeLlvmTargets();
     triple = llvm::Triple::normalize(triple);
@@ -211,9 +217,25 @@ std::unique_ptr<llvm::TargetMachine> createTargetMachine(std::string triple,
         return nullptr;
     }
     llvm::TargetOptions options;
-    return std::unique_ptr<llvm::TargetMachine>(
-        target->createTargetMachine(llvm::Triple(triple), "generic", "", options, llvm::Reloc::PIC_,
-                                    std::nullopt, llvm::CodeGenOptLevel::Default));
+    options.FunctionSections = sections;
+    options.DataSections = sections;
+    return std::unique_ptr<llvm::TargetMachine>(target->createTargetMachine(
+        llvm::Triple(triple), cpu, features, options,
+        positionIndependent ? llvm::Reloc::PIC_ : llvm::Reloc::Static, std::nullopt,
+        llvm::CodeGenOptLevel::Default));
+}
+
+bool validFeatureName(std::string_view name) {
+    const auto alphanumeric = [](char value) {
+        return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+               (value >= '0' && value <= '9');
+    };
+    if (name.empty() || !alphanumeric(name.front())) {
+        return false;
+    }
+    return std::all_of(name.begin() + 1, name.end(), [&](char value) {
+        return alphanumeric(value) || value == '.' || value == '_' || value == '-';
+    });
 }
 
 class LlvmEmitter {
@@ -6495,7 +6517,9 @@ std::optional<LlvmModule> buildModule(const FirProgram &program, std::string_vie
     const auto triple = options.targetTriple.empty()
                             ? defaultLlvmTargetTriple()
                             : llvm::Triple::normalize(options.targetTriple);
-    auto target = createTargetMachine(triple, diagnostics);
+    auto target = createTargetMachine(triple, options.cpu, llvmFeatureString(options.features),
+                                      options.positionIndependent, options.freestanding,
+                                      diagnostics);
     if (target == nullptr) {
         return std::nullopt;
     }
@@ -6522,6 +6546,11 @@ std::optional<LlvmModule> buildModule(const FirProgram &program, std::string_vie
         llvm::CGSCCAnalysisManager cgscc;
         llvm::ModuleAnalysisManager modules;
         llvm::PassBuilder passes(result.target.get());
+        llvm::TargetLibraryInfoImpl libraryInfo(result.module->getTargetTriple());
+        if (options.freestanding) {
+            libraryInfo.disableAllFunctions();
+            functions.registerPass([&] { return llvm::TargetLibraryAnalysis(libraryInfo); });
+        }
         passes.registerModuleAnalyses(modules);
         passes.registerCGSCCAnalyses(cgscc);
         passes.registerFunctionAnalyses(functions);
@@ -6537,6 +6566,108 @@ std::optional<LlvmModule> buildModule(const FirProgram &program, std::string_vie
 
 std::string defaultLlvmTargetTriple() {
     return llvm::Triple::normalize(llvm::sys::getDefaultTargetTriple());
+}
+
+std::string llvmFeatureString(const std::vector<std::string> &features) {
+    std::string result;
+    for (const auto &feature : features) {
+        if (!result.empty()) {
+            result.push_back(',');
+        }
+        result += feature;
+    }
+    return result;
+}
+
+std::optional<LlvmTargetSelection> selectLlvmTarget(std::string_view triple,
+                                                    const std::optional<std::string> &cpu,
+                                                    const std::optional<std::string> &features,
+                                                    Diagnostics &diagnostics) {
+    initializeLlvmTargets();
+    LlvmTargetSelection selection;
+    selection.triple = llvm::Triple::normalize(triple);
+    selection.cpu = cpu.value_or("generic");
+    selection.cpuSelected = cpu.has_value();
+    std::string error;
+    const auto *target = llvm::TargetRegistry::lookupTarget(selection.triple, error);
+    if (target == nullptr) {
+        diagnostics.error("FDN8002", "LLVM target lookup failed: " + error, {});
+        return std::nullopt;
+    }
+    // An empty CPU selects the target default, so validation itself never warns.
+    const std::unique_ptr<llvm::MCSubtargetInfo> subtarget(
+        target->createMCSubtargetInfo(selection.triple, "", ""));
+    if (subtarget == nullptr) {
+        diagnostics.error("FDN8002", "LLVM target has no subtarget for " + selection.triple, {});
+        return std::nullopt;
+    }
+    if (cpu.has_value() && !subtarget->isCPUStringValid(*cpu)) {
+        diagnostics.error("FDN8006", "unknown CPU " + *cpu + " for " + selection.triple, {});
+        return std::nullopt;
+    }
+    if (features.has_value()) {
+        const auto available = subtarget->getAllProcessorFeatures();
+        const std::string_view list = *features;
+        std::size_t start{};
+        for (;;) {
+            const auto end = list.find(',', start);
+            const auto entry = list.substr(start, end == std::string_view::npos
+                                                      ? std::string_view::npos
+                                                      : end - start);
+            if (entry.size() < 2 || (entry.front() != '+' && entry.front() != '-') ||
+                !validFeatureName(entry.substr(1))) {
+                diagnostics.error("FDN8007",
+                                  "malformed LLVM feature entry \"" + std::string(entry) + "\"",
+                                  {});
+                return std::nullopt;
+            }
+            const auto name = entry.substr(1);
+            const auto duplicate = std::any_of(
+                selection.features.begin(), selection.features.end(),
+                [&](const auto &existing) { return std::string_view(existing).substr(1) == name; });
+            if (duplicate) {
+                diagnostics.error("FDN8007",
+                                  "LLVM feature " + std::string(name) + " appears more than once",
+                                  {});
+                return std::nullopt;
+            }
+            const auto known =
+                std::any_of(available.begin(), available.end(),
+                            [&](const auto &feature) { return name == feature.Key; });
+            if (!known) {
+                diagnostics.error("FDN8007",
+                                  "unknown LLVM feature " + std::string(name) + " for " +
+                                      selection.triple,
+                                  {});
+                return std::nullopt;
+            }
+            selection.features.emplace_back(entry);
+            if (end == std::string_view::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+        std::sort(selection.features.begin(), selection.features.end(),
+                  [](const auto &left, const auto &right) {
+                      return std::string_view(left).substr(1) < std::string_view(right).substr(1);
+                  });
+    }
+    const auto machine = createTargetMachine(selection.triple, selection.cpu,
+                                             llvmFeatureString(selection.features), false, true,
+                                             diagnostics);
+    if (machine == nullptr) {
+        return std::nullopt;
+    }
+    const auto pointerBits = machine->createDataLayout().getPointerSizeInBits(0);
+    if (pointerBits != 32 && pointerBits != 64) {
+        diagnostics.error("FDN8005",
+                          "freestanding triple " + selection.triple + " has " +
+                              std::to_string(pointerBits) +
+                              "-bit pointers; Foundation requires 32 or 64",
+                          {});
+        return std::nullopt;
+    }
+    return selection;
 }
 
 std::optional<std::string> emitLlvmIr(const FirProgram &program, std::string_view sourcePath,
@@ -6566,6 +6697,11 @@ bool emitLlvmObject(const FirProgram &program, const std::filesystem::path &outp
         return false;
     }
     llvm::legacy::PassManager passes;
+    llvm::TargetLibraryInfoImpl libraryInfo(generated->module->getTargetTriple());
+    if (options.freestanding) {
+        libraryInfo.disableAllFunctions();
+        passes.add(new llvm::TargetLibraryInfoWrapperPass(libraryInfo));
+    }
     if (generated->target->addPassesToEmitFile(passes, object, nullptr,
                                                llvm::CodeGenFileType::ObjectFile)) {
         diagnostics.error("FDN8004", "LLVM target cannot emit object files", {});
