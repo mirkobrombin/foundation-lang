@@ -898,55 +898,79 @@ fn isSemanticPlaceExpression(
     result
 }
 
+// A place is editable through a mutable binding, an edit loan, or a
+// dereferenced mutable raw pointer; members and elements inherit the
+// editability of their base. The walk stops at a dereference, so the binding
+// that holds the pointer need not be mutable.
 fn isSemanticEditablePlace(
     &analyzer semanticAnalyzer,
     &source program,
     expression u64
 ) bool {
-    match semanticPlaceRootLocal(&analyzer, &source, expression) {
-        None: {
-            const selected = source.expressions.take(expression)
-            const node = match selected {
-                None: panic("expression slot is empty")
-                Some(node): node
+    const selected = source.expressions.take(expression)
+    const node = match selected {
+        None: panic("expression slot is empty")
+        Some(node): node
+    }
+    const expressionNode { value span } = node
+    var editable = false
+    var named = false
+    var next Option<u64> = .None
+    const restored = match value {
+        Unary(payload): {
+            if payload.operation.Matches("Dereference") {
+                const type = semanticExpressionType(&analyzer, payload.operand)
+                editable = type.kind.Matches("Raw")
             }
-            const expressionNode { value span } = node
-            var editable = false
-            const restored = match value {
-                Unary(payload): {
-                    if payload.operation.Matches("Dereference") {
-                        const type = semanticExpressionType(&analyzer, payload.operand)
-                        editable = type.kind.Matches("Raw")
-                    }
-                    expressionValue.Unary(payload)
+            expressionValue.Unary(payload)
+        }
+        Name(payload): {
+            named = true
+            expressionValue.Name(payload)
+        }
+        Member(payload): {
+            match payload.base {
+                None: {}
+                Some(base): {
+                    next = .Some(base)
                 }
-                Integer(payload): expressionValue.Integer(payload)
-                Floating(payload): expressionValue.Floating(payload)
-                Boolean(payload): expressionValue.Boolean(payload)
-                StringValue(payload): expressionValue.StringValue(payload)
-                Array(payload): expressionValue.Array(payload)
-                Name(payload): expressionValue.Name(payload)
-                Ownership(payload): expressionValue.Ownership(payload)
-                Binary(payload): expressionValue.Binary(payload)
-                Call(payload): expressionValue.Call(payload)
-                StructValue(payload): expressionValue.StructValue(payload)
-                Member(payload): expressionValue.Member(payload)
-                Index(payload): expressionValue.Index(payload)
-                Replace(payload): expressionValue.Replace(payload)
-                Spawn(payload): expressionValue.Spawn(payload)
-                MatchValue(payload): expressionValue.MatchValue(payload)
-                Conditional(payload): expressionValue.Conditional(payload)
-                FunctionValue(payload): expressionValue.FunctionValue(payload)
             }
-            source.expressions.restore(expression, $expressionNode {
-                value = restored span = span
-            })
-            editable
+            expressionValue.Member(payload)
         }
-        Some(local): {
-            var type = semanticLocalType(&analyzer, local)
-            semanticLocalMutable(&analyzer, local) || type.kind.Matches("Edit")
+        Index(payload): {
+            next = .Some(payload.base)
+            expressionValue.Index(payload)
         }
+        Integer(payload): expressionValue.Integer(payload)
+        Floating(payload): expressionValue.Floating(payload)
+        Boolean(payload): expressionValue.Boolean(payload)
+        StringValue(payload): expressionValue.StringValue(payload)
+        Array(payload): expressionValue.Array(payload)
+        Ownership(payload): expressionValue.Ownership(payload)
+        Binary(payload): expressionValue.Binary(payload)
+        Call(payload): expressionValue.Call(payload)
+        StructValue(payload): expressionValue.StructValue(payload)
+        Replace(payload): expressionValue.Replace(payload)
+        Spawn(payload): expressionValue.Spawn(payload)
+        MatchValue(payload): expressionValue.MatchValue(payload)
+        Conditional(payload): expressionValue.Conditional(payload)
+        FunctionValue(payload): expressionValue.FunctionValue(payload)
+    }
+    source.expressions.restore(expression, $expressionNode {
+        value = restored span = span
+    })
+    if named {
+        return match semanticPlaceRootLocal(&analyzer, &source, expression) {
+            None: false
+            Some(local): {
+                var type = semanticLocalType(&analyzer, local)
+                semanticLocalMutable(&analyzer, local) || type.kind.Matches("Edit")
+            }
+        }
+    }
+    match next {
+        None: editable
+        Some(base): isSemanticEditablePlace(&analyzer, &source, base)
     }
 }
 
