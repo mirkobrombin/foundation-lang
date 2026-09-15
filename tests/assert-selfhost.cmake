@@ -320,4 +320,19 @@ require_rejected_parity("emit-pii hosted triple" 2
 require_rejected_parity("emit-pii cpu without triple" 2 "emit-pii <project> -o <output.json>"
     emit-pii "${native_first}" -o "${PARITY_DIRECTORY}/hosted.json" --cpu generic)
 
+require_emit_parity("emit-metadata" "workflows.metadata.json" emit-metadata
+    "${ROOT}/tests/cases/accept/workflows.fn")
+require_same_file("emit-metadata fixture" "${ROOT}/tests/cases/accept/workflows.metadata.json"
+    "${PARITY_DIRECTORY}/selfhost/workflows.metadata.json")
+require_emit_parity("emit-metadata project" "typed-attributes.metadata.json" emit-metadata
+    "${ROOT}/tests/projects/typed-attributes")
+require_same_file("emit-metadata project fixture"
+    "${ROOT}/tests/projects/typed-attributes/expected.metadata.json"
+    "${PARITY_DIRECTORY}/selfhost/typed-attributes.metadata.json")
+require_rejected_parity("emit-metadata target" 2 "emit-metadata <source-or-project>"
+    emit-metadata "${ROOT}/tests/cases/accept/workflows.fn"
+    -o "${PARITY_DIRECTORY}/invalid.json" --target plan9)
+require_emit_parity("emit-metadata freestanding" "freestanding.metadata.json" emit-metadata
+    "${ROOT}/tests/projects/freestanding-library" --target freestanding)
+
 message(STATUS "self-hosted compiler commands passed")

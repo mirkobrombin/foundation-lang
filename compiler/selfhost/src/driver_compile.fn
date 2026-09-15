@@ -74,8 +74,20 @@ fn loadCheckedProgram(
     mode projectMode,
     target targetPlatform
 ) Option<own checkedProgram> {
+    loadCheckedProject(input, requireMain, mode, target, false)
+}
+
+// Loads and checks a project, reporting every diagnostic. A complete SDK load
+// also parses the SDK sources that no project package imports.
+fn loadCheckedProject(
+    input String,
+    requireMain bool,
+    mode projectMode,
+    target targetPlatform,
+    completeSdk bool
+) Option<own checkedProgram> {
     var found = newDiagnostics()
-    const selected = loadProject(input, &found, mode, target)
+    const selected = loadProjectScope(input, &found, mode, target, .None, completeSdk)
     const loadFailed = found.hasErrors()
     var loaded = match selected {
         None: {
@@ -104,8 +116,8 @@ fn loadCheckedProgram(
     match generated {
         None: {}
         Some(source): {
-            const complete = loadProjectWithGenerated(
-                input, &found, mode, target, source)
+            const complete = loadProjectScope(
+                input, &found, mode, target, .Some(text.Copy(source)), completeSdk)
             const reloadFailed = found.hasErrors()
             loaded = match complete {
                 None: {
@@ -156,7 +168,17 @@ fn loadLoweredProgram(
     mode projectMode,
     target targetPlatform
 ) Option<own loweredProgram> {
-    const selected = loadCheckedProgram(input, requireMain, mode, target)
+    loadLoweredProject(input, requireMain, mode, target, false)
+}
+
+fn loadLoweredProject(
+    input String,
+    requireMain bool,
+    mode projectMode,
+    target targetPlatform,
+    completeSdk bool
+) Option<own loweredProgram> {
+    const selected = loadCheckedProject(input, requireMain, mode, target, completeSdk)
     var checked = match selected {
         None: {
             return .None

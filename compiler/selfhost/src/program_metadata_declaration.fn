@@ -1,0 +1,444 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn addMetadataDeclaration(
+    &program firProgram,
+    &entries arena<String>,
+    id String,
+    kind String,
+    &attributes arena<firAttributeUse>,
+    force bool
+) void {
+    if attributes.len() == 0 && !force return
+    discard entries.add("{\"id\":" + metadataJSONString(id) + ",\"kind\":" +
+        metadataJSONString(kind) + ",\"attributes\":" +
+        metadataUsesJSON(&program, &attributes) + "}")
+}
+
+fn metadataUsedPackages(&program firProgram) own arena<String> {
+    var packages = newArena<String>()
+    var index u64 = 0
+    while index < program.structs.len() {
+        var value = match program.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(found): found
+        }
+        collectMetadataPackages(&program, &value.attributes, &packages)
+        var field u64 = 0
+        while field < value.fields.len() {
+            var selected = match value.fields.take(field) {
+                None: panic("struct field slot is empty")
+                Some(found): found
+            }
+            collectMetadataPackages(&program, &selected.attributes, &packages)
+            value.fields.restore(field, $selected)
+            field += 1
+        }
+        program.structs.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < program.enums.len() {
+        var value = match program.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(found): found
+        }
+        collectMetadataPackages(&program, &value.attributes, &packages)
+        var variant u64 = 0
+        while variant < value.variants.len() {
+            var selected = match value.variants.take(variant) {
+                None: panic("enum variant slot is empty")
+                Some(found): found
+            }
+            collectMetadataPackages(&program, &selected.attributes, &packages)
+            value.variants.restore(variant, $selected)
+            variant += 1
+        }
+        program.enums.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < program.contracts.len() {
+        var value = match program.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(found): found
+        }
+        collectMetadataPackages(&program, &value.attributes, &packages)
+        var method u64 = 0
+        while method < value.methodList.len() {
+            var selected = match value.methodList.take(method) {
+                None: panic("contract method slot is empty")
+                Some(found): found
+            }
+            collectMetadataPackages(&program, &selected.attributes, &packages)
+            collectMetadataPackageGroups(&program, &selected.parameterAttributes, &packages)
+            value.methodList.restore(method, $selected)
+            method += 1
+        }
+        program.contracts.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < program.functions.len() {
+        var value = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        collectMetadataPackages(&program, &value.attributes, &packages)
+        collectMetadataPackageGroups(&program, &value.parameterAttributes, &packages)
+        program.functions.restore(index, $value)
+        index += 1
+    }
+    packages
+}
+
+fn metadataTypeDeclarations(&program firProgram, &entries arena<String>) void {
+    var index u64 = 0
+    while index < program.structs.len() {
+        var value = match program.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(found): found
+        }
+        const name = text.Copy(value.name)
+        const isService = value.serviceType
+        const kind = "service" if isService else "struct"
+        addMetadataDeclaration(&program, &entries, name, kind, &value.attributes, isService)
+        var field u64 = 0
+        while field < value.fields.len() {
+            var selected = match value.fields.take(field) {
+                None: panic("struct field slot is empty")
+                Some(found): found
+            }
+            const id = name + "#field:" + selected.name
+            addMetadataDeclaration(&program, &entries, id, "field", &selected.attributes, false)
+            value.fields.restore(field, $selected)
+            field += 1
+        }
+        program.structs.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < program.enums.len() {
+        var value = match program.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(found): found
+        }
+        const name = text.Copy(value.name)
+        const machine = value.stateMachine
+        const kind = "state_machine" if machine else "enum"
+        addMetadataDeclaration(&program, &entries, name, kind, &value.attributes, machine)
+        var variant u64 = 0
+        while variant < value.variants.len() {
+            var selected = match value.variants.take(variant) {
+                None: panic("enum variant slot is empty")
+                Some(found): found
+            }
+            const id = name + "#variant:" + selected.name
+            const variantKind = "state" if machine else "variant"
+            addMetadataDeclaration(
+                &program, &entries, id, variantKind, &selected.attributes, machine)
+            value.variants.restore(variant, $selected)
+            variant += 1
+        }
+        program.enums.restore(index, $value)
+        index += 1
+    }
+}
+
+fn metadataContractDeclarations(&program firProgram, &entries arena<String>) void {
+    var index u64 = 0
+    while index < program.contracts.len() {
+        var value = match program.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(found): found
+        }
+        const name = text.Copy(value.name)
+        addMetadataDeclaration(&program, &entries, name, "contract", &value.attributes, false)
+        var method u64 = 0
+        while method < value.methodList.len() {
+            var selected = match value.methodList.take(method) {
+                None: panic("contract method slot is empty")
+                Some(found): found
+            }
+            const id = name + "#method:" + selected.name
+            addMetadataDeclaration(&program, &entries, id, "method", &selected.attributes, false)
+            var parameter u64 = 0
+            while parameter < selected.parameterAttributes.len() {
+                var group = match selected.parameterAttributes.take(parameter) {
+                    None: panic("attribute use group slot is empty")
+                    Some(found): found
+                }
+                const parameterName = match selected.parameterNames.take(parameter) {
+                    None: panic("contract parameter name slot is empty")
+                    Some(found): found
+                }
+                const parameterID = id + "#parameter:" + parameterName
+                selected.parameterNames.restore(parameter, $parameterName)
+                addMetadataDeclaration(
+                    &program, &entries, parameterID, "parameter", &group, false)
+                selected.parameterAttributes.restore(parameter, $group)
+                parameter += 1
+            }
+            value.methodList.restore(method, $selected)
+            method += 1
+        }
+        program.contracts.restore(index, $value)
+        index += 1
+    }
+}
+
+fn metadataShortName(name String) String {
+    var start u64 = 0
+    var index u64 = 0
+    while index < text.ByteLen(name) {
+        if applicationByteAt(name, index) == 46 {
+            start = index + 1
+        }
+        index += 1
+    }
+    applicationSlice(name, start, text.ByteLen(name))
+}
+
+fn metadataVariantNameOrEmpty(&program firProgram, declaration u64, variant u64) String {
+    match metadataEnumVariantName(&program, declaration, variant) {
+        None: ""
+        Some(value): value
+    }
+}
+
+fn metadataLocalName(&function firFunction, local u64) String {
+    const value = match function.locals.take(local) {
+        None: panic("FIR local slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(value.name)
+    function.locals.restore(local, $value)
+    result
+}
+
+fn metadataFirstParameter(&function firFunction) Option<u64> {
+    if function.parameters.len() == 0 return .None
+    const local = match function.parameters.take(0) {
+        None: panic("function parameter slot is empty")
+        Some(found): found
+    }
+    function.parameters.restore(0, local)
+    .Some(local)
+}
+
+// Returns the state machine enum edited by a transition receiver.
+fn metadataTransitionMachine(&program firProgram, &function firFunction) Option<u64> {
+    const receiver = match metadataFirstParameter(&function) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    if receiver >= function.locals.len() return .None
+    var local = cLocalAt(&function, receiver)
+    if !local.type.kind.Matches("Edit") || local.type.arguments.len() != 1 return .None
+    var target = semanticTypeArgument(&local.type, 0)
+    if !target.kind.Matches("EnumValue") || target.declaration >= program.enums.len() {
+        return .None
+    }
+    .Some(target.declaration)
+}
+
+fn metadataTransition(
+    &program firProgram,
+    &function firFunction,
+    &entries arena<String>
+) void {
+    const machine = match metadataTransitionMachine(&program, &function) {
+        None: {
+            return
+        }
+        Some(found): found
+    }
+    const owner = applicationPlanEnumName(&program, machine)
+    var transition = match replace function.stateTransition with .None {
+        None: {
+            return
+        }
+        Some(found): found
+    }
+    var result = "{\"id\":" +
+        metadataJSONString(owner + "#transition:" + metadataShortName(function.name)) +
+        ",\"kind\":\"transition\",\"owner\":" + metadataJSONString(owner) + ",\"sources\":["
+    var index u64 = 0
+    while index < transition.sourceVariants.len() {
+        const variant = match transition.sourceVariants.take(index) {
+            None: panic("transition source slot is empty")
+            Some(found): found
+        }
+        transition.sourceVariants.restore(index, variant)
+        if index != 0 {
+            result += ","
+        }
+        result += metadataJSONString(metadataVariantNameOrEmpty(&program, machine, variant))
+        index += 1
+    }
+    result += "],\"destination\":" + metadataJSONString(
+        metadataVariantNameOrEmpty(&program, machine, transition.destinationVariant))
+    match transition.destinationParameter {
+        None: {}
+        Some(local): {
+            if local < function.locals.len() {
+                result += ",\"payloadParameter\":" +
+                    metadataJSONString(metadataLocalName(&function, local))
+            }
+        }
+    }
+    match transition.timeoutNanoseconds {
+        None: {}
+        Some(value): {
+            result += ",\"timeoutNanoseconds\":" + format.U64(value)
+        }
+    }
+    function.stateTransition = .Some(transition)
+    discard entries.add(result + ",\"attributes\":" +
+        metadataUsesJSON(&program, &function.attributes) + "}")
+}
+
+fn metadataFunctionName(&names arena<String>, function u64) String {
+    if function >= names.len() return ""
+    const value = match names.take(function) {
+        None: panic("function name slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(value)
+    names.restore(function, $value)
+    result
+}
+
+fn metadataWorkflow(
+    &program firProgram,
+    &function firFunction,
+    &names arena<String>,
+    &entries arena<String>
+) void {
+    var workflow = match replace function.workflow with .None {
+        None: {
+            return
+        }
+        Some(found): found
+    }
+    const kind = match workflow.kind {
+        Pipeline: "pipeline"
+        Saga: "saga"
+    }
+    var result = "{\"id\":" + metadataJSONString(function.name) + ",\"kind\":" +
+        metadataJSONString(kind) + ",\"input\":" +
+        metadataJSONString(applicationPlanTypeName(&program, &workflow.inputType)) +
+        ",\"output\":" +
+        metadataJSONString(applicationPlanTypeName(&program, &workflow.successType)) +
+        ",\"error\":" +
+        metadataJSONString(applicationPlanTypeName(&program, &workflow.errorType)) +
+        ",\"callableError\":" +
+        metadataJSONString(applicationPlanTypeName(&program, &workflow.failureType)) +
+        ",\"steps\":["
+    var index u64 = 0
+    while index < workflow.steps.len() {
+        const step = match workflow.steps.take(index) {
+            None: panic("workflow step slot is empty")
+            Some(found): found
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += "{\"name\":" + metadataJSONString(step.name) + ",\"function\":" +
+            metadataJSONString(metadataFunctionName(&names, step.function)) +
+            ",\"attempts\":" + format.U64(step.attempts)
+        match step.compensation {
+            None: {}
+            Some(compensation): {
+                result += ",\"compensation\":" +
+                    metadataJSONString(metadataFunctionName(&names, compensation))
+            }
+        }
+        result += "}"
+        workflow.steps.restore(index, $step)
+        index += 1
+    }
+    function.workflow = .Some(workflow)
+    discard entries.add(result + "],\"attributes\":" +
+        metadataUsesJSON(&program, &function.attributes) + "}")
+}
+
+fn metadataFunctionKind(&function firFunction) String {
+    if function.actionFunction return "action"
+    if function.constructor return "ctor"
+    if function.method return "method"
+    "fn"
+}
+
+fn metadataParameterDeclarations(
+    &program firProgram,
+    &function firFunction,
+    &entries arena<String>
+) void {
+    const name = text.Copy(function.name)
+    var index u64 = 0
+    while index < function.parameterAttributes.len() {
+        const local = match function.parameters.take(index) {
+            None: panic("function parameter slot is empty")
+            Some(found): found
+        }
+        function.parameters.restore(index, local)
+        const id = name + "#parameter:" + metadataLocalName(&function, local)
+        var group = match function.parameterAttributes.take(index) {
+            None: panic("attribute use group slot is empty")
+            Some(found): found
+        }
+        addMetadataDeclaration(&program, &entries, id, "parameter", &group, false)
+        function.parameterAttributes.restore(index, $group)
+        index += 1
+    }
+}
+
+fn metadataFunctionDeclarations(&program firProgram, &entries arena<String>) void {
+    var names = newArena<String>()
+    var index u64 = 0
+    while index < program.functions.len() {
+        const value = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        discard names.add(text.Copy(value.name))
+        program.functions.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < program.functions.len() {
+        var function = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        if optionStateTransitionPresent(function.stateTransition) {
+            metadataTransition(&program, &function, &entries)
+        } else {
+            if optionWorkflowPresent(function.workflow) {
+                metadataWorkflow(&program, &function, &names, &entries)
+            } else {
+                const name = text.Copy(function.name)
+                const kind = metadataFunctionKind(&function)
+                const force = function.actionFunction || function.constructor
+                addMetadataDeclaration(
+                    &program, &entries, name, kind, &function.attributes, force)
+                metadataParameterDeclarations(&program, &function, &entries)
+            }
+        }
+        program.functions.restore(index, $function)
+        index += 1
+    }
+}
+
+fn metadataDeclarations(&program firProgram) own arena<String> {
+    var entries = newArena<String>()
+    metadataTypeDeclarations(&program, &entries)
+    metadataContractDeclarations(&program, &entries)
+    metadataFunctionDeclarations(&program, &entries)
+    entries
+}

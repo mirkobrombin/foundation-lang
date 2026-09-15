@@ -224,6 +224,35 @@ fn appendProjectSdkPrelude(
     }
 }
 
+// Appends every standard library source, then every framework source, each
+// in relative path order.
+fn appendProjectSdkLibraries(
+    &inputs arena<projectInputFile>,
+    &seen arena<String>,
+    input String,
+    &diagnostics diagnostics
+) bool {
+    const root = match findProjectSdkRoot(input) {
+        None: {
+            return true
+        }
+        Some(value): value
+    }
+    const standard = path.Join(root, "std")
+    const framework = path.Join(root, "foundation")
+    appendProjectSourceRoot(
+        &inputs, &seen, standard, standard, "std", "standard library", &diagnostics) &&
+        appendProjectSourceRoot(
+        &inputs,
+        &seen,
+        framework,
+        framework,
+        "foundation",
+        "Foundation framework",
+        &diagnostics
+    )
+}
+
 fn projectSdkPackagePath(
     sdkRoot String,
     prefix String,
@@ -465,6 +494,7 @@ fn collectProjectInputs(
     input String,
     mode projectMode,
     target targetPlatform,
+    completeSdk bool,
     &diagnostics diagnostics
 ) Option<own arena<projectInputFile>> {
     const kindResult = fs.Kind(input)
@@ -546,9 +576,12 @@ fn collectProjectInputs(
         }
     }
     discard collected
-    if !appendProjectSdkPrelude(&inputs, &seen, input, &diagnostics) {
-        return .None
+    const appended = if completeSdk {
+        appendProjectSdkLibraries(&inputs, &seen, input, &diagnostics)
+    } else {
+        appendProjectSdkPrelude(&inputs, &seen, input, &diagnostics)
     }
+    if !appended return .None
     .Some(inputs)
 }
 
@@ -568,6 +601,23 @@ fn mergeProjectDiagnostics(
             Warning: target.reportWarning($code, $message, span)
         }
     }
+}
+
+fn projectPathWithin(value String, directory String) bool {
+    if !text.StartsWith(value, directory) return false
+    const next = text.ByteAt(value, text.ByteLen(directory)) else error {
+        discard error
+        return false
+    }
+    next == 47 || next == 92
+}
+
+// Reports whether one input comes from the standard library or the framework
+// of the SDK rather than from a project or a locked package.
+fn projectSdkLibraryInput(sdkRoot String, identity String) bool {
+    if text.IsEmpty(sdkRoot) return false
+    projectPathWithin(identity, projectSourceIdentity(path.Join(sdkRoot, "std"))) ||
+        projectPathWithin(identity, projectSourceIdentity(path.Join(sdkRoot, "foundation")))
 }
 
 fn parseProjectInputs(
@@ -639,6 +689,21 @@ fn parseProjectInputs(
         if !source.hasPackageDeclaration {
             source.packageName = "main" if directoryOrPackage else ""
         }
+        // Under the freestanding target, a complete SDK load keeps only the freestanding set
+        // in the graph, as stage0 does. The source keeps its slot so source ids stay aligned.
+        if sameTarget(target, .Freestanding) &&
+            projectSdkLibraryInput(sdkRoot, identity) &&
+            !freestandingSdkPackage(source.packageName) {
+            discard loaded.sources.add(projectSource {
+                path = text.Copy(displayPath)
+                contents = sourceText
+                identity = text.Copy(identity)
+                packageName = text.Copy(source.packageName)
+            })
+            discard source
+            index += 1
+            continue
+        }
         if !appendProjectSdkImports(
             &inputs,
             &seen,
@@ -685,13 +750,14 @@ fn loadProjectInternal(
     &diagnostics diagnostics,
     mode projectMode,
     target targetPlatform,
-    generated Option<String>
+    generated Option<String>,
+    completeSdk bool
 ) Option<own loadedProject> {
     var loaded = own loadedProject {
         program = newProgram()
         sources = newArena<projectSource>()
     }
-    const selected = collectProjectInputs(input, mode, target, &diagnostics)
+    const selected = collectProjectInputs(input, mode, target, completeSdk, &diagnostics)
     var inputs = match selected {
         None: {
             return .None
@@ -778,7 +844,7 @@ fn loadProject(
     mode projectMode,
     target targetPlatform
 ) Option<own loadedProject> {
-    loadProjectInternal(input, &diagnostics, mode, target, .None)
+    loadProjectInternal(input, &diagnostics, mode, target, .None, false)
 }
 
 fn loadProjectWithGenerated(
@@ -793,6 +859,22 @@ fn loadProjectWithGenerated(
         &diagnostics,
         mode,
         target,
-        .Some(text.Copy(generated))
+        .Some(text.Copy(generated)),
+        false
     )
+}
+
+// Loads a project with an optional generated overlay. A complete SDK load
+// also parses every standard library and framework source, the declaration
+// set that whole-program metadata and import inference enumerate;
+// compilation loads only the imported SDK packages.
+fn loadProjectScope(
+    input String,
+    &diagnostics diagnostics,
+    mode projectMode,
+    target targetPlatform,
+    generated Option<String>,
+    completeSdk bool
+) Option<own loadedProject> {
+    loadProjectInternal(input, &diagnostics, mode, target, generated, completeSdk)
 }

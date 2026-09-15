@@ -74,6 +74,23 @@ fn runCompilerEmitCHeader(
     writeCompilerOutput(outputPath, emitSelfHostedCHeader(&lowered.program))
 }
 
+fn runCompilerEmitMetadata(
+    input String,
+    outputPath String,
+    target targetPlatform
+) i32 {
+    // Freestanding code has no entry point, as for emit-c.
+    const selected = loadLoweredProject(
+        input, !sameTarget(target, .Freestanding), .Production, target, true)
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    writeCompilerOutput(outputPath, emitProgramMetadata(&lowered.program))
+}
+
 fn runCompilerEmitStateMachine(
     input String,
     outputPath String,

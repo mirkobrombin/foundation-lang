@@ -14,6 +14,8 @@ fn compilerUsage() String {
         "  foundationc-selfhost emit-app-host <source-or-project> " +
         "-o <output.fn> [--target <platform>]\n" +
         "  foundationc-selfhost emit-llvm <source-or-project> -o <output.ll>\n" +
+        "  foundationc-selfhost emit-metadata <source-or-project> -o <output.json> " +
+        "[--target <platform>]\n" +
         "  foundationc-selfhost emit-pii <project> -o <output.json> " +
         "[--triple <llvm-triple>] [--cpu <name>] [--features <list>]\n" +
         "  foundationc-selfhost emit-fsm <source-or-project> -o <output> " +
@@ -259,6 +261,20 @@ fn runCompilerCommand(args [String]) Option<i32> {
             }
             Some(value): {
                 return .Some(runCompilerEmitCHeader(
+                        compilerArgument(args, 1),
+                        compilerArgument(args, 3),
+                        value))
+            }
+        }
+    }
+    if command == "emit-metadata" {
+        const target = parseCompilerOutputTarget(args)
+        match target {
+            None: {
+                return .None
+            }
+            Some(value): {
+                return .Some(runCompilerEmitMetadata(
                         compilerArgument(args, 1),
                         compilerArgument(args, 3),
                         value))

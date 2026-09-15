@@ -1,0 +1,336 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+// Metadata strings use the short JSON escapes for backspace and form feed;
+// every other byte is escaped as in the application plan.
+fn metadataJSONEscape(byte u64) String {
+    if byte == 8 return "\\b"
+    if byte == 12 return "\\f"
+    applicationJSONEscape(byte)
+}
+
+fn metadataJSONString(value String) String {
+    const length = text.ByteLen(value)
+    var result = "\""
+    var start u64 = 0
+    var index u64 = 0
+    while index < length {
+        const escaped = metadataJSONEscape(applicationByteAt(value, index))
+        if !text.IsEmpty(escaped) {
+            result += applicationSlice(value, start, index) + escaped
+            start = index + 1
+        }
+        index += 1
+    }
+    result + applicationSlice(value, start, length) + "\""
+}
+
+fn metadataTargetName(target firAttributeTarget) String {
+    match target {
+        Function: "fn"
+        StructValue: "struct"
+        Service: "service"
+        EnumValue: "enum"
+        ContractValue: "contract"
+        Method: "method"
+        Constructor: "ctor"
+        Action: "action"
+        Field: "field"
+        Variant: "variant"
+        Parameter: "parameter"
+    }
+}
+
+fn metadataEnumVariantName(&program firProgram, declaration u64, variant u64) Option<String> {
+    var value = match program.enums.take(declaration) {
+        None: panic("enum slot is empty")
+        Some(found): found
+    }
+    var result Option<String> = .None
+    if variant < value.variants.len() {
+        const selected = match value.variants.take(variant) {
+            None: panic("enum variant slot is empty")
+            Some(found): found
+        }
+        result = .Some(text.Copy(selected.name))
+        value.variants.restore(variant, $selected)
+    }
+    program.enums.restore(declaration, $value)
+    result
+}
+
+fn metadataChildJSON(&program firProgram, &value firAttributeValue, index u64) String {
+    var child = match value.children.take(index) {
+        None: panic("attribute child slot is empty")
+        Some(found): found
+    }
+    const result = metadataValueJSON(&program, &child)
+    value.children.restore(index, $child)
+    result
+}
+
+fn metadataValueJSON(&program firProgram, &value firAttributeValue) String {
+    const kind = value.kind
+    match kind {
+        Integer: ("-" if value.negative else "") + format.U64(value.magnitude)
+        Floating: text.Copy(value.text)
+        Boolean: applicationJSONBool(value.boolean)
+        StringValue: metadataJSONString(value.text)
+        EnumValue: {
+            var name = applicationPlanTypeName(&program, &value.type)
+            if value.type.kind.Matches("EnumValue") &&
+                value.type.declaration < program.enums.len() {
+                match metadataEnumVariantName(&program, value.type.declaration, value.variant) {
+                    None: {}
+                    Some(variant): {
+                        name += "." + variant
+                    }
+                }
+            }
+            var result = "{\"case\":" + metadataJSONString(name)
+            if value.children.len() != 0 {
+                result += ",\"value\":" + metadataChildJSON(&program, &value, 0)
+            }
+            result + "}"
+        }
+        Array: {
+            var result = "["
+            var index u64 = 0
+            while index < value.children.len() {
+                if index != 0 {
+                    result += ","
+                }
+                result += metadataChildJSON(&program, &value, index)
+                index += 1
+            }
+            result + "]"
+        }
+        StructValue: {
+            var result = "{\"type\":" +
+                metadataJSONString(applicationPlanTypeName(&program, &value.type)) +
+                ",\"fields\":{"
+            var index u64 = 0
+            while index < value.children.len() {
+                if index != 0 {
+                    result += ","
+                }
+                const member = match value.members.take(index) {
+                    None: panic("attribute member slot is empty")
+                    Some(found): found
+                }
+                result += metadataJSONString(member) + ":"
+                value.members.restore(index, $member)
+                result += metadataChildJSON(&program, &value, index)
+                index += 1
+            }
+            result + "}}"
+        }
+    }
+}
+
+fn metadataAttributeName(&program firProgram, declaration u64) String {
+    if declaration >= program.attributeDeclarations.len() return "<invalid>"
+    const value = match program.attributeDeclarations.take(declaration) {
+        None: panic("attribute declaration slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(value.name)
+    program.attributeDeclarations.restore(declaration, $value)
+    result
+}
+
+fn metadataUsesJSON(&program firProgram, &uses arena<firAttributeUse>) String {
+    var result = "["
+    var index u64 = 0
+    while index < uses.len() {
+        var use = match uses.take(index) {
+            None: panic("attribute use slot is empty")
+            Some(found): found
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += "{\"name\":" +
+            metadataJSONString(metadataAttributeName(&program, use.declaration)) +
+            ",\"arguments\":{"
+        var argumentIndex u64 = 0
+        while argumentIndex < use.arguments.len() {
+            var argument = match use.arguments.take(argumentIndex) {
+                None: panic("attribute argument slot is empty")
+                Some(found): found
+            }
+            if argumentIndex != 0 {
+                result += ","
+            }
+            result += metadataJSONString(argument.name) + ":" +
+                metadataValueJSON(&program, &argument.value)
+            use.arguments.restore(argumentIndex, $argument)
+            argumentIndex += 1
+        }
+        result += "}}"
+        uses.restore(index, $use)
+        index += 1
+    }
+    result + "]"
+}
+
+// Names the package that declares an attribute: everything before the last
+// dot of its qualified name.
+fn metadataAttributePackage(name String) String {
+    var end u64 = 0
+    var index u64 = 0
+    while index < text.ByteLen(name) {
+        if applicationByteAt(name, index) == 46 {
+            end = index
+        }
+        index += 1
+    }
+    applicationSlice(name, 0, end)
+}
+
+fn collectMetadataPackages(
+    &program firProgram,
+    &uses arena<firAttributeUse>,
+    &packages arena<String>
+) void {
+    var index u64 = 0
+    while index < uses.len() {
+        const use = match uses.take(index) {
+            None: panic("attribute use slot is empty")
+            Some(found): found
+        }
+        const declaration = use.declaration
+        uses.restore(index, $use)
+        if declaration < program.attributeDeclarations.len() {
+            const name = metadataAttributePackage(metadataAttributeName(&program, declaration))
+            if !arenaContainsString(&packages, name) {
+                discard packages.add($name)
+            }
+        }
+        index += 1
+    }
+}
+
+fn collectMetadataPackageGroups(
+    &program firProgram,
+    &groups arena<own arena<firAttributeUse>>,
+    &packages arena<String>
+) void {
+    var index u64 = 0
+    while index < groups.len() {
+        var group = match groups.take(index) {
+            None: panic("attribute use group slot is empty")
+            Some(found): found
+        }
+        collectMetadataPackages(&program, &group, &packages)
+        groups.restore(index, $group)
+        index += 1
+    }
+}
+
+fn metadataAttributeJSON(&program firProgram, &declaration firAttributeDeclaration) String {
+    var result = "{\"name\":" + metadataJSONString(declaration.name) + ",\"exported\":" +
+        applicationJSONBool(declaration.exported) + ",\"repeatable\":" +
+        applicationJSONBool(declaration.repeatable) + ",\"targets\":["
+    var index u64 = 0
+    while index < declaration.targets.len() {
+        const target = match declaration.targets.take(index) {
+            None: panic("attribute target slot is empty")
+            Some(found): found
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += metadataJSONString(metadataTargetName(target))
+        declaration.targets.restore(index, target)
+        index += 1
+    }
+    result += "],\"parameters\":["
+    index = 0
+    while index < declaration.parameters.len() {
+        var parameter = match declaration.parameters.take(index) {
+            None: panic("attribute parameter slot is empty")
+            Some(found): found
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += "{\"name\":" + metadataJSONString(parameter.name) + ",\"type\":" +
+            metadataJSONString(applicationPlanTypeName(&program, &parameter.type)) + "}"
+        declaration.parameters.restore(index, $parameter)
+        index += 1
+    }
+    result + "]}"
+}
+
+// Describes the attribute declarations of every package whose attributes the
+// program applies, in declaration order.
+fn metadataAttributesJSON(&program firProgram) String {
+    var packages = metadataUsedPackages(&program)
+    var entries = newArena<String>()
+    var index u64 = 0
+    while index < program.attributeDeclarations.len() {
+        var declaration = match program.attributeDeclarations.take(index) {
+            None: panic("attribute declaration slot is empty")
+            Some(found): found
+        }
+        const used = arenaContainsString(&packages, metadataAttributePackage(declaration.name))
+        program.attributeDeclarations.restore(index, $declaration)
+        if used {
+            var selected = match program.attributeDeclarations.take(index) {
+                None: panic("attribute declaration slot is empty")
+                Some(found): found
+            }
+            var copy = copyMetadataAttributeDeclaration(&selected)
+            program.attributeDeclarations.restore(index, $selected)
+            discard entries.add(metadataAttributeJSON(&program, &copy))
+        }
+        index += 1
+    }
+    applicationJoinText(&entries, ",")
+}
+
+fn copyMetadataAttributeDeclaration(
+    &source firAttributeDeclaration
+) firAttributeDeclaration {
+    var result = newFirAttributeDeclaration()
+    result.name = text.Copy(source.name)
+    result.repeatable = source.repeatable
+    result.exported = source.exported
+    var index u64 = 0
+    while index < source.targets.len() {
+        const target = match source.targets.take(index) {
+            None: panic("attribute target slot is empty")
+            Some(found): found
+        }
+        discard result.targets.add(target)
+        source.targets.restore(index, target)
+        index += 1
+    }
+    index = 0
+    while index < source.parameters.len() {
+        var parameter = match source.parameters.take(index) {
+            None: panic("attribute parameter slot is empty")
+            Some(found): found
+        }
+        discard result.parameters.add(firAttributeParameter {
+            name = text.Copy(parameter.name)
+            type = copySemanticType(&parameter.type)
+        })
+        source.parameters.restore(index, $parameter)
+        index += 1
+    }
+    result
+}
+
+// Renders the attribute metadata document of a lowered program: the
+// attribute declarations in use, then every declaration that carries
+// attributes or is an application declaration.
+fn emitProgramMetadata(&program firProgram) String {
+    const attributes = metadataAttributesJSON(&program)
+    var declarations = metadataDeclarations(&program)
+    "{\"schema\":\"foundation.metadata/v1\",\"attributes\":[" + attributes +
+        "],\"declarations\":[" + applicationJoinText(&declarations, ",") + "]}\n"
+}
