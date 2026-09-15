@@ -83,6 +83,8 @@ foreach(backend IN ITEMS c llvm)
         message(FATAL_ERROR
             "go-source fixture failed on the ${backend} backend:\n${behavior_output}${behavior_error}")
     endif()
+    # The Windows C runtime writes stdout in text mode; Go writes the same lines with plain newlines.
+    string(REPLACE "\r\n" "\n" behavior_output "${behavior_output}")
     set(behavior_${backend} "${behavior_output}")
 endforeach()
 if(NOT behavior_c STREQUAL behavior_llvm)
