@@ -1135,6 +1135,12 @@ class LlvmEmitter {
                function.returnType == stringType;
     }
 
+    // Every supported C ABI returns fdn_string through a hidden result pointer, whether the
+    // symbol is imported or exported.
+    bool usesNativeResultPointer(const FirFunction &function) const {
+        return function.cSymbol.has_value() && function.returnType == stringType;
+    }
+
     bool containsAggregate(const Type &type) const {
         if (type.kind == TypeKind::Struct || type.kind == TypeKind::Enum) {
             return true;
@@ -1245,7 +1251,7 @@ class LlvmEmitter {
                     nativeFunctions_[id] =
                         llvm::Function::Create(nativeSignature, llvm::GlobalValue::ExternalLinkage,
                                                *function.cSymbol, module_);
-                    if (usesExternalResultPointer(function)) {
+                    if (usesNativeResultPointer(function)) {
                         nativeFunctions_[id]->addParamAttr(
                             0, llvm::Attribute::getWithStructRetType(
                                    context_, typeOf(function.returnType)));
@@ -1897,7 +1903,7 @@ class LlvmEmitter {
     llvm::Type *abiTypeOf(const Type &type) { return typeOf(type); }
 
     llvm::FunctionType *nativeFunctionType(const FirFunction &function) {
-        const auto indirectResult = usesExternalResultPointer(function);
+        const auto indirectResult = usesNativeResultPointer(function);
         auto *result = function.diverges || indirectResult ? llvm::Type::getVoidTy(context_)
                                                            : abiTypeOf(function.returnType);
         if (result == nullptr) {
@@ -6237,13 +6243,15 @@ class LlvmEmitter {
             auto *frame = builder.CreateAlloca(frameType_, nullptr, "frame");
             enterNativeFrame(builder, frame, function);
             const auto indirectResult = usesExternalResultPointer(function);
-            auto *resultStorage = indirectResult ? wrapper->getArg(0) : nullptr;
+            const auto exportedResultPointer =
+                function.hasBody && usesNativeResultPointer(function);
+            const auto resultOffset = indirectResult || exportedResultPointer ? 1 : 0;
+            auto *resultStorage = resultOffset != 0 ? wrapper->getArg(0) : nullptr;
             std::vector<llvm::Value *> arguments;
             arguments.reserve(function.parameters.size());
             for (std::size_t index = 0; index < function.parameters.size(); ++index) {
                 const auto local = function.parameters[index];
-                auto *value =
-                    wrapper->getArg(llvmIndex(index + (indirectResult ? 1 : 0)));
+                auto *value = wrapper->getArg(llvmIndex(index + resultOffset));
                 arguments.push_back(function.hasBody
                                         ? fromAbi(builder, value, function.locals[local].type)
                                         : toAbi(builder, value, function.locals[local].type));
@@ -6269,6 +6277,9 @@ class LlvmEmitter {
             if (function.returnType == voidType) {
                 builder.CreateRetVoid();
             } else if (indirectResult) {
+                builder.CreateRetVoid();
+            } else if (exportedResultPointer) {
+                builder.CreateStore(toAbi(builder, result, function.returnType), resultStorage);
                 builder.CreateRetVoid();
             } else {
                 builder.CreateRet(function.hasBody ? toAbi(builder, result, function.returnType)
