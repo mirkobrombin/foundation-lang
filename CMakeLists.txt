@@ -1990,7 +1990,19 @@ if(BUILD_TESTING)
         NAMES wasm-ld wasm-ld-21
         HINTS ${LLVM_TOOLS_BINARY_DIR}
     )
+    # Apple clang has no wasm32 target, so the compiler that was found must prove it can emit one.
     if(FOUNDATION_WASM_CLANG AND FOUNDATION_WASM_LINKER)
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/wasm-target-probe.c" "int probe;\n")
+        execute_process(
+            COMMAND "${FOUNDATION_WASM_CLANG}" --target=wasm32-unknown-unknown -c
+                "${CMAKE_CURRENT_BINARY_DIR}/wasm-target-probe.c"
+                -o "${CMAKE_CURRENT_BINARY_DIR}/wasm-target-probe.o"
+            RESULT_VARIABLE FOUNDATION_WASM_TARGET_RESULT
+            OUTPUT_QUIET
+            ERROR_QUIET
+        )
+    endif()
+    if(FOUNDATION_WASM_CLANG AND FOUNDATION_WASM_LINKER AND FOUNDATION_WASM_TARGET_RESULT EQUAL 0)
         add_test(
             NAME abi.wasm-plugin-guest
             COMMAND ${CMAKE_COMMAND}
