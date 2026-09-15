@@ -1,6 +1,6 @@
 if(NOT DEFINED COMPILER OR NOT DEFINED SOURCE OR NOT DEFINED UNSUPPORTED_SOURCE OR
    NOT DEFINED RUNTIME_SOURCE OR NOT DEFINED OWN_SOURCE OR NOT DEFINED ESCAPE_SOURCE OR
-   NOT DEFINED OWNER_DESTRUCTURE_SOURCE OR NOT DEFINED OPEN_GENERIC_SOURCE OR
+   NOT DEFINED OWNER_CYCLE_SOURCE OR NOT DEFINED OPEN_GENERIC_SOURCE OR
    NOT DEFINED GENERIC_STRUCT_SOURCE OR NOT DEFINED MULTIPLE_SOURCE OR
    NOT DEFINED FIXTURE OR NOT DEFINED WORK OR NOT DEFINED GO_EXECUTABLE)
     message(FATAL_ERROR "go-source export test requires compiler, sources, fixture, work, and Go")
@@ -270,36 +270,35 @@ if(NOT escape_diagnostics MATCHES "FDN4120" OR
         "conditional escape rejection omitted its contract or alternatives:\n${escape_diagnostics}")
 endif()
 
-file(MAKE_DIRECTORY "${WORK}/owner-destructure-source" "${WORK}/owner-destructure-output")
-file(COPY "${OWNER_DESTRUCTURE_SOURCE}/" DESTINATION "${WORK}/owner-destructure-source")
+file(MAKE_DIRECTORY "${WORK}/owner-cycle-source" "${WORK}/owner-cycle-output")
+file(COPY "${OWNER_CYCLE_SOURCE}/" DESTINATION "${WORK}/owner-cycle-source")
 execute_process(
-    COMMAND "${COMPILER}" package resolve "${WORK}/owner-destructure-source"
-    RESULT_VARIABLE owner_destructure_resolve_status
-    OUTPUT_VARIABLE owner_destructure_resolve_output
-    ERROR_VARIABLE owner_destructure_resolve_error
+    COMMAND "${COMPILER}" package resolve "${WORK}/owner-cycle-source"
+    RESULT_VARIABLE owner_cycle_resolve_status
+    OUTPUT_VARIABLE owner_cycle_resolve_output
+    ERROR_VARIABLE owner_cycle_resolve_error
 )
-if(NOT owner_destructure_resolve_status EQUAL 0)
+if(NOT owner_cycle_resolve_status EQUAL 0)
     message(FATAL_ERROR
-        "cannot resolve owner destructuring fixture:\n${owner_destructure_resolve_output}${owner_destructure_resolve_error}")
+        "cannot resolve owner cycle fixture:\n${owner_cycle_resolve_output}${owner_cycle_resolve_error}")
 endif()
 execute_process(
-    COMMAND "${COMPILER}" package export "${WORK}/owner-destructure-source"
-        -o "${WORK}/owner-destructure-output"
+    COMMAND "${COMPILER}" package export "${WORK}/owner-cycle-source"
+        -o "${WORK}/owner-cycle-output"
         --format go-source
-    RESULT_VARIABLE owner_destructure_status
-    OUTPUT_VARIABLE owner_destructure_output
-    ERROR_VARIABLE owner_destructure_error
+    RESULT_VARIABLE owner_cycle_status
+    OUTPUT_VARIABLE owner_cycle_output
+    ERROR_VARIABLE owner_cycle_error
 )
-if(owner_destructure_status EQUAL 0)
-    message(FATAL_ERROR "go-source accepted owner destructuring")
+if(owner_cycle_status EQUAL 0)
+    message(FATAL_ERROR "go-source accepted an owner cycle outside an enum payload")
 endif()
-set(owner_destructure_diagnostics
-    "${owner_destructure_output}${owner_destructure_error}")
-if(NOT owner_destructure_diagnostics MATCHES "FDN4120" OR
-   NOT owner_destructure_diagnostics MATCHES "cannot preserve owner destructuring" OR
-   NOT owner_destructure_diagnostics MATCHES "go-cgo or go-dynamic")
+set(owner_cycle_diagnostics "${owner_cycle_output}${owner_cycle_error}")
+if(NOT owner_cycle_diagnostics MATCHES "FDN4120" OR
+   NOT owner_cycle_diagnostics MATCHES "unless an owned enum payload closes the cycle" OR
+   NOT owner_cycle_diagnostics MATCHES "go-cgo or go-dynamic")
     message(FATAL_ERROR
-        "owner destructuring rejection omitted its contract or alternatives:\n${owner_destructure_diagnostics}")
+        "owner cycle rejection omitted its contract or alternatives:\n${owner_cycle_diagnostics}")
 endif()
 
 file(MAKE_DIRECTORY "${WORK}/open-generic-source" "${WORK}/open-generic-output")
@@ -393,7 +392,7 @@ string(REGEX MATCHALL "error\\[FDN4120\\]" multiple_codes "${multiple_diagnostic
 list(LENGTH multiple_codes multiple_count)
 if(NOT multiple_count EQUAL 6 OR
    NOT multiple_diagnostics MATCHES "consuming method receiver" OR
-   NOT multiple_diagnostics MATCHES "cannot preserve owner destructuring" OR
+   NOT multiple_diagnostics MATCHES "unless an owned enum payload closes the cycle" OR
    NOT multiple_diagnostics MATCHES "only when the expression initializes or assigns a local" OR
    NOT multiple_diagnostics MATCHES "panic only as a statement, return value, or branch value" OR
    NOT multiple_diagnostics MATCHES "function without a same-package body")

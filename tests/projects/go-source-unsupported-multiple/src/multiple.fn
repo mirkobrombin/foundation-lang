@@ -8,23 +8,27 @@ struct Token {
     }
 }
 
-fn makeToken() own Token {
-    own Token { Value = 42 }
+struct Chain {
+    Value i32
+    Next own Chain
 }
 
 fn twice(value i32) i32 {
     value * 2
 }
 
+fn ChainValue(chain Chain) i32 {
+    chain.Value
+}
+
 fn RejectedStatements(value Option<i32>) i32 {
-    const Token { Value } = makeToken()
     const escaped = twice(match value {
         None: {
             return 1
         }
         Some(inner): inner
     })
-    Value + escaped
+    escaped + 1
 }
 
 fn PanicArgument() i32 {

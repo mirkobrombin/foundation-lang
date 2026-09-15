@@ -1786,6 +1786,9 @@ class GoSourceEmitter {
     }
 
     std::string enumTypeLabel(Type type) {
+        if (type.kind == TypeKind::Own && type.arguments.size() == 1) {
+            return "Own" + enumTypeLabel(type.arguments.front());
+        }
         if ((type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
             type.arguments.size() == 1) {
             type = type.arguments.front();
@@ -1906,6 +1909,29 @@ class GoSourceEmitter {
                program_.enums[type.declaration].name == name;
     }
 
+    static Type ownedValue(Type type) {
+        while ((type.kind == TypeKind::Own || type.kind == TypeKind::View ||
+                type.kind == TypeKind::Edit) &&
+               type.arguments.size() == 1) {
+            type = type.arguments.front();
+        }
+        return type;
+    }
+
+    // An owned enum payload lives behind a Go pointer that only its variant constructor
+    // allocates. Reads copy the pointee and nothing writes through the pointer, so the payload
+    // stays immutable, copies of the enum stay independent values, and the pointer can close a
+    // recursive type.
+    bool indirectPayload(const Type &type, FirVariantId variant) const {
+        const auto payload = enumPayloadType(type, variant);
+        return payload.has_value() && payload->kind == TypeKind::Own;
+    }
+
+    std::string payloadRead(const Type &type, FirVariantId variant, const std::string &value) {
+        const auto field = value + '.' + enumFieldName(type, variant);
+        return indirectPayload(type, variant) ? '*' + field : field;
+    }
+
     static bool pointerParameter(const Type &type) {
         return type.kind == TypeKind::Edit && type.arguments.size() == 1 &&
                type.arguments.front().kind != TypeKind::Slice;
@@ -1927,10 +1953,7 @@ class GoSourceEmitter {
     }
 
     std::optional<std::string> sourceType(Type type) {
-        if ((type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
-            type.arguments.size() == 1) {
-            type = type.arguments.front();
-        }
+        type = ownedValue(type);
         if (const auto scalar = goSourceType(type); scalar.has_value()) {
             return scalar;
         }
@@ -1977,11 +2000,10 @@ class GoSourceEmitter {
         return std::nullopt;
     }
 
+    // A type that reaches itself is accepted only when an owned enum payload lies on the cycle,
+    // because that payload is the only owner stored behind a Go pointer.
     bool scanType(Type type, SourceSpan span) {
-        if ((type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
-            type.arguments.size() == 1) {
-            type = type.arguments.front();
-        }
+        type = ownedValue(type);
         if (goSourceType(type).has_value()) {
             return true;
         }
@@ -2026,19 +2048,36 @@ class GoSourceEmitter {
                 return true;
             }
             if (enumStates_[key] == 1) {
-                fail("go-source cannot translate recursive value enums", span);
+                if (ownerBarrier_ > scanDepths_[key]) {
+                    return true;
+                }
+                fail("go-source cannot translate recursive enum " + declaration.name +
+                         " unless an owned enum payload closes the cycle",
+                     span);
                 return false;
             }
             enumStates_[key] = 1;
+            scanDepths_[key] = scanDepth_++;
             enumName(type);
             prepareEnum(type);
             for (FirVariantId variant{}; variant < declaration.variants.size(); ++variant) {
                 const auto payload = enumPayloadType(type, variant);
-                if (payload.has_value() && !scanType(*payload, span)) {
+                if (!payload.has_value()) {
+                    continue;
+                }
+                const auto barrier = ownerBarrier_;
+                if (payload->kind == TypeKind::Own) {
+                    ownerBarrier_ = scanDepth_;
+                }
+                const auto scanned = scanType(*payload, span);
+                ownerBarrier_ = barrier;
+                if (!scanned) {
                     enumStates_[key] = 0;
+                    --scanDepth_;
                     return false;
                 }
             }
+            --scanDepth_;
             enumStates_[key] = 2;
             reachableEnums_[key] = type;
             return true;
@@ -2058,7 +2097,12 @@ class GoSourceEmitter {
             return true;
         }
         if (structStates_[key] == 1) {
-            fail("go-source cannot translate recursive value structs", span);
+            if (ownerBarrier_ > scanDepths_[key]) {
+                return true;
+            }
+            fail("go-source cannot translate recursive struct " + declaration.name +
+                     " unless an owned enum payload closes the cycle",
+                 span);
             return false;
         }
         if (declaration.dropFunction.has_value() || declaration.service) {
@@ -2066,15 +2110,18 @@ class GoSourceEmitter {
             return false;
         }
         structStates_[key] = 1;
+        scanDepths_[key] = scanDepth_++;
         structName(type);
         prepareStructFields(id);
         for (const auto &field : declaration.fields) {
             if (!scanType(substituteGoSourceType(field.type, type.arguments),
                           declaration.sourceSpan)) {
                 structStates_[key] = 0;
+                --scanDepth_;
                 return false;
             }
         }
+        --scanDepth_;
         structStates_[key] = 2;
         reachableStructs_[key] = type;
         return true;
@@ -2389,29 +2436,26 @@ class GoSourceEmitter {
         }
         if (const auto *destructure =
                 std::get_if<FirStructDestructureStatement>(&statement.value)) {
-            if (destructure->owned) {
-                fail("go-source cannot preserve owner destructuring", statement.span);
-                return false;
-            }
+            const auto destructured = ownedValue(destructure->type);
             const auto rejections = rejections_;
-            if (destructure->type.kind != TypeKind::Struct ||
-                destructure->type.declaration >= program_.structs.size() ||
-                !scanType(destructure->type, statement.span) ||
+            if (destructured.kind != TypeKind::Struct ||
+                destructured.declaration >= program_.structs.size() ||
+                !scanType(destructured, statement.span) ||
                 !scanExpression(function, destructure->initializer) ||
-                function.expressions[destructure->initializer].type != destructure->type) {
+                ownedValue(function.expressions[destructure->initializer].type) != destructured) {
                 if (rejections_ == rejections) {
-                    fail("go-source supports value-struct destructuring only", statement.span);
+                    fail("go-source supports struct and owner destructuring only", statement.span);
                 }
                 return false;
             }
-            const auto &declaration = program_.structs[destructure->type.declaration];
+            const auto &declaration = program_.structs[destructured.declaration];
             std::vector<bool> bound(declaration.fields.size());
             for (const auto &binding : destructure->bindings) {
                 if (binding.local >= function.locals.size() ||
                     binding.field >= declaration.fields.size() || bound[binding.field] ||
                     function.locals[binding.local].type !=
                         substituteGoSourceType(declaration.fields[binding.field].type,
-                                               destructure->type.arguments)) {
+                                               destructured.arguments)) {
                     fail("go-source found invalid struct destructuring metadata", statement.span);
                     return false;
                 }
@@ -3347,8 +3391,8 @@ class GoSourceEmitter {
                 return false;
             }
             const auto local = currentLocals_[binding];
-            output << indentation(armDepth) << local << " := " << temporary << '.'
-                   << enumFieldName(match.type, arm.variant) << "\n"
+            output << indentation(armDepth) << local
+                   << " := " << payloadRead(match.type, arm.variant, temporary) << "\n"
                    << indentation(armDepth) << "_ = " << local << "\n";
             return true;
         };
@@ -3851,6 +3895,13 @@ class GoSourceEmitter {
                 fail("go-source cannot render an enum value", expression.span);
                 return std::nullopt;
             }
+            if (value->payload.has_value() && indirectPayload(value->type, value->variant)) {
+                const auto payload = renderExpression(function, *value->payload, depth);
+                if (!payload.has_value()) {
+                    return std::nullopt;
+                }
+                return enumConstructorName(value->type, value->variant) + '(' + *payload + ')';
+            }
             std::ostringstream output;
             output << enumName(value->type) << "{tag: " << value->variant;
             if (value->payload.has_value()) {
@@ -3896,11 +3947,7 @@ class GoSourceEmitter {
             if (!base.has_value()) {
                 return std::nullopt;
             }
-            auto type = function.expressions[value->base].type;
-            if ((type.kind == TypeKind::View || type.kind == TypeKind::Edit) &&
-                type.arguments.size() == 1) {
-                type = type.arguments.front();
-            }
+            const auto type = ownedValue(function.expressions[value->base].type);
             if (type.kind != TypeKind::Struct || type.declaration >= program_.structs.size() ||
                 value->field >= program_.structs[type.declaration].fields.size()) {
                 fail("go-source cannot render a field access", expression.span);
@@ -4169,12 +4216,12 @@ class GoSourceEmitter {
             output << indentation << temporary << " := " << *value << "\n"
                    << indentation << "if " << temporary << ".tag == 1 {\n"
                    << indentation << '\t' << currentLocals_[binding->errorLocal]
-                   << " := " << temporary << '.' << enumFieldName(type, 1) << "\n"
+                   << " := " << payloadRead(type, 1, temporary) << "\n"
                    << indentation << "\t_ = " << currentLocals_[binding->errorLocal] << "\n";
             renderBlock(output, function, binding->elseBlock, depth + 1);
             output << indentation << "}\n"
-                   << indentation << currentLocals_[binding->local] << " := " << temporary << '.'
-                   << enumFieldName(type, 0) << "\n"
+                   << indentation << currentLocals_[binding->local]
+                   << " := " << payloadRead(type, 0, temporary) << "\n"
                    << indentation << "_ = " << currentLocals_[binding->local] << "\n";
             return;
         }
@@ -4188,7 +4235,7 @@ class GoSourceEmitter {
             output << indentation << temporary << " := " << *value << "\n"
                    << indentation << "if " << temporary << ".tag == 1 {\n"
                    << indentation << '\t' << currentLocals_[binding->errorLocal]
-                   << " := " << temporary << '.' << enumFieldName(type, 1) << "\n"
+                   << " := " << payloadRead(type, 1, temporary) << "\n"
                    << indentation << "\t_ = " << currentLocals_[binding->errorLocal] << "\n";
             renderBlock(output, function, binding->elseBlock, depth + 1);
             output << indentation << "}\n";
@@ -4197,8 +4244,9 @@ class GoSourceEmitter {
         if (const auto *destructure =
                 std::get_if<FirStructDestructureStatement>(&statement.value)) {
             const auto initializer = renderExpression(function, destructure->initializer, depth);
-            if (!initializer.has_value() || destructure->type.kind != TypeKind::Struct ||
-                destructure->type.declaration >= program_.structs.size()) {
+            const auto destructured = ownedValue(destructure->type);
+            if (!initializer.has_value() || destructured.kind != TypeKind::Struct ||
+                destructured.declaration >= program_.structs.size()) {
                 if (!failed_) {
                     fail("go-source cannot render struct destructuring", statement.span);
                 }
@@ -4214,7 +4262,7 @@ class GoSourceEmitter {
                 }
                 const auto &local = currentLocals_[binding.local];
                 output << indentation << local << " := (" << temporary << ")."
-                       << fieldName(destructure->type.declaration, binding.field) << "\n"
+                       << fieldName(destructured.declaration, binding.field) << "\n"
                        << indentation << "_ = " << local << "\n";
             }
             return;
@@ -4369,8 +4417,8 @@ class GoSourceEmitter {
                        << indentation << "\tif " << next << ".tag == 0 {\n"
                        << indentation << "\t\tbreak\n"
                        << indentation << "\t}\n"
-                       << indentation << '\t' << valueName << " := " << next << '.'
-                       << enumFieldName(option, 1) << "\n"
+                       << indentation << '\t' << valueName << " := " << payloadRead(option, 1, next)
+                       << "\n"
                        << indentation << "\t_ = " << valueName << "\n";
                 renderBlock(output, function, loop->body, depth + 1);
                 currentLocals_[loop->sequenceStorage] = sequenceName;
@@ -4492,7 +4540,8 @@ class GoSourceEmitter {
                 }
                 const auto field = enumFieldName(type, variant);
                 output << '\t' << field << std::string(fieldWidth - field.size() + 1, ' ')
-                       << *sourceType(*payload) << "\n";
+                       << (indirectPayload(type, variant) ? "*" : "") << *sourceType(*payload)
+                       << "\n";
             }
             output << "}\n\n";
 
@@ -4505,14 +4554,22 @@ class GoSourceEmitter {
                 output << ") " << generatedType << " {\n\treturn " << generatedType
                        << "{tag: " << variant;
                 if (payload.has_value()) {
-                    output << ", " << enumFieldName(type, variant) << ": value";
+                    output << ", " << enumFieldName(type, variant)
+                           << (indirectPayload(type, variant) ? ": &value" : ": value");
                 }
                 output << "}\n}\n\n";
 
                 const auto method = enumMethodName(type, variant);
                 output << "func (value " << generatedType << ") Is" << method
                        << "() bool {\n\treturn value.tag == " << variant << "\n}\n";
-                if (payload.has_value()) {
+                if (payload.has_value() && indirectPayload(type, variant)) {
+                    const auto payloadType = *sourceType(*payload);
+                    output << "\nfunc (value " << generatedType << ") Get" << method << "() ("
+                           << payloadType << ", bool) {\n\tif value.tag != " << variant
+                           << " {\n\t\tvar zero " << payloadType
+                           << "\n\t\treturn zero, false\n\t}\n\treturn *value."
+                           << enumFieldName(type, variant) << ", true\n}\n";
+                } else if (payload.has_value()) {
                     output << "\nfunc (value " << generatedType << ") Get" << method << "() ("
                            << *sourceType(*payload) << ", bool) {\n\treturn value."
                            << enumFieldName(type, variant) << ", value.tag == " << variant
@@ -4535,6 +4592,9 @@ class GoSourceEmitter {
     std::map<std::string, std::string> helperNames_;
     std::map<std::string, std::string> helpers_;
     std::map<std::string, unsigned char> structStates_;
+    std::map<std::string, std::size_t> scanDepths_;
+    std::size_t scanDepth_{};
+    std::size_t ownerBarrier_{};
     std::map<std::string, Type> reachableStructs_;
     std::map<std::string, std::string> structNames_;
     std::set<FirStructId> preparedStructFields_;

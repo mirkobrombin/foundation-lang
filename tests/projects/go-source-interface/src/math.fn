@@ -886,6 +886,111 @@ fn LetElseInArm(value Option<i32>, wide i64) i32 {
     result
 }
 
+struct Point {
+    X i32
+    Y i32
+}
+
+struct Holder {
+    Label String
+    Child own Point
+}
+
+enum Tree {
+    Leaf(i32)
+    Node(own Branch)
+}
+
+struct Branch {
+    Left Tree
+    Right Tree
+}
+
+struct ListNode {
+    Value i32
+    Next Option<own ListNode>
+}
+
+fn MakePoint(x i32, y i32) own Point {
+    own Point { X = x Y = y }
+}
+
+fn ConsumePoint($point own Point) i32 {
+    point.X * point.Y
+}
+
+fn MovePoint(x i32) i32 {
+    var point = MakePoint(x, 2)
+    point.X = point.X + 1
+    const moved = point
+    ConsumePoint($moved)
+}
+
+fn bumpPoint(&point Point) void {
+    point.X = point.X + 10
+}
+
+fn EditOwner() i32 {
+    var point = own Point { X = 1 Y = 2 }
+    bumpPoint(&point)
+    point.X
+}
+
+fn ReplaceChild() i32 {
+    var holder = Holder { Label = "h" Child = own Point { X = 1 Y = 3 } }
+    const previous = replace holder.Child with own Point { X = 5 Y = 6 }
+    previous.X * 100 + holder.Child.Y
+}
+
+fn DestructureOwner() i32 {
+    const Point { X Y } = MakePoint(4, 5)
+    X * Y
+}
+
+fn SumTree(tree Tree) i32 {
+    match tree {
+        Leaf(value): value
+        Node(branch): SumTree(branch.Left) + SumTree(branch.Right)
+    }
+}
+
+fn BuildTree(depth i32) Tree {
+    if depth == 0 return .Leaf(1)
+    .Node(own Branch { Left = BuildTree(depth - 1) Right = BuildTree(depth - 1) })
+}
+
+fn GraftLeft($tree Tree, value i32) Tree {
+    match tree {
+        Leaf(old): .Leaf(old + value)
+        Node(branch): {
+            var edited = branch
+            edited.Left = .Leaf(value)
+            .Node(edited)
+        }
+    }
+}
+
+fn Prepend($list Option<own ListNode>, value i32) Option<own ListNode> {
+    .Some(own ListNode { Value = value Next = list })
+}
+
+fn ListSum(list Option<own ListNode>) i32 {
+    match list {
+        None: 0
+        Some(node): node.Value + ListSum(node.Next)
+    }
+}
+
+fn BuildList(count i32) Option<own ListNode> {
+    var list Option<own ListNode> = .None
+    var index = 0
+    while index < count {
+        index = index + 1
+        list = Prepend($list, index)
+    }
+    list
+}
+
 fn check(name String, actual i32, expected i32) void {
     if actual == expected {
         print(name + " ok")
@@ -922,6 +1027,13 @@ fn Report() void {
     check("let else ok", LetElseInArm(.Some(2), 40), 42)
     check("let else failure", LetElseInArm(.Some(2), 5000000000), -1)
     check("let else none", LetElseInArm(.None, 5000000000), 0)
+    check("move point", MovePoint(3), 8)
+    check("edit owner", EditOwner(), 11)
+    check("replace child", ReplaceChild(), 106)
+    check("destructure owner", DestructureOwner(), 20)
+    check("tree total", SumTree(BuildTree(3)), 8)
+    check("graft", SumTree(GraftLeft(BuildTree(2), 7)), 9)
+    check("list sum", ListSum(BuildList(4)), 10)
 }
 
 fn main() i32 {

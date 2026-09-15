@@ -1620,10 +1620,11 @@ resolving one. Path and SDK packages remain in `foundation.lock` but are not reg
 same canonical PII, but no native directory. It exports normal public Foundation functions and does
 not require `native_library c`, `native_name`, or `extern c` declarations. The current accepted
 subset contains scalar, String, fixed-array, read/edit slice-view, value-struct, enum,
-`Option`, or `Result` parameters, results, and locals; same-package body functions; non-generic
+`Option`, or `Result` parameters, results, and locals, and `own T` owners of those types;
+same-package body functions; non-generic
 roots plus reachable closed generic constructors, associated functions, and `self` or `&self`
-instance methods; struct, array, and enum
-construction; complete value-struct destructuring; field and sequence access; named function
+instance methods; struct, array, and enum construction; complete value-struct and owner
+destructuring; field and sequence access; named function
 values and anonymous functions with copy, edit, or own captures; direct and function-value calls;
 closed specializations of package-internal generic functions with explicit or inferred type
 arguments; local, field, and sequence-element assignment and replacement; branches; while loops,
@@ -1672,7 +1673,17 @@ Compound assignments materialize their mutable place before evaluating the right
 reuse that one address for the checked operation. A right-hand side with observable work therefore
 cannot redirect the assignment target.
 Value-struct destructuring evaluates the initializer once and binds every field in pattern order.
-Owner destructuring is rejected because this mode cannot preserve the outer allocation transfer.
+Owner destructuring binds the fields the same way.
+`own T` maps to the Go type of `T`. Foundation checks every move, forbids access to a moved place,
+and never shares an owner, so copying the value on a move, transfer, or return is not observable.
+An owned local or field is updated in place, and an `&` loan of an owner passes a Go pointer to that
+place. An owned enum or `Result` payload is stored behind an unexported Go pointer that only its
+variant constructor allocates. Match bindings, else bindings, and `GetVariant` copy the payload, and
+nothing writes through the pointer, so the payload stays immutable and every copy of the enum stays
+an independent value. That pointer is the only owner edge that can close a recursive type such as
+`Option<own Node>`; any other recursive type is rejected. Releasing an owner is observable only
+through a custom `drop`, which stays rejected, so the translation leaves owned storage to the Go
+collector.
 `print(value)` writes the String bytes and one newline to `os.Stdout` in a single write. An
 infallible `Target.From` becomes a Go conversion. A checked conversion calls a generated helper that
 returns the same `Result<Target, NumberError>` as the C and LLVM backends: it tests `NonFinite`,

@@ -634,6 +634,54 @@ func TestTranslatedEscapesKeepFoundationControlFlow(t *testing.T) {
 	}
 }
 
+func TestTranslatedOwnersKeepValueSemantics(t *testing.T) {
+	if got := MovePoint(3); got != 8 {
+		t.Fatalf("MovePoint(3) = %d, want 8", got)
+	}
+	if got := EditOwner(); got != 11 {
+		t.Fatalf("EditOwner() = %d, want 11", got)
+	}
+	if got := ReplaceChild(); got != 106 {
+		t.Fatalf("ReplaceChild() = %d, want 106", got)
+	}
+	if got := DestructureOwner(); got != 20 {
+		t.Fatalf("DestructureOwner() = %d, want 20", got)
+	}
+	point := MakePoint(4, 5)
+	if got := ConsumePoint(point); got != 20 || point.X != 4 || point.Y != 5 {
+		t.Fatalf("ConsumePoint(%#v) = %d", point, got)
+	}
+	tree := BuildTree(2)
+	copied := tree
+	if got := SumTree(GraftLeft(tree, 7)); got != 9 {
+		t.Fatalf("SumTree(GraftLeft(tree, 7)) = %d, want 9", got)
+	}
+	if SumTree(tree) != 4 || SumTree(copied) != 4 {
+		t.Fatalf("GraftLeft changed its source to %d and %d", SumTree(tree), SumTree(copied))
+	}
+	branch, ok := tree.GetNode()
+	if !ok {
+		t.Fatal("BuildTree(2) did not return a node")
+	}
+	branch.Left = NewTreeLeaf(100)
+	if got := SumTree(tree); got != 4 {
+		t.Fatalf("editing a payload copy changed the tree to %d", got)
+	}
+	if got := SumTree(NewTreeNode(branch)); got != 102 {
+		t.Fatalf("SumTree(edited branch) = %d, want 102", got)
+	}
+	if _, ok := NewTreeLeaf(1).GetNode(); ok {
+		t.Fatal("GetNode reported a leaf as a node")
+	}
+	if got := ListSum(BuildList(4)); got != 10 {
+		t.Fatalf("ListSum(BuildList(4)) = %d, want 10", got)
+	}
+	list := NewOptionOwnListNodeSome(ListNode{Value: 5, Next: NewOptionOwnListNodeNone()})
+	if ListSum(Prepend(list, 1)) != 6 || ListSum(list) != 5 {
+		t.Fatal("Prepend changed the list it consumed")
+	}
+}
+
 // behavior.out holds the output of the same Report function compiled by the C backend.
 func TestTranslatedReportMatchesFoundationBackends(t *testing.T) {
 	want, err := os.ReadFile("behavior.out")

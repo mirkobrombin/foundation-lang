@@ -2607,7 +2607,7 @@ if(BUILD_TESTING)
                 -DRUNTIME_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-task
                 -DOWN_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-own-receiver
                 -DESCAPE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-conditional-escape
-                -DOWNER_DESTRUCTURE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-owner-destructure
+                -DOWNER_CYCLE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-owner-cycle
                 -DOPEN_GENERIC_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-open-generic
                 -DGENERIC_STRUCT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-generic-struct
                 -DMULTIPLE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/go-source-unsupported-multiple

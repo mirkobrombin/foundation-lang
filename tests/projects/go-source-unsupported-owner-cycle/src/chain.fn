@@ -1,0 +1,10 @@
+package sample.owner_cycle
+
+struct Chain {
+    Value i32
+    Next own Chain
+}
+
+fn ChainValue(chain Chain) i32 {
+    chain.Value
+}
