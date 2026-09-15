@@ -9,9 +9,16 @@ fn compilerUsage() String {
         "[--target <platform>]\n" +
         "  foundationc-selfhost emit-c <source-or-project> -o <output.c> " +
         "[--target <platform>]\n" +
+        "  foundationc-selfhost emit-c-header <source-or-project> -o <output.h> " +
+        "[--target <platform>]\n" +
         "  foundationc-selfhost emit-app-host <source-or-project> " +
         "-o <output.fn> [--target <platform>]\n" +
         "  foundationc-selfhost emit-llvm <source-or-project> -o <output.ll>\n" +
+        "  foundationc-selfhost emit-fsm <source-or-project> -o <output> " +
+        "--format <mermaid|graphviz> [--machine <name>]\n" +
+        "  foundationc-selfhost emit-app-plan <source-or-project> -o <output.json>\n" +
+        "  foundationc-selfhost emit-openapi <source-or-project> -o <output.json> " +
+        "[--title <title>] [--version <version>]\n" +
         "  foundationc-selfhost build <source-or-project> -o <executable> " +
         "[--backend <llvm|c>] [--native <input>] " +
         "[--native-link <library>]...\n" +
@@ -22,7 +29,8 @@ fn compilerUsage() String {
         "[--backend <llvm|c>] [--native <input>] " +
         "[--native-link <library>]...\n" +
         "  foundationc-selfhost package " +
-        "<init|resolve|fetch|requirements|locked|select|check|verify|inspect|prune> ...\n" +
+        "<init|resolve|fetch|requirements|locked|select|check|verify|inspect|snapshot|prune> " +
+        "...\n" +
         "  foundationc-selfhost version\n"
 }
 
@@ -243,6 +251,46 @@ fn runCompilerCommand(args [String]) Option<i32> {
                         value))
             }
         }
+    }
+    if command == "emit-c-header" && len(args) >= 4 {
+        const target = parseCompilerOutputTarget(args)
+        match target {
+            None: {
+                return .None
+            }
+            Some(value): {
+                return .Some(runCompilerEmitCHeader(
+                        compilerArgument(args, 1),
+                        compilerArgument(args, 3),
+                        value))
+            }
+        }
+    }
+    if command == "emit-app-plan" && len(args) == 4 &&
+        compilerArgument(args, 2) == "-o" {
+        return .Some(runCompilerEmitApplicationPlan(
+                compilerArgument(args, 1),
+                compilerArgument(args, 3)))
+    }
+    if command == "emit-fsm" {
+        var machine Option<String> = .None
+        var diagram stateMachineDiagramFormat = .Mermaid
+        if !parseCompilerStateMachineArguments(args, &machine, &diagram) return .None
+        return .Some(runCompilerEmitStateMachine(
+                compilerArgument(args, 1),
+                compilerArgument(args, 3),
+                machine,
+                diagram))
+    }
+    if command == "emit-openapi" {
+        var title Option<String> = .None
+        var version Option<String> = .None
+        if !parseCompilerOpenAPIArguments(args, &title, &version) return .None
+        return .Some(runCompilerEmitOpenAPI(
+                compilerArgument(args, 1),
+                compilerArgument(args, 3),
+                title,
+                version))
     }
     if command == "emit-app-host" && len(args) >= 4 {
         const target = parseCompilerOutputTarget(args)

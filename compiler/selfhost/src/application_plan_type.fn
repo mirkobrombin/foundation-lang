@@ -1,0 +1,112 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn applicationPlanEnumName(&program firProgram, declaration u64) String {
+    const value = match program.enums.take(declaration) {
+        None: panic("enum slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(value.name)
+    program.enums.restore(declaration, $value)
+    result
+}
+
+fn applicationPlanContractName(&program firProgram, declaration u64) String {
+    const value = match program.contracts.take(declaration) {
+        None: panic("contract slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(value.name)
+    program.contracts.restore(declaration, $value)
+    result
+}
+
+// Names a type kind without its declaration, using the placeholders of the
+// application plan wire format rather than source spelling.
+fn applicationPlanKindName(kind semanticTypeKind) String {
+    match kind {
+        Invalid: "<invalid>"
+        Array: "<array>"
+        Slice: "<slice>"
+        Parameter: "<type parameter>"
+        StructValue: "<struct>"
+        EnumValue: "<enum>"
+        ContractValue: "<contract>"
+        _: semanticTypeName(kind)
+    }
+}
+
+fn applicationPlanTypeHead(&program firProgram, &type semanticType) String {
+    if type.kind.Matches("Own") return "own "
+    if type.kind.Matches("View") return "view "
+    if type.kind.Matches("Edit") return "edit "
+    if type.kind.Matches("StructValue") && type.declaration < program.structs.len() {
+        return applicationServiceName(&program, type.declaration)
+    }
+    if type.kind.Matches("EnumValue") && type.declaration < program.enums.len() {
+        return applicationPlanEnumName(&program, type.declaration)
+    }
+    if type.kind.Matches("ContractValue") && type.declaration < program.contracts.len() {
+        return applicationPlanContractName(&program, type.declaration)
+    }
+    applicationPlanKindName(type.kind)
+}
+
+fn applicationPlanElementName(&program firProgram, &type semanticType) String {
+    var element = semanticTypeArgument(&type, 0)
+    applicationPlanTypeName(&program, &element)
+}
+
+fn applicationPlanTypeName(&program firProgram, &type semanticType) String {
+    if isSemanticMachineScalar(&type) return semanticTypeName(type.kind)
+    if type.kind.Matches("StringValue") return "String"
+    if type.kind.Matches("Parameter") return "$" + format.U64(type.declaration)
+    const unary = type.arguments.len() == 1
+    if type.kind.Matches("Array") && unary {
+        return "[" + format.U64(type.declaration) + "]" +
+            applicationPlanElementName(&program, &type)
+    }
+    if type.kind.Matches("Slice") && unary {
+        return "[" + applicationPlanElementName(&program, &type) + "]"
+    }
+    if type.kind.Matches("Raw") && unary {
+        return "*" + applicationPlanElementName(&program, &type)
+    }
+    if type.kind.Matches("RawConst") && unary {
+        return "*const " + applicationPlanElementName(&program, &type)
+    }
+    const result = applicationPlanTypeHead(&program, &type)
+    if unary && (type.kind.Matches("Own") || type.kind.Matches("View") ||
+        type.kind.Matches("Edit")) {
+        return result + applicationPlanElementName(&program, &type)
+    }
+    if type.arguments.len() == 0 return result
+    var arguments = newArena<String>()
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = semanticTypeArgument(&type, index)
+        discard arguments.add(applicationPlanTypeName(&program, &argument))
+        index += 1
+    }
+    result + "<" + applicationJoinText(&arguments, ",") + ">"
+}
+
+fn applicationJoinText(&values arena<String>, separator String) String {
+    var result = ""
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("text slot is empty")
+            Some(found): found
+        }
+        if index != 0 {
+            result += separator
+        }
+        result += value
+        values.restore(index, $value)
+        index += 1
+    }
+    result
+}

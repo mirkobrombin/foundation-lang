@@ -1,0 +1,208 @@
+package foundation.compiler
+
+import std.path
+import std.text
+
+struct compilerDocumentInfo {
+    title String
+    version String
+}
+
+fn parseCompilerStateMachineArguments(
+    args [String],
+    &machine Option<String>,
+    &diagram stateMachineDiagramFormat
+) bool {
+    if len(args) < 6 || compilerArgument(args, 2) != "-o" return false
+    var formatSeen = false
+    var index usize = 4
+    while index < len(args) {
+        if index + 1 >= len(args) return false
+        const option = compilerArgument(args, index)
+        const value = compilerArgument(args, index + 1)
+        index += 2
+        if option == "--machine" && !optionStringPresent(machine) {
+            machine = .Some(value)
+            continue
+        }
+        if option != "--format" || formatSeen return false
+        if value == "mermaid" {
+            diagram = .Mermaid
+        } else {
+            if value != "graphviz" return false
+            diagram = .Graphviz
+        }
+        formatSeen = true
+    }
+    formatSeen
+}
+
+fn parseCompilerOpenAPIArguments(
+    args [String],
+    &title Option<String>,
+    &version Option<String>
+) bool {
+    if len(args) < 4 || compilerArgument(args, 2) != "-o" return false
+    var index usize = 4
+    while index < len(args) {
+        if index + 1 >= len(args) return false
+        const option = compilerArgument(args, index)
+        const value = compilerArgument(args, index + 1)
+        index += 2
+        if option == "--title" && !optionStringPresent(title) {
+            title = .Some(value)
+            continue
+        }
+        if option != "--version" || optionStringPresent(version) return false
+        version = .Some(value)
+    }
+    true
+}
+
+fn runCompilerEmitCHeader(
+    input String,
+    outputPath String,
+    target targetPlatform
+) i32 {
+    const selected = loadLoweredProgram(input, true, .Production, target)
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    writeCompilerOutput(outputPath, emitSelfHostedCHeader(&lowered.program))
+}
+
+fn runCompilerEmitStateMachine(
+    input String,
+    outputPath String,
+    machine Option<String>,
+    diagram stateMachineDiagramFormat
+) i32 {
+    const selected = loadLoweredProgram(input, false, .Production, hostTargetPlatform())
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    var found = newDiagnostics()
+    const output = emitStateMachineDiagram(&lowered.program, machine, diagram, &found)
+    if found.hasErrors() {
+        writeCompilerDiagnostics($found, &lowered.loaded.sources, input)
+        return 1
+    }
+    discard found
+    writeCompilerOutput(outputPath, output)
+}
+
+// Plans the checked application with the same rules as host derivation. Plan
+// failures are reported and yield no model.
+fn planCompilerApplication(
+    input String,
+    &lowered loweredProgram
+) Option<own applicationModel> {
+    const rootPackage = match applicationRootPackage(&lowered.program) {
+        None: ""
+        Some(value): value
+    }
+    var found = newDiagnostics()
+    const model = planApplication(&lowered.program, rootPackage, &found)
+    if found.hasErrors() {
+        writeCompilerDiagnostics($found, &lowered.loaded.sources, input)
+        return .None
+    }
+    discard found
+    .Some(model)
+}
+
+fn runCompilerEmitApplicationPlan(input String, outputPath String) i32 {
+    const selected = loadLoweredProgram(input, true, .Production, hostTargetPlatform())
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const planned = planCompilerApplication(input, &lowered)
+    var model = match planned {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    writeCompilerOutput(outputPath, emitApplicationPlanJSON(&lowered.program, &model))
+}
+
+// Selects the document title and version: explicit non-empty options first,
+// then the package manifest, then fixed defaults.
+fn compilerOpenAPIInfo(
+    input String,
+    title Option<String>,
+    version Option<String>
+) compilerDocumentInfo {
+    var documentTitle = match copyFirStringOption(title) {
+        None: ""
+        Some(value): value
+    }
+    var documentVersion = match copyFirStringOption(version) {
+        None: ""
+        Some(value): value
+    }
+    match discoverPackageManifest(input) {
+        None: {}
+        Some(manifestPath): {
+            var parsed = readPackageManifest(manifestPath)
+            match replace parsed.value with .None {
+                None: {}
+                Some(manifest): {
+                    if text.IsEmpty(documentTitle) {
+                        documentTitle = text.Copy(manifest.name)
+                    }
+                    if text.IsEmpty(documentVersion) {
+                        documentVersion = packageVersionString(manifest.version)
+                    }
+                }
+            }
+        }
+    }
+    if text.IsEmpty(documentTitle) {
+        documentTitle = "Foundation API"
+    }
+    if text.IsEmpty(documentVersion) {
+        documentVersion = "0.0.0"
+    }
+    compilerDocumentInfo { title = documentTitle version = documentVersion }
+}
+
+fn runCompilerEmitOpenAPI(
+    input String,
+    outputPath String,
+    title Option<String>,
+    version Option<String>
+) i32 {
+    if path.Extension(outputPath) != ".json" {
+        compilerProcessFailure("OpenAPI output must use the .json extension")
+        return 2
+    }
+    const selected = loadLoweredProgram(input, true, .Production, hostTargetPlatform())
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const planned = planCompilerApplication(input, &lowered)
+    var model = match planned {
+        None: {
+            return 1
+        }
+        Some(value): value
+    }
+    const info = compilerOpenAPIInfo(input, title, version)
+    writeCompilerOutput(
+        outputPath,
+        emitApplicationOpenAPI(&lowered.program, &model, info.title, info.version)
+    )
+}

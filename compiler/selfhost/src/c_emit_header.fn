@@ -1,0 +1,68 @@
+package foundation.compiler
+
+import std.text
+
+struct cHeaderExport {
+    symbol String
+    function u64
+}
+
+fn compareCHeaderExport(left cHeaderExport, right cHeaderExport) i32 {
+    text.Compare(left.symbol, right.symbol)
+}
+
+fn cHeaderExports(&program firProgram) own arena<cHeaderExport> {
+    var result = newArena<cHeaderExport>()
+    var index u64 = 0
+    while index < program.functions.len() {
+        const function = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(value): value
+        }
+        const symbol = copyFirStringOption(function.cSymbol)
+        const exported = function.hasBody && function.exported
+        program.functions.restore(index, $function)
+        match symbol {
+            None: {}
+            Some(value): {
+                if exported {
+                    discard result.add(cHeaderExport { symbol = value function = index })
+                }
+            }
+        }
+        index += 1
+    }
+    sortArena<cHeaderExport>(&result, compareCHeaderExport)
+    result
+}
+
+// Declares the exported C ABI definitions of the monomorphized program in
+// symbol order, so repeated builds of one project emit identical headers.
+fn emitSelfHostedCHeader(&source firProgram) String {
+    var program = monomorphizeProgram(&source)
+    var exports = cHeaderExports(&program)
+    var builder = text.NewBuilder()
+    cWrite(&builder, "#ifndef FOUNDATION_GENERATED_C_ABI_H\n" +
+        "#define FOUNDATION_GENERATED_C_ABI_H\n\n" +
+        "#include <stdbool.h>\n#include <stdint.h>\n" +
+        "#include \"foundation/runtime.h\"\n\n" +
+        "#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n")
+    var index u64 = 0
+    while index < exports.len() {
+        const selected = match exports.take(index) {
+            None: panic("C header export slot is empty")
+            Some(value): value
+        }
+        var function = cFunctionAt(&program, selected.function)
+        cWrite(&builder, cTypeName(&function.returnType) + " " + selected.symbol + "(")
+        cEmitCParameters(&builder, &function, true)
+        cWrite(&builder, ");\n")
+        exports.restore(index, $selected)
+        index += 1
+    }
+    if exports.len() != 0 {
+        cWrite(&builder, "\n")
+    }
+    cWrite(&builder, "#ifdef __cplusplus\n}\n#endif\n\n#endif\n")
+    cFinish(&builder)
+}

@@ -1,0 +1,23 @@
+package foundation.compiler
+
+test "application JSON strings escape quotes and control bytes" {
+    expect(applicationJSONString("plain") == "\"plain\"")
+    expect(applicationJSONString("a\"b\\c") == "\"a\\\"b\\\\c\"")
+    expect(applicationJSONString("\n\r\t") == "\"\\n\\r\\t\"")
+    expect(applicationJSONString("x\0y") == "\"x\\u0000y\"")
+}
+
+test "OpenAPI paths keep parameter names without constraints" {
+    expect(applicationOpenAPIPath("/") == "/")
+    expect(applicationOpenAPIPath("/users/{id:int}") == "/users/{id}")
+    expect(applicationOpenAPIPath("/assets/{*path}") == "/assets/{path}")
+    expect(applicationLowerASCII("GET") == "get")
+}
+
+test "state machine timeouts use the largest exact unit" {
+    expect(stateMachineDuration(60000000000) == "60.seconds")
+    expect(stateMachineDuration(2000000) == "2.milliseconds")
+    expect(stateMachineDuration(1500000) == "1500.microseconds")
+    expect(stateMachineDuration(7) == "7.nanoseconds")
+    expect(stateMachineDuration(0) == "0.seconds")
+}

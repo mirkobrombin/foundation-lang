@@ -5,8 +5,10 @@ maintained in the [README](../README.md#status).
 
 The repository contains a Foundation compiler and its C++20 stage0. The Foundation implementation
 owns parsing, package resolution, semantic analysis, FIR, application derivation, C11 output,
-LLVM output, and native build, run, and test commands. Stage0 remains available for bootstrap and
-the existing formatting, documentation, linting, and language-server entry points.
+LLVM output, and native build, run, and test commands. It also emits the C ABI header, application
+plan, OpenAPI document, and state-machine diagrams, and writes package snapshots, with output
+identical to stage0. Stage0 remains available for bootstrap and the existing formatting,
+documentation, linting, and language-server entry points.
 
 ## Bootstrap
 

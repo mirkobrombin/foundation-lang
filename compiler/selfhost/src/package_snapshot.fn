@@ -1,0 +1,155 @@
+package foundation.compiler
+
+import std.format
+import std.fs
+import std.io
+import std.path
+import std.text
+
+fn packageSnapshotFailure(
+    location String,
+    message String,
+    staging Option<String>
+) i32 {
+    match staging {
+        None: {}
+        Some(value): {
+            discard fs.RemoveTree(path.Normalize(value), 100000, 128)
+        }
+    }
+    var errors = newPackageErrors()
+    addPackageError(&errors, location, 1, 1, "FDN4114", message)
+    printPackageErrors(&errors)
+}
+
+fn packageSnapshotOutputFree(output String) Option<i32> {
+    match fs.Kind(output) {
+        Err(error): {
+            discard error
+            .Some(packageSnapshotFailure(
+                    output, "cannot inspect package snapshot output", .None))
+        }
+        Ok(kind): {
+            match kind {
+                Missing: .None
+                _: .Some(packageSnapshotFailure(
+                        output, "package snapshot output already exists", .None))
+            }
+        }
+    }
+}
+
+fn copyPackageSnapshotFiles(
+    projectRoot String,
+    staging String,
+    &snapshot packageSourceSnapshot
+) Option<String> {
+    var index u64 = 0
+    while index < snapshot.files.len() {
+        const file = match snapshot.files.take(index) {
+            None: panic("package source file slot is empty")
+            Some(value): value
+        }
+        const source = path.Join(projectRoot, file.path)
+        const destination = path.Join(staging, file.path)
+        snapshot.files.restore(index, $file)
+        match fs.CreateDirectory(path.Parent(destination)) {
+            Err(error): {
+                discard error
+                return .Some(source)
+            }
+            Ok: {}
+        }
+        match fs.CopyFile(source, destination) {
+            Err(error): {
+                discard error
+                return .Some(source)
+            }
+            Ok: {}
+        }
+        index += 1
+    }
+    .None
+}
+
+// Copies the canonical source set of one package into a new directory. The
+// copy is staged beside the output, verified against the source digest, and
+// published without replacing an existing path.
+fn snapshotPackageCommand(project String, output String) i32 {
+    const manifestPath = packageManifestPath(project)
+    var manifestResult = readPackageManifest(manifestPath)
+    var manifest = match replace manifestResult.value with .None {
+        None: {
+            return printPackageErrors(&manifestResult.errors)
+        }
+        Some(value): value
+    }
+    const projectRoot = path.Parent(manifestPath)
+    var inspected = inspectPackageSource(projectRoot, &manifest)
+    var snapshot = match replace inspected.value with .None {
+        None: {
+            return printPackageErrors(&inspected.errors)
+        }
+        Some(value): value
+    }
+    match packageSnapshotOutputFree(output) {
+        None: {}
+        Some(status): {
+            return status
+        }
+    }
+    var parent = path.Parent(output)
+    if text.IsEmpty(parent) {
+        parent = "."
+    }
+    fs.CreateDirectory(parent) else error {
+        discard error
+        return packageSnapshotFailure(parent, "cannot create package snapshot parent", .None)
+    }
+    const staging = fs.CreateTempDirectory(parent, "." + path.FileName(output) + ".tmp-") else {
+        return packageSnapshotFailure(parent,
+            "cannot create package snapshot staging directory", .None)
+    }
+    const stagedManifest = path.Join(staging, "foundation.package")
+    fs.WriteTextAtomic(stagedManifest, renderPackageManifest(&manifest), 1048576) else {
+        return packageSnapshotFailure(stagedManifest,
+            "cannot write package snapshot manifest", .Some(staging))
+    }
+    match copyPackageSnapshotFiles(projectRoot, staging, &snapshot) {
+        None: {}
+        Some(source): {
+            return packageSnapshotFailure(source,
+                "cannot copy package snapshot source", .Some(staging))
+        }
+    }
+    var copied = inspectPackageSource(staging, &manifest)
+    var copiedSnapshot = match replace copied.value with .None {
+        None: {
+            discard fs.RemoveTree(path.Normalize(staging), 100000, 128)
+            return printPackageErrors(&copied.errors)
+        }
+        Some(value): value
+    }
+    if copiedSnapshot.digest != snapshot.digest {
+        return packageSnapshotFailure(project,
+            "package source changed while the snapshot was copied", .Some(staging))
+    }
+    fs.Rename(staging, output) else {
+        return packageSnapshotFailure(output, "cannot publish package snapshot", .Some(staging))
+    }
+    discard io.WriteStdoutText(
+        "snapshot " + output + "\nname " + manifest.name + "\nversion " +
+        packageVersionString(manifest.version) + "\ndigest " + snapshot.digest +
+        "\nfiles " + format.U64(snapshot.files.len() + 1) + "\n"
+    )
+    0
+}
+
+fn runPackageSnapshotCommand(&arguments arena<String>) i32 {
+    if arguments.len() != 4 || packageArgument(&arguments, 2) != "-o" ||
+        text.IsEmpty(packageArgument(&arguments, 3)) {
+        discard io.WriteStderrText(packageUsage())
+        return 2
+    }
+    snapshotPackageCommand(packageArgument(&arguments, 1), packageArgument(&arguments, 3))
+}

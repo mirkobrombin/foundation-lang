@@ -483,6 +483,7 @@ add_custom_target(foundation_selfhost_verify
         "FOUNDATION_C_COMPILER=${FOUNDATION_SELFHOST_C_COMPILER}"
         ${CMAKE_COMMAND}
         -DCOMPILER=$<TARGET_FILE:foundationc_selfhost>
+        -DSTAGE0=$<TARGET_FILE:foundationc>
         -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
         -DPROJECT=${FOUNDATION_SELFHOST_PROJECT}
         -DOUTPUT_DIRECTORY=${FOUNDATION_SELFHOST_DIRECTORY}/verify

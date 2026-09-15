@@ -41,6 +41,7 @@ fn packageUsage() String {
         "  foundationc package check <project> [--target <platform>]\n" +
         "  foundationc package verify <project> [--cache <path>]\n" +
         "  foundationc package inspect <project>\n" +
+        "  foundationc package snapshot <project> -o <directory>\n" +
         "  foundationc package prune <project> [--cache <path>]\n"
 }
 
@@ -840,6 +841,13 @@ fn prunePackageCommand(&options packageOptions) i32 {
     0
 }
 
+// Runs the commands whose arguments are not a project followed by options.
+fn runPackageArgumentCommand(command String, &arguments arena<String>) Option<i32> {
+    if command == "select" return .Some(selectPackageVersionCommand(&arguments))
+    if command == "snapshot" return .Some(runPackageSnapshotCommand(&arguments))
+    .None
+}
+
 fn runPackageCommand(&arguments arena<String>) i32 {
     if arguments.len() == 3 && packageArgument(&arguments, 0) == "init" {
         return initializePackageProject(
@@ -852,7 +860,12 @@ fn runPackageCommand(&arguments arena<String>) i32 {
         return 2
     }
     const command = packageArgument(&arguments, 0)
-    if command == "select" return selectPackageVersionCommand(&arguments)
+    match runPackageArgumentCommand(command, &arguments) {
+        Some(status): {
+            return status
+        }
+        None: {}
+    }
     var options = newPackageOptions(packageArgument(&arguments, 1))
     if !parsePackageOptions(&arguments, 2, &options) {
         discard io.WriteStderrText(packageUsage())

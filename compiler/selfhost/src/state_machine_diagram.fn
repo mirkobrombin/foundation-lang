@@ -1,0 +1,280 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+enum stateMachineDiagramFormat {
+    Mermaid
+    Graphviz
+}
+
+struct stateMachineEdge {
+    source String
+    destination String
+    event String
+    timed bool
+    nanoseconds u64
+}
+
+// Orders edges by source, destination, event, then timeout, with an untimed
+// edge before every timed edge of the same event.
+fn compareStateMachineEdge(left stateMachineEdge, right stateMachineEdge) i32 {
+    var compared = text.Compare(left.source, right.source)
+    if compared != 0 return compared
+    compared = text.Compare(left.destination, right.destination)
+    if compared != 0 return compared
+    compared = text.Compare(left.event, right.event)
+    if compared != 0 return compared
+    if left.timed != right.timed return 1 if left.timed else -1
+    if left.nanoseconds < right.nanoseconds return -1
+    if left.nanoseconds > right.nanoseconds return 1
+    0
+}
+
+fn stateMachineDiagnosticSpan() sourceSpan {
+    sourceSpan { offset = 0 length = 0 line = 1 column = 1 source = 0 }
+}
+
+fn stateMachineCandidates(
+    &program firProgram,
+    requested Option<String>
+) own arena<u64> {
+    var result = newArena<u64>()
+    var index u64 = 0
+    while index < program.enums.len() {
+        const declaration = match program.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(value): value
+        }
+        var selected = declaration.stateMachine
+        match copyFirStringOption(requested) {
+            None: {}
+            Some(name): {
+                selected = selected && (declaration.name == name ||
+                    applicationShortName(declaration.name) == name)
+            }
+        }
+        program.enums.restore(index, $declaration)
+        if selected {
+            discard result.add(index)
+        }
+        index += 1
+    }
+    result
+}
+
+fn selectStateMachine(
+    &program firProgram,
+    requested Option<String>,
+    &diagnostics diagnostics
+) Option<u64> {
+    var machines = stateMachineCandidates(&program, copyFirStringOption(requested))
+    const name = match copyFirStringOption(requested) {
+        None: ""
+        Some(value): value
+    }
+    const named = optionStringPresent(requested)
+    if machines.len() == 0 {
+        if named {
+            diagnostics.reportError("FDN2422", "unknown state machine " + name,
+                stateMachineDiagnosticSpan())
+        } else {
+            diagnostics.reportError("FDN2420", "project declares no state machine",
+                stateMachineDiagnosticSpan())
+        }
+        return .None
+    }
+    if machines.len() != 1 {
+        if named {
+            diagnostics.reportError("FDN2423", "ambiguous state machine " + name,
+                stateMachineDiagnosticSpan())
+        } else {
+            diagnostics.reportError(
+                "FDN2421",
+                "project declares multiple state machines; select one with --machine",
+                stateMachineDiagnosticSpan()
+            )
+        }
+        return .None
+    }
+    machines.take(0)
+}
+
+// Returns the machine edited by a transition receiver, or None when the
+// function is not a transition of an enum state machine.
+fn stateTransitionMachine(&program firProgram, &function firFunction) Option<u64> {
+    if !optionStateTransitionPresent(function.stateTransition) ||
+        function.parameters.len() == 0 {
+        return .None
+    }
+    const receiver = cU64At(&function.parameters, 0)
+    if receiver >= function.locals.len() return .None
+    var receiverType = cLocalTypeAt(&function, receiver)
+    if !receiverType.kind.Matches("Edit") || receiverType.arguments.len() != 1 {
+        return .None
+    }
+    var machineType = semanticTypeArgument(&receiverType, 0)
+    if !machineType.kind.Matches("EnumValue") ||
+        machineType.declaration >= program.enums.len() {
+        return .None
+    }
+    .Some(machineType.declaration)
+}
+
+fn stateMachineVariantName(&declaration firEnum, variant u64) String {
+    const selected = match declaration.variants.take(variant) {
+        None: panic("state machine variant slot is empty")
+        Some(value): value
+    }
+    const result = text.Copy(selected.name)
+    declaration.variants.restore(variant, $selected)
+    result
+}
+
+fn addStateTransitionEdges(
+    &declaration firEnum,
+    &function firFunction,
+    &edges arena<stateMachineEdge>
+) void {
+    var transition = match replace function.stateTransition with .None {
+        None: panic("state transition is missing")
+        Some(value): value
+    }
+    if transition.destinationVariant < declaration.variants.len() {
+        const destination = stateMachineVariantName(
+            &declaration, transition.destinationVariant)
+        const event = applicationShortName(function.name)
+        var index u64 = 0
+        while index < transition.sourceVariants.len() {
+            const source = cU64At(&transition.sourceVariants, index)
+            if source < declaration.variants.len() {
+                discard edges.add(stateMachineEdge {
+                    source = stateMachineVariantName(&declaration, source)
+                    destination = text.Copy(destination)
+                    event = text.Copy(event)
+                    timed = optionU64Present(transition.timeoutNanoseconds)
+                    nanoseconds = optionU64Value(transition.timeoutNanoseconds)
+                })
+            }
+            index += 1
+        }
+    }
+    function.stateTransition = .Some(transition)
+}
+
+fn optionU64Value(value Option<u64>) u64 {
+    match value {
+        None: 0
+        Some(found): found
+    }
+}
+
+fn stateMachineEdges(&program firProgram, machine u64) own arena<stateMachineEdge> {
+    var edges = newArena<stateMachineEdge>()
+    var declaration = match program.enums.take(machine) {
+        None: panic("state machine slot is empty")
+        Some(value): value
+    }
+    var index u64 = 0
+    while index < program.functions.len() {
+        var function = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(value): value
+        }
+        match stateTransitionMachine(&program, &function) {
+            None: {}
+            Some(owner): {
+                if owner == machine {
+                    addStateTransitionEdges(&declaration, &function, &edges)
+                }
+            }
+        }
+        program.functions.restore(index, $function)
+        index += 1
+    }
+    program.enums.restore(machine, $declaration)
+    sortArena<stateMachineEdge>(&edges, compareStateMachineEdge)
+    edges
+}
+
+fn stateMachineDuration(nanoseconds u64) String {
+    if nanoseconds % 1000000000 == 0 {
+        return format.U64(nanoseconds / 1000000000) + ".seconds"
+    }
+    if nanoseconds % 1000000 == 0 {
+        return format.U64(nanoseconds / 1000000) + ".milliseconds"
+    }
+    if nanoseconds % 1000 == 0 return format.U64(nanoseconds / 1000) + ".microseconds"
+    format.U64(nanoseconds) + ".nanoseconds"
+}
+
+fn stateMachineEdgeLabel(&edge stateMachineEdge) String {
+    if !edge.timed return text.Copy(edge.event)
+    edge.event + " after " + stateMachineDuration(edge.nanoseconds)
+}
+
+fn stateMachineEdgeLine(
+    &edge stateMachineEdge,
+    diagram stateMachineDiagramFormat
+) String {
+    match diagram {
+        Mermaid: "    " + edge.source + " --> " + edge.destination + " : " +
+            stateMachineEdgeLabel(&edge) + "\n"
+        Graphviz: "    " + edge.source + " -> " + edge.destination + " [label=\"" +
+            stateMachineEdgeLabel(&edge) + "\"];\n"
+    }
+}
+
+// Renders the transitions of one selected state machine. Selection failures
+// are reported through diagnostics and produce no document.
+fn emitStateMachineDiagram(
+    &program firProgram,
+    requested Option<String>,
+    diagram stateMachineDiagramFormat,
+    &diagnostics diagnostics
+) String {
+    const selected = selectStateMachine(&program, requested, &diagnostics)
+    const machine = match selected {
+        None: {
+            return ""
+        }
+        Some(value): value
+    }
+    var edges = stateMachineEdges(&program, machine)
+    var result = match diagram {
+        Mermaid: "stateDiagram-v2\n"
+        Graphviz: "digraph FSM {\n    rankdir=LR;\n    node [shape=box style=rounded];\n"
+    }
+    var previous Option<stateMachineEdge> = .None
+    var index u64 = 0
+    while index < edges.len() {
+        var edge = match edges.take(index) {
+            None: panic("state machine edge slot is empty")
+            Some(value): value
+        }
+        const repeated = match replace previous with .None {
+            None: false
+            Some(last): compareStateMachineEdge(last, edge) == 0
+        }
+        if !repeated {
+            result += stateMachineEdgeLine(&edge, diagram)
+        }
+        previous = .Some(copyStateMachineEdge(&edge))
+        edges.restore(index, $edge)
+        index += 1
+    }
+    match diagram {
+        Mermaid: result
+        Graphviz: result + "}\n"
+    }
+}
+
+fn copyStateMachineEdge(&edge stateMachineEdge) stateMachineEdge {
+    stateMachineEdge {
+        source = text.Copy(edge.source)
+        destination = text.Copy(edge.destination)
+        event = text.Copy(edge.event)
+        timed = edge.timed
+        nanoseconds = edge.nanoseconds
+    }
+}

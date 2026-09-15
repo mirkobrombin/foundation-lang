@@ -1,0 +1,233 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn applicationOpenAPIPath(path String) String {
+    var result = "/"
+    var segments = applicationWebRouteSegments(path)
+    var index u64 = 0
+    while index < segments.len() {
+        const segment = match segments.take(index) {
+            None: panic("route segment slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            result += "/"
+        }
+        if applicationWebParameterSegment(segment) {
+            const parts = applicationWebParameterPartsOf(segment)
+            result += "{" + parts.name + "}"
+        } else {
+            result += segment
+        }
+        segments.restore(index, $segment)
+        index += 1
+    }
+    result
+}
+
+fn applicationOpenAPILocation(source applicationWebBindingSource) String {
+    match source {
+        Path: "path"
+        Query: "query"
+        Header: "header"
+        _: ""
+    }
+}
+
+fn applicationLowerASCII(value String) String {
+    const letters = "abcdefghijklmnopqrstuvwxyz"
+    const length = text.ByteLen(value)
+    var result = ""
+    var start u64 = 0
+    var index u64 = 0
+    while index < length {
+        const byte = applicationByteAt(value, index)
+        if byte >= 65 && byte <= 90 {
+            result += applicationSlice(value, start, index) +
+                applicationSlice(letters, byte - 65, byte - 64)
+            start = index + 1
+        }
+        index += 1
+    }
+    result + applicationSlice(value, start, length)
+}
+
+fn applicationOpenAPIParameterJSON(
+    &program firProgram,
+    &function firFunction,
+    &parameter applicationWebParameter
+) String {
+    var local = applicationParameter(&function, parameter.index)
+    const required = parameter.source.Matches("Path") ||
+        !applicationBuiltinOption(&program, &local.type)
+    var result = "          {\n            \"name\": " +
+        applicationJSONString(parameter.name) + ",\n            \"in\": " +
+        applicationJSONString(applicationOpenAPILocation(parameter.source))
+    if !text.IsEmpty(parameter.description) {
+        result += ",\n            \"description\": " +
+            applicationJSONString(parameter.description)
+    }
+    result += ",\n            \"required\": " + applicationJSONBool(required) +
+        ",\n            \"schema\": {\n              \"type\": " +
+        applicationJSONString(applicationWebOpenAPISchemaType(&program, &local.type))
+    match copyFirStringOption(parameter.minimum) {
+        None: {}
+        Some(minimum): {
+            result += ",\n              \"minimum\": " + minimum
+        }
+    }
+    if parameter.enumValues.len() != 0 {
+        result += ",\n              \"enum\": [" +
+            applicationJSONStrings(&parameter.enumValues, ", ") + "]"
+    }
+    result + "\n            }\n          }"
+}
+
+fn applicationOpenAPIParametersJSON(
+    &program firProgram,
+    &function firFunction,
+    &route applicationWebRoute
+) String {
+    var result = ""
+    var index u64 = 0
+    while index < route.parameters.len() {
+        var parameter = match route.parameters.take(index) {
+            None: panic("web parameter slot is empty")
+            Some(value): value
+        }
+        if !text.IsEmpty(applicationOpenAPILocation(parameter.source)) {
+            if !text.IsEmpty(result) {
+                result += ",\n"
+            }
+            result += applicationOpenAPIParameterJSON(&program, &function, &parameter)
+        }
+        route.parameters.restore(index, $parameter)
+        index += 1
+    }
+    result
+}
+
+fn applicationOpenAPIResponsesJSON(&route applicationWebRoute) String {
+    if route.responses.len() == 0 {
+        return "          \"200\": {\n            \"description\": \"OK\"\n          }\n"
+    }
+    var result = ""
+    var index u64 = 0
+    while index < route.responses.len() {
+        const response = match route.responses.take(index) {
+            None: panic("web response slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            result += ",\n"
+        }
+        result += "          " + applicationJSONString(format.U64(response.status)) +
+            ": {\n            \"description\": " +
+            applicationJSONString(response.description) + "\n          }"
+        route.responses.restore(index, $response)
+        index += 1
+    }
+    result + "\n"
+}
+
+fn applicationOpenAPIOperationJSON(
+    &program firProgram,
+    &route applicationWebRoute
+) String {
+    var function = match program.functions.take(route.function) {
+        None: panic("web route function slot is empty")
+        Some(value): value
+    }
+    var fields = newArena<String>()
+    if !text.IsEmpty(route.summary) {
+        discard fields.add("        \"summary\": " + applicationJSONString(route.summary))
+    }
+    if !text.IsEmpty(route.description) {
+        discard fields.add(
+            "        \"description\": " + applicationJSONString(route.description))
+    }
+    const parameters = applicationOpenAPIParametersJSON(&program, &function, &route)
+    if !text.IsEmpty(parameters) {
+        discard fields.add("        \"parameters\": [\n" + parameters + "\n        ]")
+    }
+    discard fields.add("        \"responses\": {\n" +
+        applicationOpenAPIResponsesJSON(&route) + "        }")
+    program.functions.restore(route.function, $function)
+    "      " + applicationJSONString(applicationLowerASCII(route.method)) + ": {\n" +
+        applicationJoinText(&fields, ",\n") + "\n      }"
+}
+
+fn applicationOpenAPIPaths(&model applicationModel) own arena<String> {
+    var paths = newArena<String>()
+    var index u64 = 0
+    while index < model.webRoutes.len() {
+        const route = match model.webRoutes.take(index) {
+            None: panic("web route slot is empty")
+            Some(value): value
+        }
+        const normalized = applicationOpenAPIPath(route.path)
+        model.webRoutes.restore(index, $route)
+        if !applicationStringArenaContains(&paths, normalized) {
+            discard paths.add($normalized)
+        }
+        index += 1
+    }
+    applicationSortStrings(&paths)
+    paths
+}
+
+fn applicationOpenAPIPathJSON(
+    &program firProgram,
+    &model applicationModel,
+    path String
+) String {
+    var result = "    " + applicationJSONString(path) + ": {"
+    var operations u64 = 0
+    var index u64 = 0
+    while index < model.webRoutes.len() {
+        var route = match model.webRoutes.take(index) {
+            None: panic("web route slot is empty")
+            Some(value): value
+        }
+        if applicationOpenAPIPath(route.path) == path {
+            result += "\n" if operations == 0 else ",\n"
+            result += applicationOpenAPIOperationJSON(&program, &route)
+            operations += 1
+        }
+        model.webRoutes.restore(index, $route)
+        index += 1
+    }
+    result + "\n    }"
+}
+
+// Renders the planned web routes as one OpenAPI 3.0.3 document. Paths are
+// grouped by their normalized template in byte order; operations keep the
+// planner's route order within each path.
+fn emitApplicationOpenAPI(
+    &program firProgram,
+    &model applicationModel,
+    title String,
+    version String
+) String {
+    var paths = applicationOpenAPIPaths(&model)
+    var result = "{\n  \"openapi\": \"3.0.3\",\n  \"info\": {\n    \"title\": " +
+        applicationJSONString(title) + ",\n    \"version\": " +
+        applicationJSONString(version) + "\n  },\n  \"paths\": {"
+    var index u64 = 0
+    while index < paths.len() {
+        const path = match paths.take(index) {
+            None: panic("OpenAPI path slot is empty")
+            Some(value): value
+        }
+        result += "\n" if index == 0 else ",\n"
+        result += applicationOpenAPIPathJSON(&program, &model, path)
+        paths.restore(index, $path)
+        index += 1
+    }
+    if paths.len() != 0 {
+        result += "\n"
+    }
+    result + "  }\n}\n"
+}

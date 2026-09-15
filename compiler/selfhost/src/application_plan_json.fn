@@ -1,0 +1,263 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+fn applicationJSONEscape(byte u64) String {
+    if byte == 34 return "\\\""
+    if byte == 92 return "\\\\"
+    if byte == 10 return "\\n"
+    if byte == 13 return "\\r"
+    if byte == 9 return "\\t"
+    if byte >= 32 return ""
+    const digits = "0123456789abcdef"
+    "\\u00" + applicationSlice(digits, byte >> 4, (byte >> 4) + 1) +
+        applicationSlice(digits, byte & 15, (byte & 15) + 1)
+}
+
+// Quotes one JSON string. Bytes at or above 0x80 are copied unchanged, so
+// escaping never splits a UTF-8 sequence.
+fn applicationJSONString(value String) String {
+    const length = text.ByteLen(value)
+    var result = "\""
+    var start u64 = 0
+    var index u64 = 0
+    while index < length {
+        const escaped = applicationJSONEscape(applicationByteAt(value, index))
+        if !text.IsEmpty(escaped) {
+            result += applicationSlice(value, start, index) + escaped
+            start = index + 1
+        }
+        index += 1
+    }
+    result + applicationSlice(value, start, length) + "\""
+}
+
+fn applicationJSONBool(value bool) String {
+    "true" if value else "false"
+}
+
+fn applicationJSONStrings(&values arena<String>, separator String) String {
+    var result = ""
+    var index u64 = 0
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("JSON string slot is empty")
+            Some(found): found
+        }
+        if index != 0 {
+            result += separator
+        }
+        result += applicationJSONString(value)
+        values.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn applicationPlanFunctionName(&program firProgram, function u64) String {
+    const value = match program.functions.take(function) {
+        None: panic("function slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(value.name)
+    program.functions.restore(function, $value)
+    result
+}
+
+fn applicationPlanModeName(mode applicationParameterMode) String {
+    match mode {
+        Read: "read"
+        Edit: "edit"
+        Transfer: "transfer"
+    }
+}
+
+fn applicationPlanReceiverName(receiver firReceiverKind) String {
+    match receiver {
+        View: "read"
+        Edit: "edit"
+        Own: "transfer"
+    }
+}
+
+fn applicationPlanScopeName(scope applicationWebMiddlewareScope) String {
+    match scope {
+        Global: "global"
+        Group: "group"
+        Route: "route"
+    }
+}
+
+fn applicationPlanDependencyJSON(
+    &program firProgram,
+    &dependency applicationDependency
+) String {
+    var base = applicationBaseType(&dependency.type)
+    var result = "{\"parameter\":" + applicationJSONString(dependency.parameter) +
+        ",\"type\":" + applicationJSONString(applicationPlanTypeName(&program, &base)) +
+        ",\"mode\":" + applicationJSONString(applicationPlanModeName(dependency.mode))
+    if dependency.input return result + ",\"input\":true}"
+    match dependency.provider {
+        None: {}
+        Some(provider): {
+            result += ",\"provider\":" +
+                applicationJSONString(applicationServiceName(&program, provider))
+        }
+    }
+    result + "}"
+}
+
+fn applicationPlanConstructionJSON(
+    &program firProgram,
+    &model applicationModel,
+    serviceID u64
+) String {
+    const planIndex = match applicationServicePlanIndex(&model, serviceID) {
+        None: panic("application service has no plan")
+        Some(value): value
+    }
+    var plan = match model.services.take(planIndex) {
+        None: panic("application service plan slot is empty")
+        Some(value): value
+    }
+    var result = "{\"type\":" +
+        applicationJSONString(applicationServiceName(&program, serviceID)) +
+        ",\"lifetime\":" + applicationJSONString(applicationLifetimeName(plan.lifetime)) +
+        ",\"constructor\":" +
+        applicationJSONString(applicationPlanFunctionName(&program, plan.constructor)) +
+        ",\"fallible\":" + applicationJSONBool(plan.fallible) + ",\"dependencies\":["
+    var index u64 = 0
+    while index < plan.dependencies.len() {
+        var dependency = match plan.dependencies.take(index) {
+            None: panic("application dependency slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += applicationPlanDependencyJSON(&program, &dependency)
+        plan.dependencies.restore(index, $dependency)
+        index += 1
+    }
+    model.services.restore(planIndex, $plan)
+    result + "]}"
+}
+
+fn applicationPlanActionJSON(
+    &program firProgram,
+    &actionPlan applicationActionPlan
+) String {
+    var function = match program.functions.take(actionPlan.function) {
+        None: panic("action function slot is empty")
+        Some(value): value
+    }
+    const receiver = match function.receiver {
+        None: panic("planned action has no receiver")
+        Some(value): value
+    }
+    var result = "{\"name\":" + applicationJSONString(actionPlan.name) +
+        ",\"handler\":" + applicationJSONString(function.name) +
+        ",\"service\":" +
+        applicationJSONString(applicationServiceName(&program, actionPlan.serviceID)) +
+        ",\"receiver\":" + applicationJSONString(applicationPlanReceiverName(receiver)) +
+        ",\"parameters\":["
+    var index u64 = 1
+    while index < function.parameters.len() {
+        var parameter = applicationParameter(&function, index)
+        var base = applicationBaseType(&parameter.type)
+        const mode = applicationParameterMode(&function, index)
+        if index != 1 {
+            result += ","
+        }
+        result += "{\"name\":" + applicationJSONString(parameter.name) +
+            ",\"type\":" + applicationJSONString(applicationPlanTypeName(&program, &base)) +
+            ",\"mode\":" + applicationJSONString(applicationPlanModeName(mode)) + "}"
+        index += 1
+    }
+    result += "],\"result\":" +
+        applicationJSONString(applicationPlanTypeName(&program, &function.returnType)) +
+        ",\"keys\":[" + applicationJSONStrings(&actionPlan.keys, ",") +
+        "],\"policies\":[" + applicationJSONStrings(&actionPlan.policies, ",") + "]}"
+    program.functions.restore(actionPlan.function, $function)
+    result
+}
+
+fn applicationPlanMiddlewareJSON(
+    &program firProgram,
+    &middleware applicationWebMiddleware
+) String {
+    var result = "{\"scope\":" +
+        applicationJSONString(applicationPlanScopeName(middleware.scope))
+    if !text.IsEmpty(middleware.method) {
+        result += ",\"method\":" + applicationJSONString(middleware.method)
+    }
+    if !text.IsEmpty(middleware.path) {
+        result += ",\"path\":" + applicationJSONString(middleware.path)
+    }
+    result + ",\"order\":" + format.I64(middleware.order) + ",\"handler\":" +
+        applicationJSONString(applicationPlanFunctionName(&program, middleware.function)) +
+        "}"
+}
+
+// Serializes the checked application plan as foundation.application/v1.
+// Construction follows the dependency order and every list is already sorted
+// by the planner, so equal programs produce identical documents.
+fn emitApplicationPlanJSON(&program firProgram, &model applicationModel) String {
+    var result = "{\"schema\":\"foundation.application/v1\",\"construction\":["
+    var index u64 = 0
+    while index < model.order.len() {
+        if index != 0 {
+            result += ","
+        }
+        const serviceID = cU64At(&model.order, index)
+        result += applicationPlanConstructionJSON(&program, &model, serviceID)
+        index += 1
+    }
+    result += "],\"actions\":["
+    index = 0
+    while index < model.actions.len() {
+        var actionPlan = match model.actions.take(index) {
+            None: panic("application action slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += applicationPlanActionJSON(&program, &actionPlan)
+        model.actions.restore(index, $actionPlan)
+        index += 1
+    }
+    result += "],\"routes\":["
+    index = 0
+    while index < model.webRoutes.len() {
+        const route = match model.webRoutes.take(index) {
+            None: panic("web route slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += "{\"method\":" + applicationJSONString(route.method) +
+            ",\"path\":" + applicationJSONString(route.path) + ",\"handler\":" +
+            applicationJSONString(applicationPlanFunctionName(&program, route.function)) +
+            ",\"task\":" + applicationJSONBool(route.taskFunction) + "}"
+        model.webRoutes.restore(index, $route)
+        index += 1
+    }
+    result += "],\"middleware\":["
+    index = 0
+    while index < model.webMiddlewares.len() {
+        var middleware = match model.webMiddlewares.take(index) {
+            None: panic("web middleware slot is empty")
+            Some(value): value
+        }
+        if index != 0 {
+            result += ","
+        }
+        result += applicationPlanMiddlewareJSON(&program, &middleware)
+        model.webMiddlewares.restore(index, $middleware)
+        index += 1
+    }
+    result + "]}\n"
+}

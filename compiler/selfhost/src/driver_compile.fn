@@ -55,6 +55,19 @@ struct loweredProgram {
     program own firProgram
 }
 
+// Application declarations are derived only when the root source declares a
+// package; a package-less source file is compiled as written.
+fn compilerDerivesApplication(&sources arena<projectSource>) bool {
+    if sources.len() == 0 return false
+    const first = match sources.take(0) {
+        None: panic("project source slot is empty")
+        Some(value): value
+    }
+    const result = !text.IsEmpty(first.packageName)
+    sources.restore(0, $first)
+    result
+}
+
 fn loadCheckedProgram(
     input String,
     requireMain bool,
@@ -78,7 +91,10 @@ fn loadCheckedProgram(
     }
     if loadFailed return .None
 
-    const generated = deriveApplicationSource(&loaded.program, &found)
+    var generated Option<String> = .None
+    if compilerDerivesApplication(&loaded.sources) {
+        generated = deriveApplicationSource(&loaded.program, &found)
+    }
     const generationFailed = found.hasErrors()
     if found.len() != 0 {
         writeCompilerDiagnostics($found, &loaded.sources, input)
