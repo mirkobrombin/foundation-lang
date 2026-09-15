@@ -5,10 +5,12 @@ maintained in the [README](../README.md#status).
 
 The repository contains a Foundation compiler and its C++20 stage0. The Foundation implementation
 owns parsing, package resolution, semantic analysis, FIR, application derivation, C11 output,
-LLVM output, and native build, run, and test commands. It also emits the C ABI header, application
-plan, OpenAPI document, and state-machine diagrams, and writes package snapshots, with output
-identical to stage0. Stage0 remains available for bootstrap and the existing formatting,
-documentation, linting, and language-server entry points.
+LLVM output, and native build, run, and test commands. It formats sources, organizes imports,
+lints against the Foundation Code Standard, and renders API documentation. It emits the C ABI
+header, package interface, program metadata, application plan, OpenAPI document, and
+state-machine diagrams, writes package snapshots, builds native libraries, and exports packages
+for Zig, Rust, and Go, with output identical to stage0. Stage0 remains available for bootstrap and
+the language server.
 
 ## Bootstrap
 
@@ -44,7 +46,9 @@ sections, and adds no C library calls beyond the memory primitives. Clang compil
 the runtime core, and native C inputs with one freestanding option set. The compiler identifies the
 selected Clang and writes the archive itself. The
 [freestanding target](language.md#freestanding-target) defines the options, bundle, and hook
-contract.
+contract. The Foundation implementation checks the freestanding options of `build-library` and
+`emit-pii` and the package lock with the stage0 statuses, then reports that freestanding archives
+and interfaces need stage0, which owns LLVM target selection and Clang identification.
 
 OpenSSL and WAMR are optional builds. OpenSSL supplies TLS and asymmetric authentication. WAMR
 supplies WebAssembly guest execution through the engine-neutral plugin ABI. Neither provider

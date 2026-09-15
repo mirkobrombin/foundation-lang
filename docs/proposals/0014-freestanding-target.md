@@ -388,8 +388,10 @@ The self-hosted compiler provides `check`, `emit-c`, `emit-llvm`, `build`, `run`
 `package`. It gains the `freestanding` target and the `hosted` selector in `target.fn`, `driver.fn`,
 the parser, the manifest and lock models, and the resolver. It also gains `@target` on `methods`
 blocks, the freestanding SDK table, every rejection above with the same code and span, and
-`emit-c --target freestanding`. Self-hosted `emit-llvm` remains host-only, and `build-library`
-remains stage0-only because the self-hosted compiler has no library command. The one exception is
+`emit-c --target freestanding`. Self-hosted `emit-llvm` remains host-only. Self-hosted
+`build-library --target freestanding` and `emit-pii --triple` check their options and the lock with
+the stage0 statuses and then defer to stage0, which owns LLVM target selection and Clang
+identification. The one exception is
 `UUID.NewV4` and `UUID.NewV7` under `freestanding`: each compiler reports its existing unknown
 associated function diagnostic, and those diagnostics already differ for hosted programs.
 
