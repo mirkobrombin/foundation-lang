@@ -865,6 +865,28 @@ fn analyzeSemanticMember(
     }
     var sourceType = analyzeSemanticExpressionWithoutExpected(
         &analyzer, &source, baseExpression, .Inspect)
+    var sliceType = copySemanticType(&sourceType)
+    if (sliceType.kind.Matches("View") || sliceType.kind.Matches("Edit")) &&
+        sliceType.arguments.len() == 1 {
+        const target = semanticTypeArgument(&sliceType, 0)
+        sliceType = target
+    }
+    // A slice exposes its element pointer only inside an unsafe block; an edit
+    // loan yields a mutable pointer.
+    if !member.invoked && member.member == "pointer" && sliceType.kind.Matches("Slice") &&
+        sliceType.arguments.len() == 1 {
+        if !member.arguments.IsEmpty() || !member.typeArguments.IsEmpty() {
+            analyzer.diagnostics.reportError(
+                "FDN2100", "slice pointer does not accept arguments", span)
+        }
+        if analyzer.state.unsafeDepth == 0 {
+            analyzer.diagnostics.reportError(
+                "FDN2213", "slice pointer access requires an unsafe block", span)
+        }
+        const editable = sourceType.kind.Matches("Edit")
+        var element = semanticTypeArgument(&sliceType, 0)
+        return unarySemanticType(.Raw if editable else .RawConst, $element)
+    }
     if (sourceType.kind.Matches("Sender") || sourceType.kind.Matches("Receiver")) &&
         sourceType.arguments.len() == 1 {
         return analyzeSemanticChannelMember(
