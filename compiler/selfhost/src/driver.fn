@@ -36,6 +36,11 @@ fn compilerUsage() String {
         "  foundationc-selfhost build <source-or-project> -o <executable> " +
         "[--backend <llvm|c>] [--native <input>] " +
         "[--native-link <library>]...\n" +
+        "  foundationc-selfhost build-library <project> -o <directory> " +
+        "--kind <static|shared> [--pic] [--backend <llvm|c>] [--native <input>]...\n" +
+        "  foundationc-selfhost build-library <project> -o <directory> --kind static " +
+        "--target freestanding --triple <llvm-triple> [--cpu <name>] " +
+        "[--features <list>] [--cc <clang>] [--backend <llvm|c>] [--pic]\n" +
         "  foundationc-selfhost run <source-or-project> " +
         "[--backend <llvm|c>] [--native <input>] " +
         "[--native-link <library>]... [-- <argument>...]\n" +
@@ -405,6 +410,22 @@ fn runCompilerCommand(args [String]) Option<i32> {
                         compilerArgument(args, 1), value, &options))
             }
         }
+    }
+    if command == "build-library" && len(args) >= 6 {
+        var options = newCompilerNativeOptions()
+        const request = match parseCompilerLibraryArguments(args, &options) {
+            None: {
+                return .None
+            }
+            Some(found): found
+        }
+        return .Some(runCompilerBuildLibrary(
+                compilerArgument(args, 1),
+                request.output,
+                request.shared,
+                request.positionIndependent,
+                request.freestanding,
+                &options))
     }
     if command == "run" && len(args) >= 2 {
         var options = newCompilerNativeOptions()

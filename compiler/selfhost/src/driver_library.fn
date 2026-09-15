@@ -1,0 +1,522 @@
+package foundation.compiler
+
+import std.format
+import std.fs
+import std.io
+import std.path
+import std.text
+
+struct compilerLibraryRequest {
+    output String
+    shared bool
+    positionIndependent bool
+    freestanding bool
+}
+
+// Records which freestanding library options appeared. Each may appear once.
+struct compilerFreestandingLibraryOptions {
+    target bool
+    triple bool
+    cpu bool
+    features bool
+    compiler bool
+}
+
+fn parseCompilerFreestandingLibraryOption(
+    option String,
+    value String,
+    &seen compilerFreestandingLibraryOptions
+) bool {
+    if option == "--target" && !seen.target && value == "freestanding" {
+        seen.target = true
+        return true
+    }
+    if option == "--triple" && !seen.triple {
+        seen.triple = true
+        return true
+    }
+    if option == "--cpu" && !seen.cpu {
+        seen.cpu = true
+        return true
+    }
+    if option == "--features" && !seen.features {
+        seen.features = true
+        return true
+    }
+    if option == "--cc" && !seen.compiler {
+        seen.compiler = true
+        return true
+    }
+    false
+}
+
+// Parses the options that follow the library project. --pic applies to a
+// static library only; a shared library is always position independent. A
+// freestanding library is static and names its triple; the triple, CPU,
+// features, and C compiler require the freestanding target. An invalid
+// option list yields no request.
+fn parseCompilerLibraryArguments(
+    args [String],
+    &options compilerNativeOptions
+) Option<compilerLibraryRequest> {
+    var output Option<String> = .None
+    var shared Option<bool> = .None
+    var positionIndependent = false
+    var seen = compilerFreestandingLibraryOptions {
+        target = false
+        triple = false
+        cpu = false
+        features = false
+        compiler = false
+    }
+    var index usize = 2
+    while index < len(args) {
+        const option = compilerArgument(args, index)
+        if option == "--pic" && !positionIndependent {
+            positionIndependent = true
+            index += 1
+            continue
+        }
+        if index + 1 >= len(args) return .None
+        const value = compilerArgument(args, index + 1)
+        index += 2
+        const kindSeen = match shared {
+            None: false
+            Some(found): {
+                discard found
+                true
+            }
+        }
+        if option == "-o" && !optionStringPresent(output) {
+            output = .Some(value)
+        } else {
+            if option == "--kind" && !kindSeen {
+                if value != "static" && value != "shared" return .None
+                shared = .Some(value == "shared")
+            } else {
+                if option == "--native" {
+                    discard options.inputs.add($value)
+                } else {
+                    if option == "--backend" && !options.backendSeen {
+                        match parseCompilerBackend(value) {
+                            None: {
+                                return .None
+                            }
+                            Some(backend): {
+                                options.backend = backend
+                                options.backendSeen = true
+                            }
+                        }
+                    } else {
+                        if !parseCompilerFreestandingLibraryOption(option, value, &seen) {
+                            return .None
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const sharedKind = match shared {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    const outputPath = match output {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    if positionIndependent && sharedKind && !seen.target return .None
+    if seen.target {
+        if !seen.triple || sharedKind return .None
+    } else {
+        if seen.triple || seen.cpu || seen.features || seen.compiler return .None
+    }
+    .Some(compilerLibraryRequest {
+        output = outputPath
+        shared = sharedKind
+        positionIndependent = positionIndependent
+        freestanding = seen.target
+    })
+}
+
+// Freestanding archives need LLVM target selection and the Clang probe, so
+// they stay with the stage0 compiler. The project and lock checks still run
+// first, with the stage0 statuses.
+fn runCompilerFreestandingLibrary(input String) i32 {
+    var status i32 = 0
+    var project = match readCompilerNativeProject(
+        input, "build-library", true, true, false, &status) {
+        None: {
+            return status
+        }
+        Some(found): found
+    }
+    const freestandingLock = sameTarget(project.lock.target, .Freestanding)
+    discard project
+    if !freestandingLock {
+        compilerProcessFailure(
+            "build-library --target freestanding requires a freestanding lock")
+        return 2
+    }
+    compilerProcessFailure("build-library --target freestanding requires the stage0 compiler")
+    2
+}
+
+fn compilerLibraryInputsValid(&inputs arena<String>) bool {
+    var index u64 = 0
+    while index < inputs.len() {
+        const input = match inputs.take(index) {
+            None: panic("native input slot is empty")
+            Some(found): found
+        }
+        const extension = path.Extension(input)
+        inputs.restore(index, $input)
+        if extension != ".c" && extension != ".o" && extension != ".obj" return false
+        index += 1
+    }
+    true
+}
+
+@target(linux)
+fn compilerPublishesImportLibrary() bool {
+    false
+}
+
+@target(macos)
+fn compilerPublishesImportLibrary() bool {
+    false
+}
+
+@target(windows)
+fn compilerPublishesImportLibrary() bool {
+    true
+}
+
+fn compilerPathIsSymbolicLink(value String) bool {
+    match fs.Kind(value) {
+        Ok(kind): match kind {
+            SymbolicLink: true
+            _: false
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+fn compilerPathIsFile(value String) bool {
+    match fs.Kind(value) {
+        Ok(kind): match kind {
+            File: true
+            _: false
+        }
+        Err(error): {
+            discard error
+            false
+        }
+    }
+}
+
+// Replaces one published file with a fresh copy of the built artifact.
+fn publishCompilerFile(source String, destination String) bool {
+    match fs.RemoveFile(destination) {
+        Ok: {}
+        Err(error): {
+            discard error
+        }
+    }
+    fs.CopyFile(source, destination) else error {
+        discard error
+        compilerProcessFailure("cannot publish " + destination)
+        return false
+    }
+    true
+}
+
+fn publishCompilerLibraryLink(libraryDirectory String, linkName String, target String) bool {
+    const opened = fs.OpenRoot(libraryDirectory) else error {
+        discard error
+        compilerProcessFailure("cannot publish shared library link")
+        return false
+    }
+    var writer = opened
+    match writer.RemoveFile(linkName) {
+        Ok: {}
+        Err(error): {
+            discard error
+        }
+    }
+    writer.CreateSymbolicLink(linkName, target, false) else error {
+        discard error
+        compilerProcessFailure("cannot publish shared library link")
+        return false
+    }
+    true
+}
+
+struct compilerLibraryArtifact {
+    path String
+    name String
+    importLibrary String
+    shared bool
+    library String
+    header String
+    interface String
+}
+
+// Publishes one built library as include/, lib/, and share/foundation/
+// beneath the output directory and reports the published paths.
+fn publishCompilerLibrary(
+    outputDirectory String,
+    sdkRoot String,
+    artifact compilerLibraryArtifact
+) i32 {
+    if compilerPathIsSymbolicLink(outputDirectory) {
+        compilerProcessFailure("refusing symbolic-link output directory")
+        return 1
+    }
+    const includeDirectory = path.Join(outputDirectory, "include")
+    const libraryDirectory = path.Join(outputDirectory, "lib")
+    const metadataDirectory = path.Join(path.Join(outputDirectory, "share"), "foundation")
+    const runtimeHeaderPath = path.Join(
+        path.Join(path.Join(path.Join(sdkRoot, "runtime"), "include"), "foundation"), "library.h")
+    const runtimeHeader = match fs.ReadTextSync(runtimeHeaderPath, 67108864) {
+        Ok(contents): contents
+        Err(error): {
+            discard error
+            compilerProcessFailure("cannot read " + runtimeHeaderPath)
+            return 1
+        }
+    }
+    const headerPath = path.Join(includeDirectory, artifact.library + ".h")
+    const interfacePath = path.Join(metadataDirectory, artifact.library + ".pii.json")
+    if writeCompilerOutput(headerPath, artifact.header) != 0 ||
+        writeCompilerOutput(path.Join(path.Join(includeDirectory, "foundation"), "library.h"),
+        runtimeHeader) != 0 ||
+        writeCompilerOutput(interfacePath, artifact.interface) != 0 {
+        return 1
+    }
+    fs.CreateDirectory(libraryDirectory) else error {
+        discard error
+        compilerProcessFailure("cannot create library output directories")
+        return 1
+    }
+    const publishedArtifact = path.Join(libraryDirectory, artifact.name)
+    if !publishCompilerFile(artifact.path, publishedArtifact) return 1
+    if artifact.shared && !compilerPublishesImportLibrary() {
+        const linkName = compilerSharedLibraryLinkFilename(artifact.library)
+        if linkName != artifact.name &&
+            !publishCompilerLibraryLink(libraryDirectory, linkName, artifact.name) {
+            return 1
+        }
+    }
+    if artifact.shared && compilerPublishesImportLibrary() {
+        if compilerPathIsFile(artifact.importLibrary) {
+            const published = path.Join(libraryDirectory, path.FileName(artifact.importLibrary))
+            if !publishCompilerFile(artifact.importLibrary, published) return 1
+        }
+    }
+    discard io.WriteStdoutText("library " + publishedArtifact + "\nheader " + headerPath +
+        "\ninterface " + interfacePath + "\n")
+    0
+}
+
+fn compileCompilerLibraryNativeInputs(
+    temporary String,
+    sdkRoot String,
+    positionIndependent bool,
+    &inputs arena<String>,
+    &objects arena<String>
+) bool {
+    var index u64 = 0
+    while index < inputs.len() {
+        const input = match inputs.take(index) {
+            None: panic("native input slot is empty")
+            Some(found): found
+        }
+        const source = text.Copy(input)
+        inputs.restore(index, $input)
+        if path.Extension(source) == ".c" {
+            const object = path.Join(
+                temporary, "native-" + format.U64(index) + compilerObjectExtension())
+            const status = compileCompilerLibraryObject(
+                source, object, temporary, sdkRoot, positionIndependent)
+            if status != 0 return false
+            discard objects.add($object)
+        } else {
+            discard objects.add($source)
+        }
+        index += 1
+    }
+    true
+}
+
+// Compiles the generated translation unit, the runtime, and the native inputs
+// of one library into objects inside the temporary directory.
+fn compileCompilerLibraryObjects(
+    temporary String,
+    sdkRoot String,
+    positionIndependent bool,
+    &lowered loweredProgram,
+    packageName String,
+    &options compilerNativeOptions,
+    &objects arena<String>
+) bool {
+    const generatedObject = path.Join(temporary, "foundation" + compilerObjectExtension())
+    const identity = "foundation.package"
+    const llvmBackend = match options.backend {
+        Llvm: true
+        C: false
+    }
+    if llvmBackend {
+        const generated = path.Join(temporary, "foundation.ll")
+        const module = emitSelfHostedLibraryLlvm(&lowered.program, packageName, identity)
+        if writeCompilerOutput(generated, module) != 0 return false
+        if compileCompilerLibraryLlvm(generated, generatedObject, positionIndependent) != 0 {
+            return false
+        }
+    } else {
+        const generated = path.Join(temporary, "foundation.c")
+        const unit = emitSelfHostedLibraryC(&lowered.program, packageName, identity)
+        if writeCompilerOutput(generated, unit) != 0 return false
+        const status = compileCompilerLibraryObject(
+            generated, generatedObject, temporary, sdkRoot, positionIndependent)
+        if status != 0 return false
+    }
+    discard objects.add(text.Copy(generatedObject))
+    const runtimeRoot = path.Join(path.Join(sdkRoot, "runtime"), "src")
+    var runtimeIndex u64 = 0
+    for source in compilerRuntimeSources() {
+        const object = path.Join(
+            temporary, "runtime-" + format.U64(runtimeIndex) + compilerObjectExtension())
+        const status = compileCompilerLibraryObject(
+            path.Join(runtimeRoot, source), object, temporary, sdkRoot, positionIndependent)
+        if status != 0 return false
+        discard objects.add($object)
+        runtimeIndex += 1
+    }
+    compileCompilerLibraryNativeInputs(
+        temporary, sdkRoot, positionIndependent, &options.inputs, &objects)
+}
+
+fn buildCompilerLibraryIn(
+    temporary String,
+    sdkRoot String,
+    outputDirectory String,
+    shared bool,
+    positionIndependent bool,
+    &lowered loweredProgram,
+    &project nativeLibraryProject,
+    &described packageInterface,
+    &options compilerNativeOptions
+) i32 {
+    const packageName = text.Copy(project.manifest.name)
+    const library = text.Copy(described.library)
+    const header = emitSelfHostedPackageCHeader(&lowered.program, packageName, library)
+    const interfaceText = renderPackageInterfaceJSON(&described)
+    if writeCompilerOutput(path.Join(temporary, "foundation_abi.h"), header) != 0 return 1
+    var objects = newArena<String>()
+    const pic = shared || positionIndependent
+    if !compileCompilerLibraryObjects(
+        temporary, sdkRoot, pic, &lowered, packageName, &options, &objects) {
+        return 1
+    }
+    const artifactName = if shared {
+        compilerSharedLibraryFilename(library, described.soVersion)
+    } else {
+        compilerStaticLibraryFilename(library)
+    }
+    const artifactPath = path.Join(temporary, artifactName)
+    const importLibrary = path.Join(temporary, compilerStaticLibraryFilename(library))
+    if shared {
+        const control = path.Join(temporary, compilerLibraryControlName())
+        if writeCompilerOutput(control, compilerLibraryControl(&described)) != 0 return 1
+        const linked = linkCompilerSharedLibrary(
+            artifactPath, &objects, &described, control, importLibrary)
+        if linked != 0 return 1
+    } else {
+        if archiveCompilerLibrary(artifactPath, &objects) != 0 return 1
+    }
+    publishCompilerLibrary(
+        outputDirectory,
+        sdkRoot,
+        compilerLibraryArtifact {
+            path = artifactPath
+            name = artifactName
+            importLibrary = importLibrary
+            shared = shared
+            library = library
+            header = header
+            interface = interfaceText
+        }
+    )
+}
+
+// Builds the native library that one package exports: its C ABI objects,
+// the runtime, and its native sources, packaged as a static archive or a
+// shared library with its public header and package interface.
+fn runCompilerBuildLibrary(
+    input String,
+    outputDirectory String,
+    shared bool,
+    positionIndependent bool,
+    freestanding bool,
+    &options compilerNativeOptions
+) i32 {
+    if freestanding return runCompilerFreestandingLibrary(input)
+    var status i32 = 0
+    var project = match readCompilerNativeProject(
+        input, "build-library", true, true, true, &status) {
+        None: {
+            return status
+        }
+        Some(found): found
+    }
+    if !addCompilerPackageNativeOptions(input, .Production, &options) return 1
+    const selected = loadLoweredProgram(input, false, .Production, hostTargetPlatform())
+    var lowered = match selected {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
+    var described = match compilerPackageInterface(input, &lowered, &project, true) {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
+    if !compilerLibraryInputsValid(&options.inputs) {
+        compilerProcessFailure("native library inputs must be C sources or objects")
+        return 2
+    }
+    const root = match compilerSDKRoot(input) {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
+    const temporary = match createCompilerTempDirectory() {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
+    const result = buildCompilerLibraryIn(
+        temporary,
+        root,
+        outputDirectory,
+        shared,
+        positionIndependent,
+        &lowered,
+        &project,
+        &described,
+        &options
+    )
+    removeCompilerTempDirectory(temporary)
+    result
+}

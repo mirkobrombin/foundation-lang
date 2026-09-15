@@ -163,6 +163,41 @@ function(write_lint_lock directory root)
     )
 endfunction()
 
+# Runs one existing command test script with the self-hosted compiler.
+function(run_selfhost_script label script)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" "-DCOMPILER=${COMPILER}" ${ARGN}
+            -P "${ROOT}/tests/${script}"
+        RESULT_VARIABLE script_status
+        OUTPUT_VARIABLE script_output
+        ERROR_VARIABLE script_error
+    )
+    if(NOT script_status EQUAL 0)
+        message(FATAL_ERROR
+            "${label} failed with the self-hosted compiler:\n${script_output}${script_error}")
+    endif()
+endfunction()
+
+# Runs one command that writes under a side-specific directory with each
+# compiler and requires the same report once that directory is normalized.
+function(require_report_parity label work)
+    foreach(side IN ITEMS stage0 selfhost)
+        if(side STREQUAL "stage0")
+            set(program "${STAGE0}")
+        else()
+            set(program "${COMPILER}")
+        endif()
+        string(REPLACE "<side>" "${side}" arguments "${ARGN}")
+        run_checked("${side} ${label}" "${program}" ${arguments})
+        string(REPLACE "\r\n" "\n" report "${command_output}")
+        string(REPLACE "${work}/${side}-" "${work}/<side>-" ${side}_report "${report}")
+    endforeach()
+    if(NOT selfhost_report STREQUAL stage0_report)
+        message(FATAL_ERROR
+            "${label} report differs from stage0:\n${stage0_report}\n${selfhost_report}")
+    endif()
+endfunction()
+
 file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
 set(hello "${ROOT}/tests/cases/accept/hello.fn")
 set(tests "${ROOT}/tests/cases/accept/test-declarations.fn")
@@ -476,5 +511,62 @@ require_rejected_parity("lint fixed rule" 2 "lint <source-or-project>"
     lint "${lint_work}" --rule FCS9001=off)
 require_rejected_parity("lint compiler errors" 1 "error\\[FDN"
     lint "${ROOT}/tests/cases/reject/unknown-associated-function.fn" --profile valid)
+
+set(library_work "${PARITY_DIRECTORY}/library")
+set(library_project "${library_work}/project")
+file(MAKE_DIRECTORY "${library_project}")
+file(COPY "${ROOT}/tests/projects/native-interface/" DESTINATION "${library_project}")
+run_checked("library package resolve" "${STAGE0}" package resolve "${library_project}")
+foreach(kind IN ITEMS static shared)
+    require_report_parity("build-library ${kind}" "${library_work}" build-library
+        "${library_project}" -o "${library_work}/<side>-${kind}" --kind ${kind})
+    foreach(file IN ITEMS include/sample_native.h include/foundation/library.h
+            share/foundation/sample_native.pii.json)
+        require_same_file("build-library ${kind} ${file}"
+            "${library_work}/stage0-${kind}/${file}" "${library_work}/selfhost-${kind}/${file}")
+    endforeach()
+    file(GLOB expected_libraries RELATIVE "${library_work}/stage0-${kind}/lib"
+        "${library_work}/stage0-${kind}/lib/*")
+    file(GLOB actual_libraries RELATIVE "${library_work}/selfhost-${kind}/lib"
+        "${library_work}/selfhost-${kind}/lib/*")
+    list(SORT expected_libraries)
+    list(SORT actual_libraries)
+    if(NOT actual_libraries STREQUAL expected_libraries)
+        message(FATAL_ERROR
+            "build-library ${kind} published ${actual_libraries}, stage0 ${expected_libraries}")
+    endif()
+endforeach()
+require_rejected_parity("build-library redundant pic" 2 "usage:"
+    build-library "${library_project}" -o "${library_work}/redundant" --kind shared --pic)
+require_rejected_parity("build-library missing kind" 2 "usage:"
+    build-library "${library_project}" -o "${library_work}/missing")
+require_rejected_parity("build-library freestanding without triple" 2 "usage:"
+    build-library "${library_project}" -o "${library_work}/freestanding" --kind static
+    --target freestanding)
+require_rejected_parity("build-library triple without target" 2 "usage:"
+    build-library "${library_project}" -o "${library_work}/freestanding" --kind static
+    --triple wasm32-unknown-unknown)
+require_rejected_parity("build-library freestanding shared" 2 "usage:"
+    build-library "${library_project}" -o "${library_work}/freestanding" --kind shared
+    --target freestanding --triple wasm32-unknown-unknown)
+require_rejected_parity("build-library freestanding hosted lock" 2
+    "build-library --target freestanding requires a freestanding lock"
+    build-library "${library_project}" -o "${library_work}/freestanding" --kind static
+    --target freestanding --triple wasm32-unknown-unknown)
+require_rejected_parity("build-library hosted freestanding lock" 2
+    "build-library requires a lock for the host target"
+    build-library "${ROOT}/tests/projects/freestanding-library"
+    -o "${library_work}/freestanding" --kind static)
+if(DEFINED C_COMPILER AND NOT C_COMPILER STREQUAL "")
+    run_selfhost_script("build-library artifacts" assert-library-artifacts.cmake
+        "-DSOURCE=${ROOT}/tests/projects/native-interface"
+        "-DWORK=${PARITY_DIRECTORY}/library-artifacts"
+        "-DC_COMPILER=${C_COMPILER}"
+        "-DCXX_COMPILER=${CXX_COMPILER}"
+        "-DC_COMPILER_ID=${C_COMPILER_ID}"
+        "-DSYSTEM_NAME=${SYSTEM_NAME}"
+        "-DNM=${NM}"
+        "-DREADELF=${READELF}")
+endif()
 
 message(STATUS "self-hosted compiler commands passed")

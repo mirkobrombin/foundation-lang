@@ -205,6 +205,75 @@ fn llvmEmitFunctionBody(
     llvmWrite(&module.functions, llvmFinish(&builder))
 }
 
+// Defines the C ABI entry point of an exported function: it enters a native
+// frame, calls the Foundation definition, and returns its result.
+fn llvmEmitExportedWrapper(
+    &module llvmModuleEmission,
+    &program firProgram,
+    id u64,
+    sourcePath String
+) void {
+    var function = cFunctionAt(&program, id)
+    const symbol = match copyFirStringOption(function.cSymbol) {
+        None: panic("exported function has no C symbol")
+        Some(found): found
+    }
+    const result = if function.diverges { "void" } else { llvmTypeName(&function.returnType) }
+    var builder = text.NewBuilder()
+    llvmWrite(&builder, "define " + result + " @" + symbol + "(")
+    var arguments = ""
+    var parameter u64 = 0
+    while parameter < function.parameters.len() {
+        const local = cU64At(&function.parameters, parameter)
+        var valueType = llvmLocalTypeAt(&function, local)
+        const argument = llvmTypeName(&valueType) + " %fdn_arg_" + format.U64(parameter)
+        if parameter != 0 {
+            llvmWrite(&builder, ", ")
+            arguments += ", "
+        }
+        llvmWrite(&builder, argument)
+        arguments += argument
+        parameter += 1
+    }
+    llvmWrite(&builder, ") {\n")
+    var state = newLlvmFunctionEmission(id, 0)
+    llvmBlock(&builder, &state, "entry")
+    const frame = llvmNextTemporary(&state)
+    llvmInstruction(&builder, &state, frame + " = alloca %fdn.frame")
+    const symbolName = llvmStringConstantName(&module, symbol)
+    const traceSource = if function.sourcePath == "" {
+        "" + sourcePath
+    } else {
+        "" + function.sourcePath
+    }
+    const sourceName = llvmStringConstantName(&module, traceSource)
+    llvmRequireExternal(&module, "fdn_frame_enter_native",
+        "void @fdn_frame_enter_native(ptr, ptr, ptr, i32, i32)")
+    llvmInstruction(&builder, &state,
+        "call void @fdn_frame_enter_native(ptr " + frame + ", ptr " + symbolName +
+        ", ptr " + sourceName + ", i32 " + format.U64(function.sourceSpan.line) +
+        ", i32 " + format.U64(function.sourceSpan.column) + ")")
+    const target = "@" + llvmFunctionName(&program, id) + "(" + arguments + ")"
+    if function.diverges {
+        llvmInstruction(&builder, &state, "call void " + target)
+        llvmInstruction(&builder, &state, "unreachable")
+    } else {
+        llvmRequireExternal(&module, "fdn_frame_leave", "void @fdn_frame_leave(ptr)")
+        if function.returnType.kind.Matches("Void") {
+            llvmInstruction(&builder, &state, "call void " + target)
+            llvmInstruction(&builder, &state, "call void @fdn_frame_leave(ptr " + frame + ")")
+            llvmInstruction(&builder, &state, "ret void")
+        } else {
+            const value = llvmNextTemporary(&state)
+            llvmInstruction(&builder, &state, value + " = call " + result + " " + target)
+            llvmInstruction(&builder, &state, "call void @fdn_frame_leave(ptr " + frame + ")")
+            llvmInstruction(&builder, &state, "ret " + result + " " + value)
+        }
+    }
+    llvmWrite(&builder, "}\n\n")
+    llvmWrite(&module.functions, llvmFinish(&builder))
+}
+
 fn llvmEmitFunctionValueAdapter(
     &module llvmModuleEmission,
     &program firProgram,

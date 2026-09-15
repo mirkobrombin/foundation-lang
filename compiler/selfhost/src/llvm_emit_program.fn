@@ -183,12 +183,11 @@ fn llvmEmitFunctionPrototypes(
 fn emitSelfHostedLlvmImpl(
     &source firProgram,
     sourcePath String,
-    testEntry Option<u64>
+    testEntry Option<u64>,
+    library Option<String>
 ) String {
-    var program = match testEntry {
-        None: monomorphizeProgram(&source)
-        Some(entry): monomorphizeProgramEntry(&source, entry)
-    }
+    const libraryBuild = optionStringPresent(library)
+    var program = cBackendProgram(&source, testEntry, library)
     var collected = cCollectTypes(&program)
     var contractUses = cCollectContractUses(&program)
     var module = newLlvmModuleEmission()
@@ -196,11 +195,20 @@ fn emitSelfHostedLlvmImpl(
     llvmEmitOwnershipFunctions(&module, &program, &collected)
     llvmEmitContractSupports(&module, &program, &contractUses)
     llvmEmitFunctions(&module, &program, sourcePath)
-    match testEntry {
-        None: llvmEmitMainWrapper(&module, &program)
-        Some(entry): {
-            discard entry
-            llvmEmitTestMainWrapper(&module, &program)
+    var function u64 = 0
+    while function < program.functions.len() {
+        if cExportedFunction(&program, function) {
+            llvmEmitExportedWrapper(&module, &program, function, sourcePath)
+        }
+        function += 1
+    }
+    if !libraryBuild {
+        match testEntry {
+            None: llvmEmitMainWrapper(&module, &program)
+            Some(entry): {
+                discard entry
+                llvmEmitTestMainWrapper(&module, &program)
+            }
         }
     }
 
@@ -218,7 +226,7 @@ fn emitSelfHostedLlvm(
     &source firProgram,
     sourcePath String
 ) String {
-    emitSelfHostedLlvmImpl(&source, sourcePath, .None)
+    emitSelfHostedLlvmImpl(&source, sourcePath, .None, .None)
 }
 
 fn emitSelfHostedTestLlvm(
@@ -226,5 +234,15 @@ fn emitSelfHostedTestLlvm(
     test u64,
     sourcePath String
 ) String {
-    emitSelfHostedLlvmImpl(&source, sourcePath, .Some(test))
+    emitSelfHostedLlvmImpl(&source, sourcePath, .Some(test), .None)
+}
+
+// Emits the LLVM module of a native library: the C exports of one package
+// and everything they reach, without a main function.
+fn emitSelfHostedLibraryLlvm(
+    &source firProgram,
+    packageName String,
+    sourcePath String
+) String {
+    emitSelfHostedLlvmImpl(&source, sourcePath, .None, .Some(text.Copy(packageName)))
 }

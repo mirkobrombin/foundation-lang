@@ -247,6 +247,49 @@ fn cEmitImportedFunction(
     }
 }
 
+// Defines the C ABI entry point of an exported function: it enters a native
+// frame, calls the Foundation definition, and returns its result.
+fn cEmitExportedWrapper(
+    &builder text.Builder,
+    &program firProgram,
+    id u64,
+    sourcePath String
+) void {
+    var function = cFunctionAt(&program, id)
+    const symbol = match copyFirStringOption(function.cSymbol) {
+        None: panic("exported function has no C symbol")
+        Some(found): found
+    }
+    cWrite(&builder, cTypeName(&function.returnType) + " " + symbol + "(")
+    cEmitCParameters(&builder, &function, true)
+    cWrite(&builder, ") {\n    fdn_frame fdn_frame_current;\n")
+    const traceSource = if function.sourcePath == "" {
+        text.Copy(sourcePath)
+    } else {
+        text.Copy(function.sourcePath)
+    }
+    cWrite(&builder, "    fdn_frame_enter_native(&fdn_frame_current, " +
+        cStringLiteral(symbol) + ", " + cStringLiteral(traceSource) + ", " +
+        format.U64(function.sourceSpan.line) + ", " +
+        format.U64(function.sourceSpan.column) + ");\n")
+    const target = cFunctionName(&program, id)
+    if function.diverges || function.returnType.kind.Matches("Void") {
+        cWrite(&builder, "    " + target + "(")
+        cEmitCallArguments(&builder, &function, true)
+        cWrite(&builder, ");\n")
+        if !function.diverges {
+            cWrite(&builder, "    fdn_frame_leave(&fdn_frame_current);\n    return;\n")
+        }
+    } else {
+        cWrite(&builder, "    " + cTypeName(&function.returnType) + " fdn_result = " +
+            target + "(")
+        cEmitCallArguments(&builder, &function, true)
+        cWrite(&builder, ");\n    fdn_frame_leave(&fdn_frame_current);\n")
+        cWrite(&builder, "    return fdn_result;\n")
+    }
+    cWrite(&builder, "}\n")
+}
+
 fn cEmitFunctionBody(
     &builder text.Builder,
     &program firProgram,

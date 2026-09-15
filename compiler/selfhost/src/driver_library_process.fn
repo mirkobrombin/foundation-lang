@@ -1,0 +1,297 @@
+package foundation.compiler
+
+import std.format
+import std.path
+import std.process
+import std.text
+
+@target(linux)
+fn compilerObjectExtension() String {
+    ".o"
+}
+
+@target(macos)
+fn compilerObjectExtension() String {
+    ".o"
+}
+
+@target(windows)
+fn compilerObjectExtension() String {
+    ".obj"
+}
+
+@target(linux)
+fn compilerSharedLibraryFilename(name String, soVersion u32) String {
+    const suffix = "" if soVersion == 0 else "." + format.U32(soVersion)
+    "lib" + name + ".so" + suffix
+}
+
+@target(macos)
+fn compilerSharedLibraryFilename(name String, soVersion u32) String {
+    const suffix = "" if soVersion == 0 else "." + format.U32(soVersion)
+    "lib" + name + suffix + ".dylib"
+}
+
+@target(windows)
+fn compilerSharedLibraryFilename(name String, soVersion u32) String {
+    discard soVersion
+    name + ".dll"
+}
+
+@target(linux)
+fn compilerSharedLibraryLinkFilename(name String) String {
+    "lib" + name + ".so"
+}
+
+@target(macos)
+fn compilerSharedLibraryLinkFilename(name String) String {
+    "lib" + name + ".dylib"
+}
+
+@target(windows)
+fn compilerSharedLibraryLinkFilename(name String) String {
+    name + ".dll"
+}
+
+fn compilerStaticLibraryFilename(name String) String {
+    "lib" + name + ".a"
+}
+
+fn compilerLibraryRuntimeSymbols(prefix String, suffix String) String {
+    prefix + "fdn_alloc" + suffix + prefix + "fdn_dealloc" + suffix + prefix +
+        "fdn_string_drop" + suffix + prefix + "fdn_panic" + suffix + prefix +
+        "fdn_panic_cstr" + suffix
+}
+
+fn compilerLibraryExportSymbols(
+    &described packageInterface,
+    prefix String,
+    suffix String
+) String {
+    var result = ""
+    var index u64 = 0
+    while index < described.exports.len() {
+        const function = match described.exports.take(index) {
+            None: panic("PII function slot is empty")
+            Some(found): found
+        }
+        result += prefix + function.cSymbol + suffix
+        described.exports.restore(index, $function)
+        index += 1
+    }
+    result
+}
+
+// Names the linker control file and its contents: an ELF version script, a
+// Mach-O export list, or a Windows module definition. Each exports the C ABI
+// functions and the runtime entry points consumers release memory with.
+@target(linux)
+fn compilerLibraryControl(&described packageInterface) String {
+    "FOUNDATION_1 {\n    global:\n" +
+        compilerLibraryExportSymbols(&described, "        ", ";\n") +
+        compilerLibraryRuntimeSymbols("        ", ";\n") + "    local:\n        *;\n};\n"
+}
+
+@target(macos)
+fn compilerLibraryControl(&described packageInterface) String {
+    compilerLibraryExportSymbols(&described, "_", "\n") +
+        compilerLibraryRuntimeSymbols("_", "\n")
+}
+
+@target(windows)
+fn compilerLibraryControl(&described packageInterface) String {
+    "LIBRARY " + described.library + "\nEXPORTS\n" +
+        compilerLibraryExportSymbols(&described, "    ", "\n") +
+        compilerLibraryRuntimeSymbols("    ", "\n")
+}
+
+@target(linux)
+fn compilerLibraryControlName() String {
+    "exports.map"
+}
+
+@target(macos)
+fn compilerLibraryControlName() String {
+    "exports.list"
+}
+
+@target(windows)
+fn compilerLibraryControlName() String {
+    "exports.def"
+}
+
+fn openCompilerProcess(program String) Option<own process.Command> {
+    const processOptions = process.Options {
+        WorkingDirectory = .None
+        InheritEnvironment = true
+        OutputLimit = 67108864
+    }
+    const opened = process.Open(program, $processOptions) else error {
+        discard error
+        compilerProcessFailure("cannot prepare native compiler")
+        return .None
+    }
+    .Some(opened)
+}
+
+// Maps an absolute source prefix to a fixed name so that objects do not
+// record the checkout or temporary path they were built from.
+fn compilerAddPrefixMap(&command process.Command, directory String, replacement String) bool {
+    compilerAddArgument(
+        &command, "-ffile-prefix-map=" + projectSourceIdentity(directory) + "=" + replacement)
+}
+
+fn compileCompilerLibraryObject(
+    source String,
+    output String,
+    generatedInclude String,
+    sdkRoot String,
+    positionIndependent bool
+) i32 {
+    var command = match openCompilerProcess(compilerProgram(.C)) {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
+    const runtimeInclude = path.Join(path.Join(sdkRoot, "runtime"), "include")
+    var ready = compilerAddArgument(&command, "-std=c11") &&
+        compilerAddArgument(&command, "-O2") && compilerAddArgument(&command, "-Wall") &&
+        compilerAddArgument(&command, "-Wextra") && compilerAddArgument(&command, "-Wpedantic") &&
+        compilerAddArgument(&command, "-Werror")
+    if ready && positionIndependent {
+        ready = compilerAddArgument(&command, "-fPIC")
+    }
+    ready = ready && compilerAddArgument(&command, "-I") &&
+        compilerAddArgument(&command, runtimeInclude) && compilerAddArgument(&command, "-I") &&
+        compilerAddArgument(&command, generatedInclude) && compilerAddArgument(&command, "-c") &&
+        compilerAddArgument(&command, source) && compilerAddArgument(&command, "-o") &&
+        compilerAddArgument(&command, output) &&
+        compilerAddPrefixMap(&command, sdkRoot, "foundation-sdk") &&
+        compilerAddPrefixMap(&command, path.Parent(source), "source")
+    if !ready return 1
+    compilerRunCommand($command)
+}
+
+fn compileCompilerLibraryLlvm(
+    generated String,
+    output String,
+    positionIndependent bool
+) i32 {
+    var command = match openCompilerProcess(compilerProgram(.Llvm)) {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
+    var ready = compilerAddArgument(&command, "-O2") &&
+        compilerAddArgument(&command, "-Wno-override-module")
+    if ready && positionIndependent {
+        ready = compilerAddArgument(&command, "-fPIC")
+    }
+    ready = ready && compilerAddArgument(&command, "-c") &&
+        compilerAddArgument(&command, generated) && compilerAddArgument(&command, "-o") &&
+        compilerAddArgument(&command, output) &&
+        compilerAddPrefixMap(&command, path.Parent(generated), "source")
+    if !ready return 1
+    compilerRunCommand($command)
+}
+
+fn archiveCompilerLibrary(output String, &objects arena<String>) i32 {
+    const archiver = compilerConfiguredProgram("FOUNDATION_ARCHIVER", "ar")
+    var command = match openCompilerProcess(archiver) {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
+    if !compilerAddArgument(&command, "rcs") || !compilerAddArgument(&command, output) ||
+        !compilerAddArenaArguments(&command, &objects) {
+        return 1
+    }
+    compilerRunCommand($command)
+}
+
+@target(linux)
+fn addCompilerSharedLinkOptions(
+    &command process.Command,
+    artifactName String,
+    control String,
+    importLibrary String
+) bool {
+    discard importLibrary
+    compilerAddArgument(&command, "-Wl,--no-undefined") &&
+        compilerAddArgument(&command, "-Wl,-soname," + artifactName) &&
+        compilerAddArgument(&command, "-Wl,--version-script," + control) &&
+        compilerAddArgument(&command, "-pthread") && compilerAddArgument(&command, "-ldl")
+}
+
+@target(macos)
+fn addCompilerSharedLinkOptions(
+    &command process.Command,
+    artifactName String,
+    control String,
+    importLibrary String
+) bool {
+    discard importLibrary
+    compilerAddArgument(&command, "-Wl,-undefined,error") &&
+        compilerAddArgument(&command, "-Wl,-install_name,@rpath/" + artifactName) &&
+        compilerAddArgument(&command, "-Wl,-exported_symbols_list," + control) &&
+        compilerAddArgument(&command, "-Wl,-S") && compilerAddArgument(&command, "-pthread") &&
+        compilerAddArgument(&command, "-framework") &&
+        compilerAddArgument(&command, "ApplicationServices")
+}
+
+@target(windows)
+fn addCompilerSharedLinkOptions(
+    &command process.Command,
+    artifactName String,
+    control String,
+    importLibrary String
+) bool {
+    discard artifactName
+    compilerAddArgument(&command, "-Wl,--no-undefined") &&
+        compilerAddArgument(&command, control) &&
+        compilerAddArgument(&command, "-Wl,--out-implib," + importLibrary) &&
+        compilerAddArgument(&command, "-lbcrypt") && compilerAddArgument(&command, "-lgdi32") &&
+        compilerAddArgument(&command, "-liphlpapi") &&
+        compilerAddArgument(&command, "-luser32") && compilerAddArgument(&command, "-lws2_32")
+}
+
+// Links the library objects into one shared library that exports only the
+// symbols named by the control file, then the native libraries the package
+// declares for its target.
+fn linkCompilerSharedLibrary(
+    output String,
+    &objects arena<String>,
+    &described packageInterface,
+    control String,
+    importLibrary String
+) i32 {
+    var command = match openCompilerProcess(compilerProgram(.C)) {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
+    const artifactName = path.FileName(output)
+    if !compilerAddArgument(&command, "-shared") ||
+        !compilerAddArenaArguments(&command, &objects) ||
+        !addCompilerSharedLinkOptions(&command, artifactName, control, importLibrary) {
+        return 1
+    }
+    var index u64 = 0
+    while index < described.links.len() {
+        const link = match described.links.take(index) {
+            None: panic("PII link slot is empty")
+            Some(found): found
+        }
+        const active = compilerNativeTargetActive(copyTargetOption(link.target), described.target)
+        const added = !active || compilerAddArgument(&command, "-l" + link.name)
+        described.links.restore(index, $link)
+        if !added return 1
+        index += 1
+    }
+    if !compilerAddArgument(&command, "-o") || !compilerAddArgument(&command, output) return 1
+    compilerRunCommand($command)
+}

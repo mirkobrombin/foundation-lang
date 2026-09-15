@@ -1,0 +1,515 @@
+package foundation.compiler
+
+import std.format
+import std.text
+
+// Numbers type kinds in declaration order; the order keys the function type
+// definitions of a package header.
+fn cPackageTypeKindCode(kind semanticTypeKind) u64 {
+    match kind {
+        Invalid: 0
+        Void: 1
+        Never: 2
+        I8: 3
+        I16: 4
+        I32: 5
+        I64: 6
+        U8: 7
+        U16: 8
+        U32: 9
+        U64: 10
+        Isize: 11
+        Usize: 12
+        F32: 13
+        F64: 14
+        Bool: 15
+        StringValue: 16
+        Raw: 17
+        RawConst: 18
+        Array: 19
+        Slice: 20
+        Own: 21
+        View: 22
+        Edit: 23
+        Parameter: 24
+        StructValue: 25
+        EnumValue: 26
+        ContractValue: 27
+        Function: 28
+        Task: 29
+        Channel: 30
+        Sender: 31
+        Receiver: 32
+    }
+}
+
+fn cPackageTypeKey(&type semanticType) String {
+    var result = format.U64(cPackageTypeKindCode(type.kind)) + ":" +
+        format.U64(type.declaration)
+    if type.arguments.len() == 0 return result
+    result += "<"
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = semanticTypeArgument(&type, index)
+        result += cPackageTypeKey(&argument) + ";"
+        index += 1
+    }
+    result + ">"
+}
+
+fn cHeaderGuard(identity String) String {
+    var builder = text.NewBuilder()
+    var index u64 = 0
+    while index < text.ByteLen(identity) {
+        const byte = packageByteAt(identity, index)
+        var selected u64 = 95
+        if isAsciiAlphaNumeric(byte) {
+            selected = byte - 32 if byte >= 97 && byte <= 122 else byte
+        }
+        discard packageBuilderCodePoint(&builder, selected)
+        index += 1
+    }
+    "FOUNDATION_" + packageBuilderFinish(&builder) + "_C_ABI_H"
+}
+
+fn cPackageExports(&program firProgram) own arena<cHeaderExport> {
+    var result = newArena<cHeaderExport>()
+    var index u64 = 0
+    while index < program.functions.len() {
+        const function = match program.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        const symbol = copyFirStringOption(function.cSymbol)
+        const exported = function.hasBody && function.exported
+        program.functions.restore(index, $function)
+        match symbol {
+            None: {}
+            Some(value): {
+                if exported {
+                    discard result.add(cHeaderExport { symbol = value function = index })
+                }
+            }
+        }
+        index += 1
+    }
+    sortArena<cHeaderExport>(&result, compareCHeaderExport)
+    result
+}
+
+// Collects every struct that a header type names by value, through its
+// fields, or through type arguments.
+fn collectCPackageLayouts(&program firProgram, &type semanticType, &layouts arena<u64>) void {
+    if type.kind.Matches("StructValue") && type.declaration < program.structs.len() {
+        if formatOffsetKnown(&layouts, type.declaration) return
+        discard layouts.add(type.declaration)
+        var declaration = piiStructCopy(&program, type.declaration)
+        var index u64 = 0
+        while index < declaration.fields.len() {
+            var field = match declaration.fields.take(index) {
+                None: panic("struct field slot is empty")
+                Some(found): found
+            }
+            collectCPackageLayouts(&program, &field.type, &layouts)
+            declaration.fields.restore(index, $field)
+            index += 1
+        }
+        return
+    }
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = semanticTypeArgument(&type, index)
+        collectCPackageLayouts(&program, &argument, &layouts)
+        index += 1
+    }
+}
+
+fn collectCPackageFunctionTypes(&type semanticType, &found arena<semanticType>) void {
+    if type.kind.Matches("Function") && !cPackageTypeKnown(&found, &type) {
+        discard found.add(copySemanticType(&type))
+    }
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = semanticTypeArgument(&type, index)
+        collectCPackageFunctionTypes(&argument, &found)
+        index += 1
+    }
+}
+
+fn cPackageTypeKnown(&types arena<semanticType>, &type semanticType) bool {
+    const key = cPackageTypeKey(&type)
+    var index u64 = 0
+    while index < types.len() {
+        var value = match types.take(index) {
+            None: panic("function type slot is empty")
+            Some(found): found
+        }
+        const same = cPackageTypeKey(&value) == key
+        types.restore(index, $value)
+        if same return true
+        index += 1
+    }
+    false
+}
+
+struct cPackageTypeEntry {
+    key String
+    index u64
+}
+
+fn compareCPackageTypeEntry(left cPackageTypeEntry, right cPackageTypeEntry) i32 {
+    const order = text.Compare(left.key, right.key)
+    if order != 0 return order
+    compareCPackageIndex(left.index, right.index)
+}
+
+fn sortCPackageFunctionTypes(&found arena<semanticType>) own arena<semanticType> {
+    var entries = newArena<cPackageTypeEntry>()
+    var index u64 = 0
+    while index < found.len() {
+        var value = match found.take(index) {
+            None: panic("function type slot is empty")
+            Some(selected): selected
+        }
+        discard entries.add(cPackageTypeEntry { key = cPackageTypeKey(&value) index = index })
+        found.restore(index, $value)
+        index += 1
+    }
+    sortArena<cPackageTypeEntry>(&entries, compareCPackageTypeEntry)
+    var result = newArena<semanticType>()
+    index = 0
+    while index < entries.len() {
+        const entry = match entries.take(index) {
+            None: panic("function type entry slot is empty")
+            Some(selected): selected
+        }
+        discard result.add(semanticTypeArenaAt(&found, entry.index))
+        entries.restore(index, $entry)
+        index += 1
+    }
+    result
+}
+
+fn cPackageTypeIndex(&types arena<semanticType>, &type semanticType) Option<u64> {
+    const key = cPackageTypeKey(&type)
+    var index u64 = 0
+    while index < types.len() {
+        var value = match types.take(index) {
+            None: panic("function type slot is empty")
+            Some(found): found
+        }
+        const same = cPackageTypeKey(&value) == key
+        types.restore(index, $value)
+        if same return .Some(index)
+        index += 1
+    }
+    .None
+}
+
+fn collectCPackageTypeDependencies(
+    &types arena<semanticType>,
+    &type semanticType,
+    &dependencies arena<u64>
+) void {
+    var index u64 = 0
+    while index < type.arguments.len() {
+        var argument = semanticTypeArgument(&type, index)
+        if argument.kind.Matches("Function") {
+            match cPackageTypeIndex(&types, &argument) {
+                None: {}
+                Some(found): {
+                    if !formatOffsetKnown(&dependencies, found) {
+                        discard dependencies.add(found)
+                    }
+                }
+            }
+        } else {
+            collectCPackageTypeDependencies(&types, &argument, &dependencies)
+        }
+        index += 1
+    }
+}
+
+fn visitCPackageFunctionType(
+    &types arena<semanticType>,
+    index u64,
+    &states arena<u64>,
+    &ordered arena<u64>
+) void {
+    const state = importArenaAt(&states, index)
+    if state == 2 return
+    if state == 1 {
+        panic("recursive function type reached C emission")
+    }
+    setArenaValue<u64>(&states, index, 1)
+    var type = match types.take(index) {
+        None: panic("function type slot is empty")
+        Some(found): found
+    }
+    var dependencies = newArena<u64>()
+    collectCPackageTypeDependencies(&types, &type, &dependencies)
+    types.restore(index, $type)
+    sortArena<u64>(&dependencies, compareCPackageIndex)
+    var dependency u64 = 0
+    while dependency < dependencies.len() {
+        visitCPackageFunctionType(
+            &types, importArenaAt(&dependencies, dependency), &states, &ordered)
+        dependency += 1
+    }
+    setArenaValue<u64>(&states, index, 2)
+    discard ordered.add(index)
+}
+
+fn compareCPackageIndex(left u64, right u64) i32 {
+    if left < right return -1
+    if left > right return 1
+    0
+}
+
+// Orders function types by key, placing every function type that another
+// one names ahead of it.
+fn orderCPackageFunctionTypes(&found arena<semanticType>) own arena<semanticType> {
+    var sorted = sortCPackageFunctionTypes(&found)
+    var states = newPiiLayoutStates(sorted.len())
+    var ordered = newArena<u64>()
+    var index u64 = 0
+    while index < sorted.len() {
+        visitCPackageFunctionType(&sorted, index, &states, &ordered)
+        index += 1
+    }
+    var result = newArena<semanticType>()
+    index = 0
+    while index < ordered.len() {
+        discard result.add(semanticTypeArenaAt(&sorted, importArenaAt(&ordered, index)))
+        index += 1
+    }
+    result
+}
+
+// Spells a boundary type for header consumers: structs by their public
+// name, pointers and borrows as C pointers, and every other type as the
+// runtime does.
+fn cPackagePublicType(&program firProgram, &type semanticType, library String) String {
+    if type.kind.Matches("StructValue") && type.declaration < program.structs.len() {
+        return packageCTypeName(library, piiStructName(&program, type.declaration))
+    }
+    const pointer = type.kind.Matches("Raw") || type.kind.Matches("RawConst") ||
+        type.kind.Matches("View") || type.kind.Matches("Edit")
+    if pointer && type.arguments.len() == 1 {
+        var argument = semanticTypeArgument(&type, 0)
+        const target = cPackagePublicType(&program, &argument, library)
+        if type.kind.Matches("RawConst") || type.kind.Matches("View") {
+            return "const " + target + " *"
+        }
+        return target + " *"
+    }
+    cTypeName(&type)
+}
+
+fn cPackageExportAt(&exports arena<cHeaderExport>, index u64) cHeaderExport {
+    const value = match exports.take(index) {
+        None: panic("C header export slot is empty")
+        Some(found): found
+    }
+    const result = cHeaderExport { symbol = text.Copy(value.symbol) function = value.function }
+    exports.restore(index, $value)
+    result
+}
+
+fn collectCPackageFieldFunctionTypes(
+    &program firProgram,
+    &layouts arena<u64>,
+    &functionTypes arena<semanticType>
+) void {
+    var index u64 = 0
+    while index < layouts.len() {
+        var declaration = piiStructCopy(&program, importArenaAt(&layouts, index))
+        var field u64 = 0
+        while field < declaration.fields.len() {
+            var value = match declaration.fields.take(field) {
+                None: panic("struct field slot is empty")
+                Some(found): found
+            }
+            collectCPackageFunctionTypes(&value.type, &functionTypes)
+            declaration.fields.restore(field, $value)
+            field += 1
+        }
+        index += 1
+    }
+}
+
+// Emits the struct definitions of the header layouts so that every struct
+// follows the structs it holds by value.
+fn cEmitPackageStructDefinitions(
+    &builder text.Builder,
+    &program firProgram,
+    &layouts arena<u64>
+) void {
+    var counts = newPiiLayoutStates(program.structs.len())
+    var dependents = newArena<own arena<u64>>()
+    while dependents.len() < program.structs.len() {
+        discard dependents.add($newArena<u64>())
+    }
+    var index u64 = 0
+    while index < layouts.len() {
+        const id = importArenaAt(&layouts, index)
+        var declaration = piiStructCopy(&program, id)
+        var field u64 = 0
+        while field < declaration.fields.len() {
+            var value = match declaration.fields.take(field) {
+                None: panic("struct field slot is empty")
+                Some(found): found
+            }
+            const held = value.type.declaration
+            if value.type.kind.Matches("StructValue") && formatOffsetKnown(&layouts, held) {
+                const count = importArenaAt(&counts, id) + 1
+                setArenaValue<u64>(&counts, id, count)
+                var group = match dependents.take(held) {
+                    None: panic("struct dependent slot is empty")
+                    Some(found): found
+                }
+                discard group.add(id)
+                dependents.restore(held, $group)
+            }
+            declaration.fields.restore(field, $value)
+            field += 1
+        }
+        index += 1
+    }
+    var ready = newArena<u64>()
+    index = 0
+    while index < layouts.len() {
+        const id = importArenaAt(&layouts, index)
+        if importArenaAt(&counts, id) == 0 {
+            discard ready.add(id)
+        }
+        index += 1
+    }
+    var cursor u64 = 0
+    while cursor < ready.len() {
+        const id = importArenaAt(&ready, cursor)
+        cEmitStructDefinition(&builder, &program, id)
+        var group = match dependents.take(id) {
+            None: panic("struct dependent slot is empty")
+            Some(found): found
+        }
+        var dependent u64 = 0
+        while dependent < group.len() {
+            const next = importArenaAt(&group, dependent)
+            const remaining = importArenaAt(&counts, next) - 1
+            setArenaValue<u64>(&counts, next, remaining)
+            if remaining == 0 {
+                discard ready.add(next)
+            }
+            dependent += 1
+        }
+        dependents.restore(id, $group)
+        cursor += 1
+    }
+    if ready.len() != layouts.len() {
+        panic("recursive inline type reached package header emission")
+    }
+}
+
+fn cEmitPackagePrototype(
+    &builder text.Builder,
+    &program firProgram,
+    selected cHeaderExport,
+    library String
+) void {
+    var function = cFunctionAt(&program, selected.function)
+    cWrite(&builder, "FOUNDATION_LIBRARY_API " +
+        cPackagePublicType(&program, &function.returnType, library) + " " + selected.symbol +
+        "(")
+    if function.parameters.len() == 0 {
+        cWrite(&builder, "void")
+    }
+    var index u64 = 0
+    while index < function.parameters.len() {
+        if index != 0 {
+            cWrite(&builder, ", ")
+        }
+        const local = cU64At(&function.parameters, index)
+        var localType = cLocalTypeAt(&function, local)
+        cWrite(&builder, cPackagePublicType(&program, &localType, library) + " fdn_arg_" +
+            format.U64(index))
+        index += 1
+    }
+    cWrite(&builder, ");\n")
+}
+
+// Declares the C ABI of a native library for its consumers: the struct
+// layouts its exports reach under their public names, the C function types
+// they use, and the exported functions in symbol order behind
+// FOUNDATION_LIBRARY_API.
+fn emitSelfHostedPackageCHeader(
+    &source firProgram,
+    packageName String,
+    library String
+) String {
+    var program = monomorphizePackageInterface(&source, packageName)
+    var exports = cPackageExports(&program)
+    const guard = cHeaderGuard(library)
+    var builder = text.NewBuilder()
+    cWrite(&builder, "#ifndef " + guard + "\n#define " + guard + "\n\n" +
+        "#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n" +
+        "#include \"foundation/library.h\"\n\n" +
+        "#if defined(FOUNDATION_LIBRARY_STATIC)\n#define FOUNDATION_LIBRARY_API\n" +
+        "#elif defined(_WIN32)\n#define FOUNDATION_LIBRARY_API __declspec(dllimport)\n" +
+        "#elif defined(__GNUC__) || defined(__clang__)\n" +
+        "#define FOUNDATION_LIBRARY_API __attribute__((visibility(\"default\")))\n" +
+        "#else\n#define FOUNDATION_LIBRARY_API\n#endif\n\n")
+    var layouts = newArena<u64>()
+    var functionTypes = newArena<semanticType>()
+    var index u64 = 0
+    while index < exports.len() {
+        const selected = cPackageExportAt(&exports, index)
+        var function = cFunctionAt(&program, selected.function)
+        collectCPackageLayouts(&program, &function.returnType, &layouts)
+        collectCPackageFunctionTypes(&function.returnType, &functionTypes)
+        var parameter u64 = 0
+        while parameter < function.parameters.len() {
+            const local = cU64At(&function.parameters, parameter)
+            var localType = cLocalTypeAt(&function, local)
+            collectCPackageLayouts(&program, &localType, &layouts)
+            collectCPackageFunctionTypes(&localType, &functionTypes)
+            parameter += 1
+        }
+        index += 1
+    }
+    sortArena<u64>(&layouts, compareCPackageIndex)
+    index = 0
+    while index < layouts.len() {
+        const id = importArenaAt(&layouts, index)
+        const name = format.U64(id)
+        cWrite(&builder, "typedef struct fdn_struct_" + name + " fdn_struct_" + name + ";\n")
+        cWrite(&builder, "typedef fdn_struct_" + name + " " +
+            packageCTypeName(library, piiStructName(&program, id)) + ";\n")
+        index += 1
+    }
+    if layouts.len() != 0 {
+        cWrite(&builder, "\n")
+    }
+    collectCPackageFieldFunctionTypes(&program, &layouts, &functionTypes)
+    var ordered = orderCPackageFunctionTypes(&functionTypes)
+    index = 0
+    while index < ordered.len() {
+        var type = semanticTypeArenaAt(&ordered, index)
+        if isCSemanticFunction(&type) {
+            cEmitFunctionTypeDefinition(&builder, &type)
+        }
+        index += 1
+    }
+    cEmitPackageStructDefinitions(&builder, &program, &layouts)
+    cWrite(&builder, "#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n")
+    index = 0
+    while index < exports.len() {
+        cEmitPackagePrototype(&builder, &program, cPackageExportAt(&exports, index), library)
+        index += 1
+    }
+    if exports.len() != 0 {
+        cWrite(&builder, "\n")
+    }
+    cWrite(&builder, "#ifdef __cplusplus\n}\n#endif\n\n#undef FOUNDATION_LIBRARY_API\n\n#endif\n")
+    cFinish(&builder)
+}
