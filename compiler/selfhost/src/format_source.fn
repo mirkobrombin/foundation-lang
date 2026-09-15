@@ -1,0 +1,139 @@
+package foundation.compiler
+
+import std.io
+import std.text
+
+struct formattedSource {
+    contents String
+    diagnostics own diagnostics
+}
+
+fn sameFormatTokens(&left arena<formatToken>, &right arena<token>) bool {
+    if left.len() != right.len() return false
+    var index u64 = 0
+    while index < left.len() {
+        const kind = formatTokenKind(&left, index)
+        const value = formatTokenText(&left, index)
+        if !importTokenKindIs(&right, index, kind) || importTokenText(&right, index) != value {
+            return false
+        }
+        index += 1
+    }
+    true
+}
+
+// Formats one source file. A source that does not lex or parse is returned
+// unchanged with its diagnostics; so is one whose formatted text would not
+// reproduce the original token stream, which reports FDN9996.
+fn formatSource(source String, sourceID u64) own formattedSource {
+    var contents = text.Copy(source)
+    const scanResult { tokens diagnostics } = scan($contents, sourceID)
+    var found = diagnostics
+    if found.hasErrors() {
+        return own formattedSource { contents = text.Copy(source) diagnostics = found }
+    }
+    var lookahead = newFormatLookahead($tokens)
+    var original = formatTokenArena(&lookahead)
+    var syntax = parseToolingProgram(source, sourceID, &found)
+    if found.hasErrors() {
+        return own formattedSource { contents = text.Copy(source) diagnostics = found }
+    }
+    const formatted = formatProgramSource(source, &original, &syntax, &lookahead)
+    var verification = newDiagnostics()
+    var copy = text.Copy(formatted)
+    const scanned = scan($copy, sourceID)
+    const scanResult { tokens as formattedList diagnostics as scanDiagnostics } = scanned
+    var preserved = !scanDiagnostics.hasErrors()
+    discard scanDiagnostics
+    if preserved {
+        discard parseToolingProgram(formatted, sourceID, &verification)
+        preserved = !verification.hasErrors()
+    }
+    discard verification
+    var formattedTokens = newArena<token>()
+    var pending = formattedList
+    while !pending.IsEmpty() {
+        match pending.PopFront() {
+            None: panic("token list invariant failed")
+            Some(value): {
+                discard formattedTokens.add($value)
+            }
+        }
+    }
+    if !preserved || !sameFormatTokens(&original, &formattedTokens) {
+        found.reportError(
+            "FDN9996",
+            "formatter did not preserve the token stream",
+            sourceSpan {
+                offset = 0
+                length = 0 if text.IsEmpty(source) else 1
+                line = 1
+                column = 1
+                source = sourceID
+            }
+        )
+        return own formattedSource { contents = text.Copy(source) diagnostics = found }
+    }
+    own formattedSource { contents = formatted diagnostics = found }
+}
+
+fn renderFileDiagnostics(path String, contents String, $found own diagnostics) String {
+    var values = $found.takeAll()
+    var result = ""
+    while !values.IsEmpty() {
+        const value = match values.PopFront() {
+            None: panic("diagnostic list invariant failed")
+            Some(found): found
+        }
+        result += renderSourceDiagnostic(path, contents, value)
+    }
+    result
+}
+
+// Formats every selected source. Nothing is written unless every source
+// formats cleanly.
+fn runCompilerFormat(input String, mode compilerFormatMode) i32 {
+    var sources = match compilerFormatterSources(input) {
+        None: {
+            return 2
+        }
+        Some(value): value
+    }
+    if compilerFormatModeIs(mode, "stdout") && sources.len() != 1 {
+        compilerProcessFailure("stdout formatting requires one source file")
+        return 2
+    }
+    if compilerFormatModeIs(mode, "write") && !compilerAllReplaceable(&sources) return 1
+    var changed = newArena<compilerChangedFile>()
+    var index u64 = 0
+    while index < sources.len() {
+        const source = match sources.take(index) {
+            None: panic("source path slot is empty")
+            Some(value): value
+        }
+        const sourcePath = text.Copy(source)
+        sources.restore(index, $source)
+        index += 1
+        const contents = match compilerReadSource(sourcePath) {
+            None: {
+                return 1
+            }
+            Some(value): value
+        }
+        const formatted = formatSource(contents, 0)
+        const formattedSource { contents as result diagnostics } = formatted
+        if diagnostics.hasErrors() {
+            discard io.WriteStderrText(renderFileDiagnostics(sourcePath, contents, $diagnostics))
+            return 1
+        }
+        discard diagnostics
+        if compilerFormatModeIs(mode, "stdout") {
+            discard io.WriteStdoutText(result)
+        } else {
+            if result != contents {
+                discard changed.add(compilerChangedFile { path = sourcePath contents = result })
+            }
+        }
+    }
+    finishCompilerFormat(&changed, mode)
+}

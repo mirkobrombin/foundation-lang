@@ -1,0 +1,381 @@
+package foundation.compiler
+
+import std.collections
+
+// Collects the source offsets where type syntax begins. A star, ampersand,
+// or bracket at one of these offsets opens a type rather than an expression.
+fn collectFormatTypeStarts(&type typeSyntax, &starts arena<u64>) void {
+    discard starts.add(type.span.offset)
+    var pending = collections.NewList<typeSyntax>()
+    while !type.arguments.IsEmpty() {
+        var argument = match type.arguments.PopFront() {
+            None: panic("type argument list invariant failed")
+            Some(found): found
+        }
+        collectFormatTypeStarts(&argument, &starts)
+        pending.PushFront($argument)
+    }
+    while !pending.IsEmpty() {
+        const argument = match pending.PopFront() {
+            None: panic("type argument restore invariant failed")
+            Some(found): found
+        }
+        type.arguments.PushFront($argument)
+    }
+}
+
+fn collectFormatTypeList(&types collections.List<typeSyntax>, &starts arena<u64>) void {
+    var pending = collections.NewList<typeSyntax>()
+    while !types.IsEmpty() {
+        var type = match types.PopFront() {
+            None: panic("type list invariant failed")
+            Some(found): found
+        }
+        collectFormatTypeStarts(&type, &starts)
+        pending.PushFront($type)
+    }
+    while !pending.IsEmpty() {
+        const type = match pending.PopFront() {
+            None: panic("type list restore invariant failed")
+            Some(found): found
+        }
+        types.PushFront($type)
+    }
+}
+
+fn collectFormatParameterTypes(
+    &parameters collections.List<parameter>,
+    &starts arena<u64>
+) void {
+    var pending = collections.NewList<parameter>()
+    while !parameters.IsEmpty() {
+        var value = match parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(found): found
+        }
+        collectFormatTypeStarts(&value.type, &starts)
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(found): found
+        }
+        parameters.PushFront($value)
+    }
+}
+
+fn collectFormatStructTypes(&source program, &starts arena<u64>) void {
+    var index u64 = 0
+    while index < source.structs.len() {
+        var declaration = match source.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(found): found
+        }
+        var implementations = collections.NewList<structImplementation>()
+        while !declaration.implementations.IsEmpty() {
+            var value = match declaration.implementations.PopFront() {
+                None: panic("implementation list invariant failed")
+                Some(found): found
+            }
+            collectFormatTypeStarts(&value.contractType, &starts)
+            implementations.PushFront($value)
+        }
+        while !implementations.IsEmpty() {
+            const value = match implementations.PopFront() {
+                None: panic("implementation restore invariant failed")
+                Some(found): found
+            }
+            declaration.implementations.PushFront($value)
+        }
+        var fields = collections.NewList<structField>()
+        while !declaration.fields.IsEmpty() {
+            var value = match declaration.fields.PopFront() {
+                None: panic("struct field list invariant failed")
+                Some(found): found
+            }
+            collectFormatTypeStarts(&value.type, &starts)
+            fields.PushFront($value)
+        }
+        while !fields.IsEmpty() {
+            const value = match fields.PopFront() {
+                None: panic("struct field restore invariant failed")
+                Some(found): found
+            }
+            declaration.fields.PushFront($value)
+        }
+        source.structs.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn collectFormatEnumTypes(&source program, &starts arena<u64>) void {
+    var index u64 = 0
+    while index < source.enums.len() {
+        var declaration = match source.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(found): found
+        }
+        var variants = collections.NewList<enumVariant>()
+        while !declaration.variants.IsEmpty() {
+            var value = match declaration.variants.PopFront() {
+                None: panic("enum variant list invariant failed")
+                Some(found): found
+            }
+            match replace value.payloadType with .None {
+                None: {}
+                Some(payload): {
+                    var type = payload
+                    collectFormatTypeStarts(&type, &starts)
+                    value.payloadType = .Some(type)
+                }
+            }
+            variants.PushFront($value)
+        }
+        while !variants.IsEmpty() {
+            const value = match variants.PopFront() {
+                None: panic("enum variant restore invariant failed")
+                Some(found): found
+            }
+            declaration.variants.PushFront($value)
+        }
+        source.enums.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn collectFormatContractTypes(&source program, &starts arena<u64>) void {
+    var index u64 = 0
+    while index < source.contracts.len() {
+        var declaration = match source.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(found): found
+        }
+        collectFormatTypeList(&declaration.parents, &starts)
+        var pendingMethods = collections.NewList<contractMethod>()
+        while !declaration.methodList.IsEmpty() {
+            var value = match declaration.methodList.PopFront() {
+                None: panic("contract method list invariant failed")
+                Some(found): found
+            }
+            collectFormatParameterTypes(&value.parameters, &starts)
+            collectFormatTypeStarts(&value.returnType, &starts)
+            pendingMethods.PushFront($value)
+        }
+        while !pendingMethods.IsEmpty() {
+            const value = match pendingMethods.PopFront() {
+                None: panic("contract method restore invariant failed")
+                Some(found): found
+            }
+            declaration.methodList.PushFront($value)
+        }
+        source.contracts.restore(index, $declaration)
+        index += 1
+    }
+    index = 0
+    while index < source.attributeDeclarations.len() {
+        var declaration = match source.attributeDeclarations.take(index) {
+            None: panic("attribute declaration slot is empty")
+            Some(found): found
+        }
+        collectFormatParameterTypes(&declaration.parameters, &starts)
+        source.attributeDeclarations.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn collectFormatFunctionTypes(&source program, &starts arena<u64>) void {
+    var index u64 = 0
+    while index < source.functions.len() {
+        var declaration = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        collectFormatParameterTypes(&declaration.parameters, &starts)
+        collectFormatTypeStarts(&declaration.returnType, &starts)
+        match replace declaration.workflow with .None {
+            None: {}
+            Some(found): {
+                var workflow = found
+                collectFormatTypeStarts(&workflow.successType, &starts)
+                collectFormatTypeStarts(&workflow.errorType, &starts)
+                declaration.workflow = .Some(workflow)
+            }
+        }
+        source.functions.restore(index, $declaration)
+        index += 1
+    }
+}
+
+fn collectFormatStatementTypes(&source program, &starts arena<u64>) void {
+    var index u64 = 0
+    while index < source.statements.len() {
+        const node = match source.statements.take(index) {
+            None: panic("statement slot is empty")
+            Some(found): found
+        }
+        const statementNode { value span } = node
+        const restored = match value {
+            Variable(payload): {
+                var variable = payload
+                match replace variable.type with .None {
+                    None: {}
+                    Some(found): {
+                        var type = found
+                        collectFormatTypeStarts(&type, &starts)
+                        variable.type = .Some(type)
+                    }
+                }
+                statementValue.Variable(variable)
+            }
+            StructDestructure(payload): {
+                var destructure = payload
+                collectFormatTypeStarts(&destructure.type, &starts)
+                statementValue.StructDestructure(destructure)
+            }
+            Assignment(payload): statementValue.Assignment(payload)
+            Expression(payload): statementValue.Expression(payload)
+            ResultElse(payload): statementValue.ResultElse(payload)
+            ReturnValue(payload): statementValue.ReturnValue(payload)
+            DiscardValue(payload): statementValue.DiscardValue(payload)
+            IfValue(payload): statementValue.IfValue(payload)
+            WhileValue(payload): statementValue.WhileValue(payload)
+            ForValue(payload): statementValue.ForValue(payload)
+            BreakValue: statementValue.BreakValue
+            ContinueValue: statementValue.ContinueValue
+            SelectValue(payload): statementValue.SelectValue(payload)
+            UnsafeValue(payload): statementValue.UnsafeValue(payload)
+        }
+        source.statements.restore(index, $statementNode { value = restored span = span })
+        index += 1
+    }
+}
+
+fn collectFormatExpressionTypes(&source program, &starts arena<u64>) void {
+    var index u64 = 0
+    while index < source.expressions.len() {
+        const node = match source.expressions.take(index) {
+            None: panic("expression slot is empty")
+            Some(found): found
+        }
+        const expressionNode { value span } = node
+        const restored = match value {
+            Name(payload): {
+                var name = payload
+                collectFormatTypeList(&name.typeArguments, &starts)
+                expressionValue.Name(name)
+            }
+            Call(payload): {
+                var call = payload
+                collectFormatTypeList(&call.typeArguments, &starts)
+                expressionValue.Call(call)
+            }
+            StructValue(payload): {
+                var literal = payload
+                collectFormatTypeStarts(&literal.type, &starts)
+                expressionValue.StructValue(literal)
+            }
+            Member(payload): {
+                var member = payload
+                collectFormatTypeList(&member.typeArguments, &starts)
+                expressionValue.Member(member)
+            }
+            Integer(payload): expressionValue.Integer(payload)
+            Floating(payload): expressionValue.Floating(payload)
+            Boolean(payload): expressionValue.Boolean(payload)
+            StringValue(payload): expressionValue.StringValue(payload)
+            Array(payload): expressionValue.Array(payload)
+            Unary(payload): expressionValue.Unary(payload)
+            Ownership(payload): expressionValue.Ownership(payload)
+            Binary(payload): expressionValue.Binary(payload)
+            Index(payload): expressionValue.Index(payload)
+            Replace(payload): expressionValue.Replace(payload)
+            Spawn(payload): expressionValue.Spawn(payload)
+            MatchValue(payload): expressionValue.MatchValue(payload)
+            Conditional(payload): expressionValue.Conditional(payload)
+            FunctionValue(payload): expressionValue.FunctionValue(payload)
+        }
+        source.expressions.restore(index, $expressionNode { value = restored span = span })
+        index += 1
+    }
+}
+
+fn formatTypeStarts(&source program) own arena<u64> {
+    var starts = newArena<u64>()
+    collectFormatStructTypes(&source, &starts)
+    collectFormatEnumTypes(&source, &starts)
+    collectFormatContractTypes(&source, &starts)
+    collectFormatFunctionTypes(&source, &starts)
+    collectFormatStatementTypes(&source, &starts)
+    collectFormatExpressionTypes(&source, &starts)
+    starts
+}
+
+// Offsets of the blocks that form closure bodies.
+fn formatClosureBlockStarts(&source program) own arena<u64> {
+    var starts = newArena<u64>()
+    var index u64 = 0
+    while index < source.functions.len() {
+        const declaration = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        const closure = declaration.closure
+        const body = declaration.body
+        source.functions.restore(index, $declaration)
+        if closure && body < source.blocks.len() {
+            const block = match source.blocks.take(body) {
+                None: panic("block slot is empty")
+                Some(found): found
+            }
+            discard starts.add(block.span.offset)
+            source.blocks.restore(body, $block)
+        }
+        index += 1
+    }
+    starts
+}
+
+// Lines that begin a saga compensation clause, which indents one level
+// beneath its step.
+fn formatCompensationLines(&source program) own arena<u64> {
+    var lines = newArena<u64>()
+    var index u64 = 0
+    while index < source.functions.len() {
+        var declaration = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        match replace declaration.workflow with .None {
+            None: {}
+            Some(found): {
+                var workflow = found
+                var steps = collections.NewList<workflowStep>()
+                while !workflow.steps.IsEmpty() {
+                    const step = match workflow.steps.PopFront() {
+                        None: panic("workflow step list invariant failed")
+                        Some(value): value
+                    }
+                    match step.compensationSpan {
+                        None: {}
+                        Some(span): {
+                            discard lines.add(span.line)
+                        }
+                    }
+                    steps.PushFront($step)
+                }
+                while !steps.IsEmpty() {
+                    const step = match steps.PopFront() {
+                        None: panic("workflow step restore invariant failed")
+                        Some(value): value
+                    }
+                    workflow.steps.PushFront($step)
+                }
+                declaration.workflow = .Some(workflow)
+            }
+        }
+        source.functions.restore(index, $declaration)
+        index += 1
+    }
+    lines
+}

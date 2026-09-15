@@ -1,0 +1,316 @@
+package foundation.compiler
+
+import std.text
+
+// Rebuilds source text from tokens and the trivia between them. Completed
+// lines are flushed to done; line holds the text after the last flush.
+struct formatWriter {
+    source String
+    done String
+    line String
+    braceDepth u64
+    braceClosureExtras own arena<bool>
+    parenBraceDepths own arena<u64>
+    parenOpeningLines own arena<u64>
+    bracketBraceDepths own arena<u64>
+    compensationLines own arena<u64>
+    lastToken tokenKind
+    lastGeneric bool
+    lineStart bool
+    continuation bool
+}
+
+fn newFormatWriter(source String, $compensationLines own arena<u64>) own formatWriter {
+    own formatWriter {
+        source = text.Copy(source)
+        done = ""
+        line = ""
+        braceDepth = 0
+        braceClosureExtras = newArena<bool>()
+        parenBraceDepths = newArena<u64>()
+        parenOpeningLines = newArena<u64>()
+        bracketBraceDepths = newArena<u64>()
+        compensationLines = compensationLines
+        lastToken = .Eof
+        lastGeneric = false
+        lineStart = true
+        continuation = false
+    }
+}
+
+fn formatBlankTail(value String) u64 {
+    var end = text.ByteLen(value)
+    while end > 0 && importBlank(applicationByteAt(value, end - 1)) {
+        end -= 1
+    }
+    end
+}
+
+fn formatEndsWithNewline(&writer formatWriter) bool {
+    const length = text.ByteLen(writer.line)
+    if length != 0 return applicationByteAt(writer.line, length - 1) == 10
+    !text.IsEmpty(writer.done)
+}
+
+fn formatTrimLine(&writer formatWriter) void {
+    writer.line = applicationSlice(writer.line, 0, formatBlankTail(writer.line))
+}
+
+fn formatNewline(&writer formatWriter) void {
+    const continuation = !writer.lineStart &&
+        formatContinuesExpression(writer.lastToken, writer.lastGeneric)
+    formatTrimLine(&writer)
+    const flushed = writer.line + "\n"
+    writer.done += flushed
+    writer.line = ""
+    writer.lineStart = true
+    writer.continuation = continuation
+}
+
+fn formatCountAtLeast(&values arena<u64>, count u64, threshold u64) u64 {
+    var result u64 = 0
+    var index u64 = 0
+    while index < count {
+        if importArenaAt(&values, index) >= threshold {
+            result += 1
+        }
+        index += 1
+    }
+    result
+}
+
+fn formatIndent(&writer formatWriter, next tokenKind, workflowChild bool) void {
+    var braces = writer.braceDepth
+    const closingBrace = sameTokenKind(next, .RightBrace)
+    if closingBrace && braces != 0 {
+        braces -= 1
+    }
+    const threshold = writer.braceDepth if closingBrace else braces
+    var parenCount = writer.parenBraceDepths.len()
+    if sameTokenKind(next, .RightParen) && parenCount != 0 {
+        parenCount -= 1
+    }
+    var bracketCount = writer.bracketBraceDepths.len()
+    if sameTokenKind(next, .RightBracket) && bracketCount != 0 {
+        bracketCount -= 1
+    }
+    const nestedParens = formatCountAtLeast(&writer.parenBraceDepths, parenCount, threshold)
+    const nestedBrackets = formatCountAtLeast(
+        &writer.bracketBraceDepths, bracketCount, threshold)
+    var closureExtras u64 = 0
+    var index u64 = 0
+    while index < writer.braceClosureExtras.len() {
+        if formatFlag(&writer.braceClosureExtras, index) {
+            closureExtras += 1
+        }
+        index += 1
+    }
+    var width = (braces + nestedParens + nestedBrackets + closureExtras) * 4
+    if writer.continuation && nestedParens == 0 && nestedBrackets == 0 {
+        width += 4
+    }
+    if workflowChild {
+        width += 4
+    }
+    writer.line += renderRepeated(" ", width)
+    writer.lineStart = false
+    writer.continuation = false
+}
+
+fn formatWriteComment(&writer formatWriter, comment String) void {
+    if writer.lineStart {
+        formatIndent(&writer, .Eof, false)
+    } else {
+        formatTrimLine(&writer)
+        writer.line += " "
+    }
+    writer.line += applicationSlice(comment, 0, formatBlankTail(comment))
+    writer.lineStart = false
+}
+
+// Copies a block comment with every line ending normalized to a newline.
+fn formatWriteBlockComment(&writer formatWriter, comment String) void {
+    if writer.lineStart {
+        formatIndent(&writer, .Eof, false)
+    } else {
+        formatTrimLine(&writer)
+        writer.line += " "
+    }
+    const length = text.ByteLen(comment)
+    var start u64 = 0
+    var offset u64 = 0
+    while offset < length {
+        if applicationByteAt(comment, offset) == 13 {
+            writer.line += applicationSlice(comment, start, offset) + "\n"
+            if offset + 1 < length && applicationByteAt(comment, offset + 1) == 10 {
+                offset += 1
+            }
+            start = offset + 1
+        }
+        offset += 1
+    }
+    writer.line += applicationSlice(comment, start, length)
+    writer.lineStart = formatEndsWithNewline(&writer)
+}
+
+fn formatBlockCommentEnd(value String, offset u64) u64 {
+    const length = text.ByteLen(value)
+    var end = offset + 2
+    var depth u64 = 1
+    while end < length && depth != 0 {
+        if end + 1 < length && applicationByteAt(value, end) == 47 &&
+            applicationByteAt(value, end + 1) == 42 {
+            end += 2
+            depth += 1
+        } else {
+            if end + 1 < length && applicationByteAt(value, end) == 42 &&
+                applicationByteAt(value, end + 1) == 47 {
+                end += 2
+                depth -= 1
+            } else {
+                end += 1
+            }
+        }
+    }
+    end
+}
+
+// Writes the comments and line breaks of the text between two tokens;
+// horizontal whitespace is dropped.
+fn formatTrivia(&writer formatWriter, value String) void {
+    const length = text.ByteLen(value)
+    var offset u64 = 0
+    while offset < length {
+        const byte = applicationByteAt(value, offset)
+        const next = applicationByteAt(value, offset + 1) if offset + 1 < length else 0
+        if byte == 47 && next == 47 {
+            var end = offset + 2
+            while end < length && applicationByteAt(value, end) != 13 &&
+                applicationByteAt(value, end) != 10 {
+                end += 1
+            }
+            formatWriteComment(&writer, applicationSlice(value, offset, end))
+            offset = end
+            continue
+        }
+        if byte == 47 && next == 42 {
+            const end = formatBlockCommentEnd(value, offset)
+            formatWriteBlockComment(&writer, applicationSlice(value, offset, end))
+            offset = end
+            continue
+        }
+        if byte == 13 {
+            if next == 10 {
+                offset += 1
+            }
+            formatNewline(&writer)
+        } else {
+            if byte == 10 {
+                formatNewline(&writer)
+            }
+        }
+        offset += 1
+    }
+}
+
+fn formatPopU64(&values arena<u64>) void {
+    values.truncate(values.len() - 1)
+}
+
+fn formatUpdateDepth(
+    &writer formatWriter,
+    kind tokenKind,
+    genericDelimiter bool,
+    closureBlock bool,
+    line u64
+) void {
+    if sameTokenKind(kind, .LeftBrace) {
+        writer.braceDepth += 1
+        var multilineParent = false
+        var index u64 = 0
+        while index < writer.parenOpeningLines.len() {
+            if importArenaAt(&writer.parenOpeningLines, index) != line {
+                multilineParent = true
+            }
+            index += 1
+        }
+        discard writer.braceClosureExtras.add(closureBlock && multilineParent)
+    } else {
+        if sameTokenKind(kind, .RightBrace) && writer.braceDepth != 0 {
+            writer.braceDepth -= 1
+            writer.braceClosureExtras.truncate(writer.braceClosureExtras.len() - 1)
+        }
+        if sameTokenKind(kind, .LeftParen) {
+            discard writer.parenBraceDepths.add(writer.braceDepth)
+            discard writer.parenOpeningLines.add(line)
+        }
+        if sameTokenKind(kind, .RightParen) && writer.parenBraceDepths.len() != 0 {
+            formatPopU64(&writer.parenBraceDepths)
+            formatPopU64(&writer.parenOpeningLines)
+        }
+        if sameTokenKind(kind, .LeftBracket) {
+            discard writer.bracketBraceDepths.add(writer.braceDepth)
+        }
+        if sameTokenKind(kind, .RightBracket) && writer.bracketBraceDepths.len() != 0 {
+            formatPopU64(&writer.bracketBraceDepths)
+        }
+    }
+    writer.lastToken = kind
+    writer.lastGeneric = genericDelimiter
+}
+
+// Lays out one parsed source. Token text is copied verbatim; only the
+// whitespace between tokens and the indentation of each line change.
+fn formatProgramSource(
+    source String,
+    &tokens arena<formatToken>,
+    &syntax program,
+    &lookahead parser
+) String {
+    var generic = formatGenericDelimiters(&tokens, &lookahead)
+    var typeStarts = formatTypeStarts(&syntax)
+    var closureBlocks = formatClosureBlockStarts(&syntax)
+    var typeBrackets = formatTypeOpeningBrackets(&tokens, &typeStarts)
+    var writer = newFormatWriter(source, $formatCompensationLines(&syntax))
+    var previousEnd u64 = 0
+    var index u64 = 0
+    while index < tokens.len() {
+        const offset = formatTokenOffset(&tokens, index)
+        if formatTokenIs(&tokens, index, .Eof) {
+            formatTrivia(&writer, applicationSlice(source, previousEnd, text.ByteLen(source)))
+            break
+        }
+        const gap = applicationSlice(source, previousEnd, offset)
+        formatTrivia(&writer, gap)
+        const kind = formatTokenKind(&tokens, index)
+        const line = formatTokenLine(&tokens, index)
+        if writer.lineStart {
+            const workflowChild = sameTokenKind(kind, .Identifier) &&
+                formatTokenText(&tokens, index) == "compensate" &&
+                formatOffsetKnown(&writer.compensationLines, line)
+            formatIndent(&writer, kind, workflowChild)
+        } else {
+            if index != 0 && !text.Contains(gap, "//") && !text.Contains(gap, "\r") &&
+                !text.Contains(gap, "\n") &&
+                formatSpaceBetween(&tokens, index, &generic, &typeBrackets, &typeStarts) {
+                writer.line += " "
+            }
+        }
+        const end = formatTokenEnd(&tokens, index)
+        const raw = applicationSlice(source, offset, end)
+        writer.line += raw
+        const rawLength = text.ByteLen(raw)
+        writer.lineStart = rawLength != 0 && (applicationByteAt(raw, rawLength - 1) == 10 ||
+            applicationByteAt(raw, rawLength - 1) == 13)
+        formatUpdateDepth(
+            &writer,
+            kind,
+            formatFlag(&generic, index),
+            formatOffsetKnown(&closureBlocks, offset),
+            line
+        )
+        previousEnd = end
+        index += 1
+    }
+    writer.done + writer.line
+}

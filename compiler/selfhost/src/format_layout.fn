@@ -1,0 +1,365 @@
+package foundation.compiler
+
+import std.collections
+
+struct formatToken {
+    kind tokenKind
+    text String
+    offset u64
+    length u64
+    line u64
+}
+
+fn formatTokenKind(&tokens arena<formatToken>, index u64) tokenKind {
+    const value = match tokens.take(index) {
+        None: panic("format token slot is empty")
+        Some(found): found
+    }
+    const kind = value.kind
+    tokens.restore(index, $value)
+    kind
+}
+
+fn formatTokenIs(&tokens arena<formatToken>, index u64, kind tokenKind) bool {
+    sameTokenKind(formatTokenKind(&tokens, index), kind)
+}
+
+fn formatTokenOffset(&tokens arena<formatToken>, index u64) u64 {
+    const value = match tokens.take(index) {
+        None: panic("format token slot is empty")
+        Some(found): found
+    }
+    const offset = value.offset
+    tokens.restore(index, $value)
+    offset
+}
+
+fn formatTokenEnd(&tokens arena<formatToken>, index u64) u64 {
+    const value = match tokens.take(index) {
+        None: panic("format token slot is empty")
+        Some(found): found
+    }
+    const end = value.offset + value.length
+    tokens.restore(index, $value)
+    end
+}
+
+fn formatTokenLine(&tokens arena<formatToken>, index u64) u64 {
+    const value = match tokens.take(index) {
+        None: panic("format token slot is empty")
+        Some(found): found
+    }
+    const line = value.line
+    tokens.restore(index, $value)
+    line
+}
+
+fn formatTokenText(&tokens arena<formatToken>, index u64) String {
+    const value = match tokens.take(index) {
+        None: panic("format token slot is empty")
+        Some(found): found
+    }
+    const result = "" + value.text
+    tokens.restore(index, $value)
+    result
+}
+
+fn formatFlag(&flags arena<bool>, index u64) bool {
+    const value = match flags.take(index) {
+        None: panic("format flag slot is empty")
+        Some(found): found
+    }
+    flags.restore(index, value)
+    value
+}
+
+fn formatOffsetKnown(&offsets arena<u64>, offset u64) bool {
+    var index u64 = 0
+    while index < offsets.len() {
+        if importArenaAt(&offsets, index) == offset return true
+        index += 1
+    }
+    false
+}
+
+fn formatCloses(kind tokenKind) bool {
+    sameTokenKind(kind, .RightBrace) || sameTokenKind(kind, .RightParen) ||
+        sameTokenKind(kind, .RightBracket)
+}
+
+fn formatEndsExpression(kind tokenKind) bool {
+    sameTokenKind(kind, .Identifier) || sameTokenKind(kind, .Integer) ||
+        sameTokenKind(kind, .Floating) || sameTokenKind(kind, .StringLiteral) ||
+        sameTokenKind(kind, .True) || sameTokenKind(kind, .False) || formatCloses(kind)
+}
+
+fn formatBinary(kind tokenKind) bool {
+    sameTokenKind(kind, .Equal) || sameTokenKind(kind, .EqualEqual) ||
+        sameTokenKind(kind, .BangEqual) || sameTokenKind(kind, .Plus) ||
+        sameTokenKind(kind, .PlusEqual) || sameTokenKind(kind, .MinusEqual) ||
+        sameTokenKind(kind, .Star) || sameTokenKind(kind, .StarEqual) ||
+        sameTokenKind(kind, .Slash) || sameTokenKind(kind, .SlashEqual) ||
+        sameTokenKind(kind, .Percent) || sameTokenKind(kind, .PercentEqual) ||
+        sameTokenKind(kind, .LessEqual) || sameTokenKind(kind, .GreaterEqual) ||
+        sameTokenKind(kind, .Ampersand) || sameTokenKind(kind, .Pipe) ||
+        sameTokenKind(kind, .Caret) || sameTokenKind(kind, .AndAnd) ||
+        sameTokenKind(kind, .OrOr)
+}
+
+fn formatComparisonDelimiter(kind tokenKind) bool {
+    sameTokenKind(kind, .Less) || sameTokenKind(kind, .Greater)
+}
+
+fn formatContinuesExpression(kind tokenKind, genericDelimiter bool) bool {
+    formatBinary(kind) || sameTokenKind(kind, .Minus) ||
+        (formatComparisonDelimiter(kind) && !genericDelimiter)
+}
+
+fn formatUnaryMinus(&tokens arena<formatToken>, index u64) bool {
+    formatTokenIs(&tokens, index, .Minus) &&
+        (index == 0 || !formatEndsExpression(formatTokenKind(&tokens, index - 1)))
+}
+
+// A prefix star or ampersand begins a type, starts its line, or follows a
+// token that cannot end an expression.
+fn formatUnaryPrefix(
+    &tokens arena<formatToken>,
+    index u64,
+    kind tokenKind,
+    &typeStarts arena<u64>
+) bool {
+    if !formatTokenIs(&tokens, index, kind) return false
+    if formatOffsetKnown(&typeStarts, formatTokenOffset(&tokens, index)) || index == 0 {
+        return true
+    }
+    formatTokenLine(&tokens, index - 1) != formatTokenLine(&tokens, index) ||
+        !formatEndsExpression(formatTokenKind(&tokens, index - 1))
+}
+
+fn formatSpaceBeforeDot(previous tokenKind, genericPrevious bool) bool {
+    if sameTokenKind(previous, .Greater) return !genericPrevious
+    !formatEndsExpression(previous) && !sameTokenKind(previous, .LeftParen) &&
+        !sameTokenKind(previous, .LeftBracket) && !sameTokenKind(previous, .LeftBrace) &&
+        !sameTokenKind(previous, .At) && !sameTokenKind(previous, .Dot)
+}
+
+fn formatAdjacentShift(
+    &tokens arena<formatToken>,
+    index u64,
+    &generic arena<bool>
+) bool {
+    const previous = formatTokenKind(&tokens, index - 1)
+    const current = formatTokenKind(&tokens, index)
+    const adjacent = formatTokenEnd(&tokens, index - 1) == formatTokenOffset(&tokens, index)
+    const pair = (sameTokenKind(previous, .Less) && sameTokenKind(current, .Less)) ||
+        (sameTokenKind(previous, .Greater) && sameTokenKind(current, .Greater))
+    if adjacent && !formatFlag(&generic, index - 1) && !formatFlag(&generic, index) && pair {
+        return true
+    }
+    if index < 2 || !sameTokenKind(current, .Equal) || !adjacent return false
+    const before = formatTokenKind(&tokens, index - 2)
+    formatFlag(&generic, index - 2) == false && !formatFlag(&generic, index - 1) &&
+        formatTokenEnd(&tokens, index - 2) == formatTokenOffset(&tokens, index - 1) &&
+        ((sameTokenKind(before, .Less) && sameTokenKind(previous, .Less)) ||
+            (sameTokenKind(before, .Greater) && sameTokenKind(previous, .Greater)))
+}
+
+// Decides whether one space separates two tokens that the source placed on
+// the same line without a comment between them.
+fn formatSpaceBetween(
+    &tokens arena<formatToken>,
+    index u64,
+    &generic arena<bool>,
+    &typeBrackets arena<bool>,
+    &typeStarts arena<u64>
+) bool {
+    const previous = formatTokenKind(&tokens, index - 1)
+    const current = formatTokenKind(&tokens, index)
+    if formatAdjacentShift(&tokens, index, &generic) return false
+    if sameTokenKind(current, .RightParen) || sameTokenKind(current, .RightBracket) ||
+        sameTokenKind(current, .Comma) || sameTokenKind(current, .Colon) {
+        return false
+    }
+    if sameTokenKind(current, .Dot) {
+        return formatSpaceBeforeDot(previous, formatFlag(&generic, index - 1))
+    }
+    if sameTokenKind(previous, .LeftParen) || sameTokenKind(previous, .LeftBracket) ||
+        sameTokenKind(previous, .At) || sameTokenKind(previous, .Dot) ||
+        sameTokenKind(previous, .Bang) || sameTokenKind(previous, .Tilde) ||
+        sameTokenKind(previous, .Dollar) || formatUnaryMinus(&tokens, index - 1) ||
+        formatUnaryPrefix(&tokens, index - 1, .Star, &typeStarts) {
+        return false
+    }
+    if formatUnaryPrefix(&tokens, index - 1, .Ampersand, &typeStarts) return false
+    if sameTokenKind(current, .LeftParen) {
+        if sameTokenKind(previous, .Greater) return !formatFlag(&generic, index - 1)
+        return !sameTokenKind(previous, .Identifier) && !sameTokenKind(previous, .Fn) &&
+            !sameTokenKind(previous, .Ctor) && !sameTokenKind(previous, .Capture) &&
+            !sameTokenKind(previous, .RightParen) && !sameTokenKind(previous, .RightBracket)
+    }
+    if sameTokenKind(current, .LeftBracket) {
+        const opening = !sameTokenKind(previous, .LeftParen) &&
+            !sameTokenKind(previous, .LeftBracket)
+        if formatFlag(&typeBrackets, index) return opening
+        return !formatEndsExpression(previous) && opening
+    }
+    if sameTokenKind(previous, .RightBracket) && sameTokenKind(current, .Identifier) {
+        return false
+    }
+    if sameTokenKind(current, .LeftBrace) return true
+    if formatComparisonDelimiter(previous) {
+        if sameTokenKind(previous, .Greater) && formatFlag(&generic, index - 1) {
+            return !sameTokenKind(current, .Greater) || !formatFlag(&generic, index)
+        }
+        return !formatFlag(&generic, index - 1)
+    }
+    if formatComparisonDelimiter(current) return !formatFlag(&generic, index)
+    if sameTokenKind(current, .Bang) || sameTokenKind(current, .Tilde) ||
+        formatUnaryMinus(&tokens, index) {
+        return true
+    }
+    if sameTokenKind(previous, .Comma) || sameTokenKind(previous, .Colon) ||
+        sameTokenKind(previous, .LeftBrace) || sameTokenKind(current, .RightBrace) ||
+        sameTokenKind(current, .LeftBrace) || formatBinary(previous) || formatBinary(current) ||
+        sameTokenKind(previous, .Minus) || sameTokenKind(current, .Minus) {
+        return !sameTokenKind(previous, .LeftBrace) || !sameTokenKind(current, .RightBrace)
+    }
+    true
+}
+
+// Finds the closing angle of a generic parameter list after fn, ctor, or
+// task: identifiers and commas only, with nested lists balanced.
+fn formatParameterListClosing(&tokens arena<formatToken>, index u64) Option<u64> {
+    var depth u64 = 1
+    var current = index + 1
+    while current < tokens.len() {
+        if formatTokenIs(&tokens, current, .Less) {
+            depth += 1
+        } else {
+            if formatTokenIs(&tokens, current, .Greater) {
+                depth -= 1
+                if depth == 0 return .Some(current)
+            } else {
+                if depth == 1 && !formatTokenIs(&tokens, current, .Identifier) &&
+                    !formatTokenIs(&tokens, current, .Comma) {
+                    return .None
+                }
+            }
+        }
+        current += 1
+    }
+    .None
+}
+
+fn formatGenericFollower(kind tokenKind) bool {
+    sameTokenKind(kind, .Eof) || sameTokenKind(kind, .Dot) ||
+        sameTokenKind(kind, .LeftBrace) || sameTokenKind(kind, .LeftParen) ||
+        sameTokenKind(kind, .Comma) || sameTokenKind(kind, .RightParen) ||
+        sameTokenKind(kind, .RightBracket) || sameTokenKind(kind, .RightBrace) ||
+        sameTokenKind(kind, .Equal) || sameTokenKind(kind, .Capture) ||
+        sameTokenKind(kind, .Implements) || sameTokenKind(kind, .Extends)
+}
+
+// Marks the angle tokens that delimit generic parameter or argument lists
+// rather than comparisons.
+fn formatGenericDelimiters(
+    &tokens arena<formatToken>,
+    &lookahead parser
+) own arena<bool> {
+    var result = newArena<bool>()
+    while result.len() < tokens.len() {
+        discard result.add(false)
+    }
+    var index u64 = 0
+    while index < tokens.len() {
+        if !formatTokenIs(&tokens, index, .Less) {
+            index += 1
+            continue
+        }
+        const parameters = index >= 2 && formatTokenIs(&tokens, index - 1, .Identifier) &&
+            (formatTokenIs(&tokens, index - 2, .Fn) || formatTokenIs(&tokens, index - 2, .Ctor) ||
+            formatTokenIs(&tokens, index - 2, .Task))
+        var closing Option<u64> = .None
+        if parameters {
+            closing = formatParameterListClosing(&tokens, index)
+        } else {
+            const scanned = lookahead.scanTypeArgumentsLookahead(index, index, 0)
+            if scanned.matched {
+                closing = .Some(scanned.closing)
+            }
+        }
+        match closing {
+            None: {}
+            Some(close): {
+                if close + 1 < tokens.len() {
+                    const continues = formatTokenLine(&tokens, close + 1) ==
+                        formatTokenLine(&tokens, close)
+                    if !continues || formatGenericFollower(formatTokenKind(&tokens, close + 1)) {
+                        var current = index
+                        while current <= close {
+                            if formatComparisonDelimiter(formatTokenKind(&tokens, current)) {
+                                setArenaValue<bool>(&result, current, true)
+                            }
+                            current += 1
+                        }
+                    }
+                }
+            }
+        }
+        index += 1
+    }
+    result
+}
+
+fn formatTypeOpeningBrackets(
+    &tokens arena<formatToken>,
+    &typeStarts arena<u64>
+) own arena<bool> {
+    var result = newArena<bool>()
+    var index u64 = 0
+    while index < tokens.len() {
+        discard result.add(formatTokenIs(&tokens, index, .LeftBracket) &&
+            formatOffsetKnown(&typeStarts, formatTokenOffset(&tokens, index)))
+        index += 1
+    }
+    result
+}
+
+// Builds a lookahead-only parser over the scanned tokens.
+fn newFormatLookahead($tokens own collections.List<token>) own parser {
+    own parser {
+        tokens = newTokenBuffer($tokens)
+        diagnostics = newDiagnostics()
+        program = newProgram()
+        current = 0
+        blockDepth = 0
+        expressionDepth = 0
+        expressionCalls = 0
+        expressionNodes = 0
+        typeDepth = 0
+        activeTypeParameters = collections.NewList<String>()
+        activeTransferableTypeParameters = collections.NewList<bool>()
+        activeTypeParameterConstraints = collections.NewList<Option<typeSyntax>>()
+        expressionLimitReported = false
+        structLiteralsAllowed = true
+        installBuiltinTypes = false
+        target = hostTargetPlatform()
+    }
+}
+
+fn formatTokenArena(&lookahead parser) own arena<formatToken> {
+    var result = newArena<formatToken>()
+    var index u64 = 0
+    while index < lookahead.tokens.len() {
+        const value = lookahead.tokens.snapshot(index)
+        discard result.add(formatToken {
+            kind = value.kind
+            text = "" + value.text
+            offset = value.span.offset
+            length = value.span.length
+            line = value.span.line
+        })
+        index += 1
+    }
+    result
+}

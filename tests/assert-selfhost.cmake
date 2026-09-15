@@ -406,4 +406,18 @@ require_write_parity("imports-write" imports "${imports_source}" "${imports_expe
 require_rejected_parity("imports mode" 2 "imports --check <source-or-project>"
     imports --bogus "${imports_source}")
 
+set(format_source "${ROOT}/tests/formatter/messy.fn")
+set(format_expected "${ROOT}/tests/formatter/expected.fn")
+require_command_parity("format stdout" format "${format_source}")
+file(READ "${format_expected}" format_layout)
+if(NOT command_output STREQUAL format_layout)
+    message(FATAL_ERROR "format stdout differs from ${format_expected}")
+endif()
+require_command_parity("format check" format --check "${format_source}")
+require_command_parity("format clean check" format --check "${format_expected}")
+require_command_parity("format invalid" format "${ROOT}/tests/formatter/invalid.fn")
+require_write_parity("format-write" format "${format_source}" "${format_expected}")
+require_rejected_parity("format mode" 2 "format --check <source-or-project>"
+    format --bogus "${format_source}")
+
 message(STATUS "self-hosted compiler commands passed")
