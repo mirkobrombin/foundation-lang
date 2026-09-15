@@ -25,6 +25,11 @@ foreach(lock_file IN LISTS lock_files)
     if(NOT EXISTS "${project}/foundation.package")
         continue()
     endif()
+    # A freestanding lock names no host platform, so there is nothing to re-resolve.
+    file(STRINGS "${lock_file}" lock_target REGEX "^target ")
+    if(lock_target STREQUAL "target freestanding")
+        continue()
+    endif()
     execute_process(
         COMMAND "${COMPILER}" package resolve "${project}"
         RESULT_VARIABLE result
