@@ -1610,6 +1610,9 @@ class GoSourceEmitter {
         for (const auto function : roots) {
             scanFunction(function);
         }
+        if (!failed_) {
+            reconcileMethods();
+        }
         if (failed_) {
             return std::nullopt;
         }
@@ -2453,8 +2456,80 @@ class GoSourceEmitter {
                      expression.span);
                 return false;
             }
+            if (target.contractDefault) {
+                forwarderDefaults_[found->first] = program_.functions[target.function].name;
+            }
         }
         return true;
+    }
+
+    // A Go type has one namespace for its fields and methods. A static call specializes a
+    // default for one struct under the default's own name, and that specialization resolves
+    // every slot as the forwarder would, so it serves the contract slot too. Any other repeated
+    // name is rejected instead of emitting Go that does not compile.
+    void reconcileMethods() {
+        std::map<std::string, std::string> members;
+        std::map<std::string, std::string> owners;
+        for (const auto &[key, type] : reachableStructs_) {
+            const auto &declaration = program_.structs[type.declaration];
+            owners[key] = declaration.name;
+            for (FirFieldId field{}; field < declaration.fields.size(); ++field) {
+                members.emplace(key + ':' + fieldName(type.declaration, field),
+                                "field " + declaration.fields[field].name);
+            }
+        }
+        for (const auto &[key, type] : reachableEnums_) {
+            const auto &declaration = program_.enums[type.declaration];
+            owners[key] = declaration.name;
+            members.emplace(key + ":tag", "tag field");
+            for (FirVariantId variant{}; variant < declaration.variants.size(); ++variant) {
+                const auto &name = declaration.variants[variant].name;
+                const auto method = enumMethodName(type, variant);
+                members.emplace(key + ":Is" + method, "variant test for " + name);
+                if (enumPayloadType(type, variant).has_value()) {
+                    members.emplace(key + ":Get" + method, "payload getter for " + name);
+                    members.emplace(key + ':' + enumFieldName(type, variant),
+                                    "payload field for " + name);
+                }
+            }
+        }
+        std::map<std::string, FirFunctionId> methods;
+        for (const auto id : order_) {
+            const auto &function = program_.functions[id];
+            if (!function.receiver.has_value() || defaultReceiver(function).has_value()) {
+                continue;
+            }
+            const auto receiver =
+                goSourceTypeKey(ownedValue(function.locals[function.parameters.front()].type));
+            const auto key = receiver + ':' + names_.at(id);
+            if (const auto member = members.find(key); member != members.end()) {
+                fail("go-source cannot give " + owners[receiver] + " method " +
+                         std::string(shortName(function.name)) + " beside its " + member->second,
+                     function.sourceSpan);
+            } else if (!methods.emplace(key, id).second) {
+                fail("go-source cannot give " + owners[receiver] + " two " +
+                         std::string(shortName(function.name)) + " methods",
+                     function.sourceSpan);
+            }
+        }
+        for (auto forwarder = forwarders_.begin(); forwarder != forwarders_.end();) {
+            const auto method = methods.find(forwarder->first);
+            if (method == methods.end()) {
+                ++forwarder;
+                continue;
+            }
+            const auto &function = program_.functions[method->second];
+            if (const auto origin = forwarderDefaults_.find(forwarder->first);
+                origin != forwarderDefaults_.end() && origin->second == function.name) {
+                forwarder = forwarders_.erase(forwarder);
+                continue;
+            }
+            const auto receiver = forwarder->first.substr(0, forwarder->first.rfind(':'));
+            fail("go-source cannot give " + owners[receiver] + " two " +
+                     std::string(shortName(function.name)) + " methods",
+                 function.sourceSpan);
+            ++forwarder;
+        }
     }
 
     std::optional<std::string> contractForwarder(const Type &concrete, const Type &contractType,
@@ -4975,6 +5050,7 @@ class GoSourceEmitter {
     std::map<std::string, unsigned char> contractStates_;
     std::map<std::string, Type> reachableContracts_;
     std::map<std::string, std::string> forwarders_;
+    std::map<std::string, std::string> forwarderDefaults_;
     std::map<std::string, std::size_t> scanDepths_;
     std::size_t scanDepth_{};
     std::size_t ownerBarrier_{};

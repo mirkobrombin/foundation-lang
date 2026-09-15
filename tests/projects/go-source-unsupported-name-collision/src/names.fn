@@ -1,0 +1,30 @@
+package sample.name_collision
+
+enum Mode {
+    Ready
+    Waiting(i32)
+}
+
+methods Mode {
+    fn IsReady(self) bool {
+        true
+    }
+}
+
+struct Label {
+    Text String
+
+    fn Text(self) String {
+        "label"
+    }
+}
+
+fn ModeReady() bool {
+    const mode = Mode.Ready
+    mode.IsReady()
+}
+
+fn LabelText() String {
+    const label = Label { Text = "x" }
+    label.Text()
+}

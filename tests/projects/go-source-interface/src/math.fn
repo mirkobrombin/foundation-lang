@@ -1213,6 +1213,37 @@ fn OptionalValued(flag bool) i32 {
     }
 }
 
+fn doubledStatic<T Scored>(value T) i32 {
+    value.doubled()
+}
+
+fn describedStatic<T Labeled>(value T) i32 {
+    value.described()
+}
+
+fn addTwiceStatic<T Accumulator>(&value T, amount i32) void {
+    value.addTwice(amount)
+}
+
+fn StaticDoubled() i32 {
+    const metric = Metric { stored = 5 }
+    const wrapped = MetricWrapper { inner = Metric { stored = 6 } }
+    doubledStatic(metric) + readDoubled(metric) +
+        (doubledStatic(wrapped) + readDoubled(wrapped)) * 100
+}
+
+fn StaticDescribed() i32 {
+    const overriding = OverridingTag { inner = Tag { stored = 7 } }
+    describedStatic(overriding) + readDescribed(overriding)
+}
+
+fn StaticAccumulate() i32 {
+    var counter = Counter { value = 20 }
+    addTwiceStatic(&counter, 1)
+    AddTwiceTo(&counter, 10)
+    counter.value
+}
+
 fn check(name String, actual i32, expected i32) void {
     if actual == expected {
         print(name + " ok")
@@ -1267,6 +1298,9 @@ fn Report() void {
     check("heterogeneous", Heterogeneous(), 3099)
     check("optional some", OptionalValued(true), 6)
     check("optional none", OptionalValued(false), 0)
+    check("static doubled", StaticDoubled(), 2420)
+    check("static described", StaticDescribed(), 2016)
+    check("static accumulate", StaticAccumulate(), 42)
 }
 
 fn main() i32 {

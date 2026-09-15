@@ -3,7 +3,7 @@ if(NOT DEFINED COMPILER OR NOT DEFINED SOURCE OR NOT DEFINED UNSUPPORTED_SOURCE 
    NOT DEFINED OWNER_CYCLE_SOURCE OR NOT DEFINED OPEN_GENERIC_SOURCE OR
    NOT DEFINED GENERIC_STRUCT_SOURCE OR NOT DEFINED MULTIPLE_SOURCE OR
    NOT DEFINED OWNED_CONTRACT_SOURCE OR NOT DEFINED CONTRACT_CONFLICT_SOURCE OR
-   NOT DEFINED UNSAFE_SOURCE OR
+   NOT DEFINED UNSAFE_SOURCE OR NOT DEFINED NAME_COLLISION_SOURCE OR
    NOT DEFINED FIXTURE OR NOT DEFINED WORK OR NOT DEFINED GO_EXECUTABLE)
     message(FATAL_ERROR "go-source export test requires compiler, sources, fixture, work, and Go")
 endif()
@@ -470,4 +470,35 @@ if(NOT unsafe_count EQUAL 4 OR
    NOT unsafe_diagnostics MATCHES "go-cgo or go-dynamic")
     message(FATAL_ERROR
         "unsafe rejection omitted a construct or its alternatives:\n${unsafe_diagnostics}")
+endif()
+
+file(MAKE_DIRECTORY "${WORK}/name-collision-source" "${WORK}/name-collision-output")
+file(COPY "${NAME_COLLISION_SOURCE}/" DESTINATION "${WORK}/name-collision-source")
+execute_process(
+    COMMAND "${COMPILER}" package resolve "${WORK}/name-collision-source"
+    RESULT_VARIABLE name_collision_resolve_status
+    OUTPUT_VARIABLE name_collision_resolve_output
+    ERROR_VARIABLE name_collision_resolve_error
+)
+if(NOT name_collision_resolve_status EQUAL 0)
+    message(FATAL_ERROR
+        "cannot resolve name collision fixture:\n${name_collision_resolve_output}${name_collision_resolve_error}")
+endif()
+execute_process(
+    COMMAND "${COMPILER}" package export "${WORK}/name-collision-source"
+        -o "${WORK}/name-collision-output"
+        --format go-source
+    RESULT_VARIABLE name_collision_status
+    OUTPUT_VARIABLE name_collision_output
+    ERROR_VARIABLE name_collision_error
+)
+if(name_collision_status EQUAL 0)
+    message(FATAL_ERROR "go-source accepted two Go members with one name")
+endif()
+set(name_collision_diagnostics "${name_collision_output}${name_collision_error}")
+if(NOT name_collision_diagnostics MATCHES "method IsReady beside its variant test for Ready" OR
+   NOT name_collision_diagnostics MATCHES "method Text beside its field Text" OR
+   NOT name_collision_diagnostics MATCHES "go-cgo or go-dynamic")
+    message(FATAL_ERROR
+        "name collision rejection omitted a member or its alternatives:\n${name_collision_diagnostics}")
 endif()

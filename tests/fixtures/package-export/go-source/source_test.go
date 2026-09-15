@@ -743,6 +743,26 @@ func TestTranslatedContractsKeepFoundationDispatch(t *testing.T) {
 	}
 }
 
+func TestTranslatedStaticAndDynamicDefaultsShareOneMethod(t *testing.T) {
+	if got := StaticDoubled(); got != 2420 {
+		t.Fatalf("StaticDoubled() = %d, want 2420", got)
+	}
+	if got := StaticDescribed(); got != 2016 {
+		t.Fatalf("StaticDescribed() = %d, want 2016", got)
+	}
+	if got := StaticAccumulate(); got != 42 {
+		t.Fatalf("StaticAccumulate() = %d, want 42", got)
+	}
+	var scored Scored = MetricWrapper{inner: Metric{stored: 6}}
+	if got := scored.doubled(); got != 12 {
+		t.Fatalf("MetricWrapper.doubled() = %d, want 12", got)
+	}
+	var labeled Labeled = OverridingTag{inner: Tag{stored: 7}}
+	if got := labeled.described(); got != 1008 {
+		t.Fatalf("OverridingTag.described() = %d, want 1008", got)
+	}
+}
+
 // behavior.out holds the output of the same Report function compiled by the C backend.
 func TestTranslatedReportMatchesFoundationBackends(t *testing.T) {
 	want, err := os.ReadFile("behavior.out")

@@ -1713,7 +1713,11 @@ calls a Go function that takes the interface and receives the implementing value
 the slot is reached through delegation; a delegated method calls the method of the delegate field.
 Dispatch therefore selects the same method as the other backends. Two contracts that give one
 struct different default or delegated methods with the same name are rejected, as is such a method
-beside a field with the same Go name.
+beside a field with the same Go name. A static call through a constrained type parameter
+specializes a default for one struct under the default's name; that Go method also serves the
+contract slot, so both paths run the same body. Any other Go type that would receive two members
+with one name, such as an enum method named like a generated `IsVariant` test or a method named like
+a field, is rejected.
 Custom-drop structs, also behind an owner, raw pointers, unsafe blocks, callbacks, native imports,
 foreign metadata, native links, open generic exports, tasks, channels, actions, and
 other runtime-backed FIR nodes are rejected with `FDN4120`. A rejection does not stop the scan: one
