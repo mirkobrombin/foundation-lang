@@ -420,4 +420,18 @@ require_write_parity("format-write" format "${format_source}" "${format_expected
 require_rejected_parity("format mode" 2 "format --check <source-or-project>"
     format --bogus "${format_source}")
 
+set(documentation_source "${ROOT}/tests/projects/documentation-api")
+require_emit_parity("documentation" "reference.md" documentation "${documentation_source}"
+    --target linux)
+require_same_file("documentation fixture" "${documentation_source}/expected.md"
+    "${PARITY_DIRECTORY}/selfhost/reference.md")
+require_rejected_parity("documentation extension" 2
+    "documentation output must use the \\.md extension"
+    documentation "${documentation_source}" -o "${PARITY_DIRECTORY}/reference.txt")
+require_rejected_parity("documentation target" 2 "documentation <source-or-project>"
+    documentation "${documentation_source}" -o "${PARITY_DIRECTORY}/reference.md"
+    --target plan9)
+require_emit_parity("documentation freestanding" "freestanding.md" documentation
+    "${ROOT}/tests/projects/freestanding-library" --target freestanding)
+
 message(STATUS "self-hosted compiler commands passed")

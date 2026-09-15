@@ -1,0 +1,517 @@
+package foundation.compiler
+
+import std.collections
+import std.path
+import std.text
+
+fn docText(documentation String) String {
+    if text.IsEmpty(documentation) return ""
+    documentation + "\n\n"
+}
+
+fn docSignature(detail String) String {
+    "```foundation\n" + detail + "\n```\n\n"
+}
+
+// Lists one item with its documentation indented beneath it.
+fn docListItem(detail String, documentation String) String {
+    var result = "- `" + detail + "`"
+    if text.IsEmpty(documentation) return result + "\n"
+    result += "\n\n"
+    const length = text.ByteLen(documentation)
+    var start u64 = 0
+    var index u64 = 0
+    while index <= length {
+        if index == length || applicationByteAt(documentation, index) == 10 {
+            const line = applicationSlice(documentation, start, index)
+            if !text.IsEmpty(line) {
+                result += "  " + line
+            }
+            result += "\n"
+            start = index + 1
+        }
+        index += 1
+    }
+    result
+}
+
+fn docParameters(
+    &sources arena<projectSource>,
+    &parameters collections.List<parameter>,
+    receiver bool
+) String {
+    var items = ""
+    var pending = collections.NewList<parameter>()
+    var index u64 = 0
+    while !parameters.IsEmpty() {
+        var value = match parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(found): found
+        }
+        if !receiver || index != 0 {
+            const documentation = symbolParameterDocumentation(&sources, &value)
+            if !text.IsEmpty(documentation) {
+                items += docListItem(value.name, documentation)
+            }
+        }
+        pending.PushFront($value)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(found): found
+        }
+        parameters.PushFront($value)
+    }
+    if text.IsEmpty(items) return ""
+    "Parameters:\n\n" + items + "\n"
+}
+
+fn docDefinitionDocumentation(
+    &sources arena<projectSource>,
+    definition sourceSpan,
+    generated bool
+) String {
+    if generated return ""
+    symbolSourceDocumentation(&sources, definition)
+}
+
+fn docFunction(
+    &syntax program,
+    &sources arena<projectSource>,
+    id u64,
+    heading String
+) String {
+    var value = match syntax.functions.take(id) {
+        None: panic("function slot is empty")
+        Some(found): found
+    }
+    const name = metadataShortName(value.name)
+    var timed = false
+    match replace value.stateTimeout with .None {
+        None: {}
+        Some(found): {
+            timed = true
+            value.stateTimeout = .Some(found)
+        }
+    }
+    const definition = if timed {
+        value.span
+    } else {
+        symbolIdentifierSpan(&sources, value.span, name)
+    }
+    const receiver = match value.receiver {
+        None: false
+        Some(kind): {
+            discard kind
+            true
+        }
+    }
+    const result = heading + "`" + name + "`\n\n" +
+        docText(symbolSourceDocumentation(&sources, definition)) +
+        docSignature(symbolFunctionDetail(&value)) +
+        docParameters(&sources, &value.parameters, receiver)
+    syntax.functions.restore(id, $value)
+    result
+}
+
+fn docEntryId(&entries arena<docEntry>, index u64) u64 {
+    const value = match entries.take(index) {
+        None: panic("documentation entry slot is empty")
+        Some(found): found
+    }
+    const id = value.id
+    entries.restore(index, $value)
+    id
+}
+
+fn docMethods(
+    &syntax program,
+    &sources arena<projectSource>,
+    &documented docPackage,
+    owner String
+) String {
+    var index u64 = 0
+    while index < documented.methodGroups.len() {
+        var group = match documented.methodGroups.take(index) {
+            None: panic("documentation method group slot is empty")
+            Some(found): found
+        }
+        if group.owner == owner {
+            var result = "##### Methods\n\n"
+            var entry u64 = 0
+            while entry < group.entries.len() {
+                result += docFunction(
+                    &syntax, &sources, docEntryId(&group.entries, entry), "###### ")
+                entry += 1
+            }
+            documented.methodGroups.restore(index, $group)
+            return result
+        }
+        documented.methodGroups.restore(index, $group)
+        index += 1
+    }
+    ""
+}
+
+fn docStruct(
+    &syntax program,
+    &sources arena<projectSource>,
+    &documented docPackage,
+    &generated arena<String>,
+    id u64
+) String {
+    var value = match syntax.structs.take(id) {
+        None: panic("struct slot is empty")
+        Some(found): found
+    }
+    const name = metadataShortName(value.name)
+    const owner = text.Copy(value.name)
+    const isGenerated = arenaContainsString(&generated, value.name)
+    const definition = symbolIdentifierSpan(&sources, value.span, value.name)
+    const kind = "service " if value.kind.Matches("Service") else "struct "
+    var result = "#### `" + name + "`\n\n" +
+        docText(docDefinitionDocumentation(&sources, definition, isGenerated)) +
+        docSignature(kind + name + symbolTypeParameters(&value.typeParameters))
+    var implementations = ""
+    var pending = collections.NewList<structImplementation>()
+    while !value.implementations.IsEmpty() {
+        var implementation = match value.implementations.PopFront() {
+            None: panic("implementation list invariant failed")
+            Some(found): found
+        }
+        if !text.IsEmpty(implementations) {
+            implementations += ", "
+        }
+        implementations += "`" + displayTypeSyntax(&implementation.contractType) + "`"
+        pending.PushFront($implementation)
+    }
+    while !pending.IsEmpty() {
+        const implementation = match pending.PopFront() {
+            None: panic("implementation restore invariant failed")
+            Some(found): found
+        }
+        value.implementations.PushFront($implementation)
+    }
+    if !text.IsEmpty(implementations) {
+        result += "Implements: " + implementations + ".\n\n"
+    }
+    var fields = ""
+    var fieldPending = collections.NewList<structField>()
+    while !value.fields.IsEmpty() {
+        var field = match value.fields.PopFront() {
+            None: panic("struct field list invariant failed")
+            Some(found): found
+        }
+        if field.exported {
+            fields += docListItem(
+                symbolFieldDetail(&sources, &field),
+                docDefinitionDocumentation(&sources, field.span, isGenerated)
+            )
+        }
+        fieldPending.PushFront($field)
+    }
+    while !fieldPending.IsEmpty() {
+        const field = match fieldPending.PopFront() {
+            None: panic("struct field restore invariant failed")
+            Some(found): found
+        }
+        value.fields.PushFront($field)
+    }
+    syntax.structs.restore(id, $value)
+    if !text.IsEmpty(fields) {
+        result += "Fields:\n\n" + fields + "\n"
+    }
+    result + docMethods(&syntax, &sources, &documented, owner)
+}
+
+fn docEnum(
+    &syntax program,
+    &sources arena<projectSource>,
+    &generated arena<String>,
+    id u64
+) String {
+    var value = match syntax.enums.take(id) {
+        None: panic("enum slot is empty")
+        Some(found): found
+    }
+    const name = metadataShortName(value.name)
+    const isGenerated = arenaContainsString(&generated, value.name)
+    const definition = symbolIdentifierSpan(&sources, value.span, value.name)
+    const kind = "state_machine " if value.stateMachine else "enum "
+    var result = "#### `" + name + "`\n\n" +
+        docText(docDefinitionDocumentation(&sources, definition, isGenerated)) +
+        docSignature(kind + name + symbolTypeParameters(&value.typeParameters))
+    var variants = ""
+    var pending = collections.NewList<enumVariant>()
+    while !value.variants.IsEmpty() {
+        var variant = match value.variants.PopFront() {
+            None: panic("enum variant list invariant failed")
+            Some(found): found
+        }
+        if variant.exported {
+            variants += docListItem(
+                symbolEnumVariantDetail(&variant),
+                docDefinitionDocumentation(&sources, variant.span, isGenerated)
+            )
+        }
+        pending.PushFront($variant)
+    }
+    while !pending.IsEmpty() {
+        const variant = match pending.PopFront() {
+            None: panic("enum variant restore invariant failed")
+            Some(found): found
+        }
+        value.variants.PushFront($variant)
+    }
+    syntax.enums.restore(id, $value)
+    if !text.IsEmpty(variants) {
+        result += "Variants:\n\n" + variants + "\n"
+    }
+    result
+}
+
+fn docContract(&syntax program, &sources arena<projectSource>, id u64) String {
+    var value = match syntax.contracts.take(id) {
+        None: panic("contract slot is empty")
+        Some(found): found
+    }
+    const name = metadataShortName(value.name)
+    const definition = symbolIdentifierSpan(&sources, value.span, value.name)
+    var result = "#### `" + name + "`\n\n" +
+        docText(symbolSourceDocumentation(&sources, definition)) +
+        docSignature("contract " + name + symbolTypeParameters(&value.typeParameters))
+    var parents = symbolTypeListNames(&value.parents)
+    if parents.len() != 0 {
+        var quoted = newArena<String>()
+        var index u64 = 0
+        while index < parents.len() {
+            discard quoted.add("`" + symbolArgument(&parents, index) + "`")
+            index += 1
+        }
+        result += "Extends: " + symbolJoin(&quoted, 0, ", ") + ".\n\n"
+    }
+    var methodValues = newArena<contractMethod>()
+    var entries = newArena<docEntry>()
+    while !value.methodList.IsEmpty() {
+        const method = match value.methodList.PopFront() {
+            None: panic("contract method list invariant failed")
+            Some(found): found
+        }
+        const index = methodValues.len()
+        if method.exported {
+            discard entries.add(docEntry { name = text.Copy(method.name) id = index })
+        }
+        discard methodValues.add($method)
+    }
+    sortArena<docEntry>(&entries, compareDocEntry)
+    if entries.len() != 0 {
+        result += "Methods:\n\n"
+    }
+    var entry u64 = 0
+    while entry < entries.len() {
+        const selected = docEntryId(&entries, entry)
+        var method = match methodValues.take(selected) {
+            None: panic("contract method slot is empty")
+            Some(found): found
+        }
+        const methodDefinition = symbolIdentifierSpan(&sources, method.span, method.name)
+        result += "##### `" + method.name + "`\n\n" +
+            docText(symbolSourceDocumentation(&sources, methodDefinition)) +
+            docSignature(symbolContractMethodDetail(&method)) +
+            docParameters(&sources, &method.parameters, false)
+        methodValues.restore(selected, $method)
+        entry += 1
+    }
+    var restore = methodValues.len()
+    while restore > 0 {
+        restore -= 1
+        const method = match methodValues.take(restore) {
+            None: panic("contract method slot is empty")
+            Some(found): found
+        }
+        value.methodList.PushFront($method)
+    }
+    syntax.contracts.restore(id, $value)
+    result
+}
+
+fn docTargetName(target attributeTarget) String {
+    match lowerSemanticAttributeTarget(target) {
+        Function: "function"
+        StructValue: "struct"
+        Service: "service"
+        EnumValue: "enum"
+        ContractValue: "contract"
+        Method: "method"
+        Constructor: "ctor"
+        Action: "action"
+        Field: "field"
+        Variant: "variant"
+        Parameter: "parameter"
+    }
+}
+
+fn docAttribute(&syntax program, &sources arena<projectSource>, id u64) String {
+    var value = match syntax.attributeDeclarations.take(id) {
+        None: panic("attribute declaration slot is empty")
+        Some(found): found
+    }
+    const name = metadataShortName(value.name)
+    const definition = symbolIdentifierSpan(&sources, value.span, value.name)
+    var parameters = ""
+    var pending = collections.NewList<parameter>()
+    while !value.parameters.IsEmpty() {
+        var selected = match value.parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(found): found
+        }
+        if !text.IsEmpty(parameters) {
+            parameters += ", "
+        }
+        parameters += selected.name + " " + displayTypeSyntax(&selected.type)
+        pending.PushFront($selected)
+    }
+    while !pending.IsEmpty() {
+        const selected = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(found): found
+        }
+        value.parameters.PushFront($selected)
+    }
+    var targets = ""
+    var targetPending = collections.NewList<attributeTarget>()
+    while !value.targets.IsEmpty() {
+        const target = match value.targets.PopFront() {
+            None: panic("attribute target list invariant failed")
+            Some(found): found
+        }
+        if !text.IsEmpty(targets) {
+            targets += ", "
+        }
+        targets += "`" + docTargetName(target) + "`"
+        targetPending.PushFront(target)
+    }
+    while !targetPending.IsEmpty() {
+        const target = match targetPending.PopFront() {
+            None: panic("attribute target restore invariant failed")
+            Some(found): found
+        }
+        value.targets.PushFront(target)
+    }
+    const repeatable = ". Repeatable" if value.repeatable else ""
+    const result = "#### `@" + name + "`\n\n" +
+        docText(symbolSourceDocumentation(&sources, definition)) +
+        docSignature("attribute " + name + "(" + parameters + ")") + "Targets: " + targets +
+        repeatable + ".\n\n" + docParameters(&sources, &value.parameters, false)
+    syntax.attributeDeclarations.restore(id, $value)
+    result
+}
+
+fn docPackageEmpty(&value docPackage) bool {
+    value.structs.len() == 0 && value.enums.len() == 0 && value.contracts.len() == 0 &&
+        value.attributes.len() == 0 && value.functions.len() == 0
+}
+
+fn docPackageText(
+    &syntax program,
+    &sources arena<projectSource>,
+    &generated arena<String>,
+    &value docPackage
+) String {
+    var result = "## Package `" + value.name + "`\n\n"
+    if docPackageEmpty(&value) return result + "No exported API.\n\n"
+    var index u64 = 0
+    if value.structs.len() != 0 {
+        result += "### Types\n\n"
+        while index < value.structs.len() {
+            const id = docEntryId(&value.structs, index)
+            result += docStruct(&syntax, &sources, &value, &generated, id)
+            index += 1
+        }
+    }
+    if value.enums.len() != 0 {
+        result += "### Enums\n\n"
+        index = 0
+        while index < value.enums.len() {
+            result += docEnum(&syntax, &sources, &generated, docEntryId(&value.enums, index))
+            index += 1
+        }
+    }
+    if value.contracts.len() != 0 {
+        result += "### Contracts\n\n"
+        index = 0
+        while index < value.contracts.len() {
+            result += docContract(&syntax, &sources, docEntryId(&value.contracts, index))
+            index += 1
+        }
+    }
+    if value.attributes.len() != 0 {
+        result += "### Attributes\n\n"
+        index = 0
+        while index < value.attributes.len() {
+            result += docAttribute(&syntax, &sources, docEntryId(&value.attributes, index))
+            index += 1
+        }
+    }
+    if value.functions.len() != 0 {
+        result += "### Functions\n\n"
+        index = 0
+        while index < value.functions.len() {
+            const id = docEntryId(&value.functions, index)
+            result += docFunction(&syntax, &sources, id, "#### ")
+            index += 1
+        }
+    }
+    result
+}
+
+// Renders the Markdown API reference of the analyzed root sources, one
+// section per package in name order. Trailing blank lines are removed.
+fn emitDocumentation(
+    &syntax program,
+    &sources arena<projectSource>,
+    &roots arena<u64>
+) String {
+    var flags = docProjectFlags(&sources, &roots)
+    var generated = symbolGeneratedWorkflowTypes(&syntax)
+    var packages = collectDocPackages(&syntax, &sources, &flags)
+    var result = "# Foundation API Reference\n\n"
+    var index u64 = 0
+    while index < packages.len() {
+        var value = match packages.take(index) {
+            None: panic("documentation package slot is empty")
+            Some(found): found
+        }
+        result += docPackageText(&syntax, &sources, &generated, &value)
+        packages.restore(index, $value)
+        index += 1
+    }
+    var end = text.ByteLen(result)
+    while end >= 2 && applicationByteAt(result, end - 1) == 10 &&
+        applicationByteAt(result, end - 2) == 10 {
+        end -= 1
+    }
+    applicationSlice(result, 0, end)
+}
+
+fn runCompilerDocumentation(input String, outputPath String, target targetPlatform) i32 {
+    if path.Extension(outputPath) != ".md" {
+        compilerProcessFailure("documentation output must use the .md extension")
+        return 2
+    }
+    var analysis = analyzeCompilerProject(input, false, false, .Production, target, false)
+    if compilerDiagnosticsHaveErrors(&analysis.diagnostics) {
+        writeCompilerReport(input, &analysis)
+        return 1
+    }
+    const compilerAnalysis { loaded diagnostics model } = analysis
+    discard diagnostics
+    discard model
+    const loadedProject { program sources } = loaded
+    var syntax = program
+    var projectSources = sources
+    var roots = compilerRootSources(input, &projectSources)
+    writeCompilerOutput(outputPath, emitDocumentation(&syntax, &projectSources, &roots))
+}

@@ -1,0 +1,600 @@
+package foundation.compiler
+
+import std.collections
+import std.format
+import std.text
+
+fn symbolSpace(value u64) bool {
+    value == 32 || (value >= 9 && value <= 13)
+}
+
+fn symbolTrim(value String) String {
+    var start u64 = 0
+    var end = text.ByteLen(value)
+    while start < end && symbolSpace(applicationByteAt(value, start)) {
+        start += 1
+    }
+    while end > start && symbolSpace(applicationByteAt(value, end - 1)) {
+        end -= 1
+    }
+    applicationSlice(value, start, end)
+}
+
+fn symbolIdentifierByte(value u64) bool {
+    (value >= 97 && value <= 122) || (value >= 65 && value <= 90) ||
+        (value >= 48 && value <= 57) || value == 95
+}
+
+// Returns the start of the line that contains offset.
+fn symbolLineStart(source String, offset u64) u64 {
+    var index = offset
+    while index > 0 && applicationByteAt(source, index - 1) != 10 {
+        index -= 1
+    }
+    index
+}
+
+struct symbolLine {
+    start u64
+    end u64
+}
+
+// Returns the line before the one that starts at lineStart, without its line
+// ending.
+fn symbolPreviousLine(source String, lineStart u64) symbolLine {
+    if lineStart == 0 return symbolLine { start = 0 end = 0 }
+    var end = lineStart - 1
+    if end != 0 && applicationByteAt(source, end - 1) == 13 {
+        end -= 1
+    }
+    symbolLine { start = symbolLineStart(source, end) end = end }
+}
+
+// Collects the contiguous // comment lines above the line holding offset,
+// skipping attribute lines between them and the declaration. Each line loses
+// its marker and one following space.
+fn symbolDocumentationBefore(source String, offset u64) String {
+    if offset > text.ByteLen(source) return ""
+    var cursor = symbolLineStart(source, offset)
+    while cursor != 0 {
+        const line = symbolPreviousLine(source, cursor)
+        if !text.StartsWith(symbolTrim(applicationSlice(source, line.start, line.end)), "@") {
+            break
+        }
+        cursor = line.start
+    }
+    var lines = collections.NewList<String>()
+    while cursor != 0 {
+        const line = symbolPreviousLine(source, cursor)
+        const value = symbolTrim(applicationSlice(source, line.start, line.end))
+        if !text.StartsWith(value, "//") break
+        var body = applicationSlice(value, 2, text.ByteLen(value))
+        if text.StartsWith(body, " ") {
+            body = applicationSlice(body, 1, text.ByteLen(body))
+        }
+        lines.PushFront($body)
+        cursor = line.start
+    }
+    var result = ""
+    var first = true
+    while !lines.IsEmpty() {
+        const value = match lines.PopFront() {
+            None: panic("documentation line list invariant failed")
+            Some(found): found
+        }
+        if !first {
+            result += "\n"
+        }
+        result += value
+        first = false
+    }
+    result
+}
+
+fn symbolSourceDocumentation(&sources arena<projectSource>, span sourceSpan) String {
+    if span.source >= sources.len() return ""
+    symbolDocumentationBefore(compilerProjectSourceContents(&sources, span.source), span.offset)
+}
+
+fn symbolAtLineStart(source String, offset u64) bool {
+    if offset > text.ByteLen(source) return false
+    const start = symbolLineStart(source, offset)
+    text.IsEmpty(symbolTrim(applicationSlice(source, start, offset)))
+}
+
+fn symbolFirstAttributeOffset(&attributes collections.List<attributeApplication>) Option<u64> {
+    const first = match attributes.PopFront() {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    const offset = first.span.offset
+    attributes.PushFront($first)
+    .Some(offset)
+}
+
+// Documents a parameter from the comment above it, or above its first
+// attribute when the attribute starts the line.
+fn symbolParameterDocumentation(&sources arena<projectSource>, &value parameter) String {
+    if value.span.source >= sources.len() return ""
+    const source = compilerProjectSourceContents(&sources, value.span.source)
+    if symbolAtLineStart(source, value.span.offset) {
+        const documentation = symbolDocumentationBefore(source, value.span.offset)
+        if !text.IsEmpty(documentation) return documentation
+    }
+    var offset = match symbolFirstAttributeOffset(&value.attributes) {
+        None: {
+            return ""
+        }
+        Some(found): found
+    }
+    if offset <= text.ByteLen(source) && offset != 0 &&
+        applicationByteAt(source, offset - 1) == 64 {
+        offset -= 1
+    }
+    if !symbolAtLineStart(source, offset) return ""
+    symbolDocumentationBefore(source, offset)
+}
+
+// Locates the declared identifier within 1024 bytes after its declaration
+// anchor, falling back to the anchor itself.
+fn symbolIdentifierSpan(
+    &sources arena<projectSource>,
+    anchor sourceSpan,
+    name String
+) sourceSpan {
+    if anchor.source >= sources.len() return anchor
+    const identifier = metadataShortName(name)
+    const identifierLength = text.ByteLen(identifier)
+    const source = compilerProjectSourceContents(&sources, anchor.source)
+    const size = text.ByteLen(source)
+    var offset = anchor.offset
+    const limit = size if offset + 1024 > size else offset + 1024
+    while offset < limit {
+        const windowEnd = size if limit + identifierLength > size else limit + identifierLength
+        const found = match text.Find(applicationSlice(source, offset, windowEnd), identifier) {
+            None: {
+                return anchor
+            }
+            Some(position): offset + position
+        }
+        if found >= limit return anchor
+        const end = found + identifierLength
+        const left = found == 0 || !symbolIdentifierByte(applicationByteAt(source, found - 1))
+        const right = end == size || !symbolIdentifierByte(applicationByteAt(source, end))
+        if left && right {
+            return sourceSpan {
+                offset = found
+                length = identifierLength
+                line = anchor.line
+                column = anchor.column
+                source = anchor.source
+            }
+        }
+        offset = found + 1
+    }
+    anchor
+}
+
+fn symbolTypeArgumentNames(&type typeSyntax) own arena<String> {
+    var result = newArena<String>()
+    var pending = collections.NewList<typeSyntax>()
+    while !type.arguments.IsEmpty() {
+        var argument = match type.arguments.PopFront() {
+            None: panic("type argument list invariant failed")
+            Some(found): found
+        }
+        discard result.add(displayTypeSyntax(&argument))
+        pending.PushFront($argument)
+    }
+    while !pending.IsEmpty() {
+        const argument = match pending.PopFront() {
+            None: panic("type argument restore invariant failed")
+            Some(found): found
+        }
+        type.arguments.PushFront($argument)
+    }
+    result
+}
+
+fn symbolJoin(&values arena<String>, start u64, separator String) String {
+    var result = ""
+    var index = start
+    while index < values.len() {
+        const value = match values.take(index) {
+            None: panic("text slot is empty")
+            Some(found): found
+        }
+        if index != start {
+            result += separator
+        }
+        result += value
+        values.restore(index, $value)
+        index += 1
+    }
+    result
+}
+
+fn symbolArgument(&values arena<String>, index u64) String {
+    const value = match values.take(index) {
+        None: panic("text slot is empty")
+        Some(found): found
+    }
+    const result = text.Copy(value)
+    values.restore(index, $value)
+    result
+}
+
+// Spells a type as source would: short names, bracketed sequence and
+// pointer forms, and function types with their result last.
+fn displayTypeSyntax(&type typeSyntax) String {
+    var arguments = symbolTypeArgumentNames(&type)
+    const count = arguments.len()
+    const name = text.Copy(type.name)
+    if name == "[array]" && count == 1 {
+        return "[" + format.U64(type.arrayLength) + "]" + symbolArgument(&arguments, 0)
+    }
+    if name == "[slice]" && count == 1 return "[" + symbolArgument(&arguments, 0) + "]"
+    if name == "[raw]" && count == 1 return "*" + symbolArgument(&arguments, 0)
+    if name == "[raw-const]" && count == 1 return "*const " + symbolArgument(&arguments, 0)
+    const functionPrefix = if name == "[transferable-function]" {
+        "transferable fn("
+    } else {
+        "extern c fn(" if name == "[c-function]" else "fn("
+    }
+    if (name == "[function]" || name == "[transferable-function]" || name == "[c-function]") &&
+        count != 0 {
+        return functionPrefix + symbolJoin(&arguments, 1, ", ") + ") " +
+            symbolArgument(&arguments, 0)
+    }
+    if count == 1 {
+        if name == "[function-read]" return symbolArgument(&arguments, 0)
+        if name == "[function-edit]" return "&" + symbolArgument(&arguments, 0)
+        if name == "[function-transfer]" return "$" + symbolArgument(&arguments, 0)
+        if name == "own" || name == "view" || name == "edit" {
+            return name + " " + symbolArgument(&arguments, 0)
+        }
+    }
+    const result = metadataShortName(name)
+    if count == 0 return result
+    result + "<" + symbolJoin(&arguments, 0, ", ") + ">"
+}
+
+fn symbolTypeListNames(&types collections.List<typeSyntax>) own arena<String> {
+    var result = newArena<String>()
+    var pending = collections.NewList<typeSyntax>()
+    while !types.IsEmpty() {
+        var type = match types.PopFront() {
+            None: panic("type list invariant failed")
+            Some(found): found
+        }
+        discard result.add(displayTypeSyntax(&type))
+        pending.PushFront($type)
+    }
+    while !pending.IsEmpty() {
+        const type = match pending.PopFront() {
+            None: panic("type list restore invariant failed")
+            Some(found): found
+        }
+        types.PushFront($type)
+    }
+    result
+}
+
+fn symbolStringArena(&values collections.List<String>) own arena<String> {
+    var copies = copyStringList(&values)
+    var result = newArena<String>()
+    while !copies.IsEmpty() {
+        const value = match copies.PopFront() {
+            None: panic("string list invariant failed")
+            Some(found): found
+        }
+        discard result.add($value)
+    }
+    result
+}
+
+fn symbolTypeParameters(&names collections.List<String>) String {
+    var values = symbolStringArena(&names)
+    if values.len() == 0 return ""
+    "<" + symbolJoin(&values, 0, ", ") + ">"
+}
+
+// Spells function type parameters with their transferable marker and
+// contract constraint.
+fn symbolFunctionTypeParameters(&function functionDeclaration) String {
+    var names = symbolStringArena(&function.typeParameters)
+    if names.len() == 0 return ""
+    var transferable = copyBoolList(&function.transferableTypeParameters)
+    var constraints = collections.NewList<Option<typeSyntax>>()
+    var pending = collections.NewList<Option<typeSyntax>>()
+    while !function.typeParameterConstraints.IsEmpty() {
+        const value = match function.typeParameterConstraints.PopFront() {
+            None: panic("constraint list invariant failed")
+            Some(found): found
+        }
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("constraint list restore invariant failed")
+            Some(found): found
+        }
+        var original = value
+        match replace original with .None {
+            None: {
+                var missing Option<typeSyntax> = .None
+                constraints.PushFront($missing)
+            }
+            Some(type): {
+                var restored = type
+                var copied Option<typeSyntax> = .Some(copyTypeSyntax(&restored))
+                constraints.PushFront($copied)
+                original = .Some(restored)
+            }
+        }
+        function.typeParameterConstraints.PushFront($original)
+    }
+    var result = "<"
+    var index u64 = 0
+    while index < names.len() {
+        if index != 0 {
+            result += ", "
+        }
+        result += symbolArgument(&names, index)
+        if !transferable.IsEmpty() {
+            const marked = match transferable.PopFront() {
+                None: false
+                Some(found): found
+            }
+            if marked {
+                result += " transferable"
+            }
+        }
+        if !constraints.IsEmpty() {
+            match constraints.PopFront() {
+                None: {}
+                Some(constraint): {
+                    match constraint {
+                        None: {}
+                        Some(type): {
+                            var value = type
+                            result += " " + displayTypeSyntax(&value)
+                        }
+                    }
+                }
+            }
+        }
+        index += 1
+    }
+    result + ">"
+}
+
+fn symbolAttributeDetail(&application attributeApplication) String {
+    var result = "@" + metadataShortName(application.name)
+    if application.parenthesized {
+        result += "()" if application.arguments.IsEmpty() else "(...)"
+    }
+    result
+}
+
+fn symbolAttributeDetails(
+    &attributes collections.List<attributeApplication>,
+    skipBuiltins bool
+) String {
+    var result = ""
+    var pending = collections.NewList<attributeApplication>()
+    while !attributes.IsEmpty() {
+        var value = match attributes.PopFront() {
+            None: panic("attribute list invariant failed")
+            Some(found): found
+        }
+        if !skipBuiltins || (value.name != "blocking" && value.name != "callback") {
+            result += symbolAttributeDetail(&value) + " "
+        }
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("attribute restore invariant failed")
+            Some(found): found
+        }
+        attributes.PushFront($value)
+    }
+    result
+}
+
+fn symbolParameterDetail(&value parameter) String {
+    var result = symbolAttributeDetails(&value.attributes, false)
+    if value.mode.Matches("Edit") {
+        result += "&"
+    }
+    if value.mode.Matches("Transfer") {
+        result += "$"
+    }
+    result + value.name + " " + displayTypeSyntax(&value.type)
+}
+
+fn symbolReceiverDetail(receiver receiverKind) String {
+    match receiver {
+        View: "self"
+        Edit: "&self"
+        Own: "$self"
+    }
+}
+
+fn symbolParameterList(
+    &parameters collections.List<parameter>,
+    receiver Option<receiverKind>
+) String {
+    var result = ""
+    var pending = collections.NewList<parameter>()
+    var index u64 = 0
+    while !parameters.IsEmpty() {
+        var value = match parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(found): found
+        }
+        if index != 0 {
+            result += ", "
+        }
+        const receiverText = match receiver {
+            None: ""
+            Some(kind): symbolReceiverDetail(kind) if index == 0 else ""
+        }
+        result += receiverText if !text.IsEmpty(receiverText) else symbolParameterDetail(&value)
+        pending.PushFront($value)
+        index += 1
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(found): found
+        }
+        parameters.PushFront($value)
+    }
+    result
+}
+
+fn symbolFunctionPrefix(&function functionDeclaration) String {
+    var prefix = ""
+    match replace function.workflow with .None {
+        None: {}
+        Some(found): {
+            prefix = "pipeline " if found.kind.Matches("Pipeline") else "saga "
+            function.workflow = .Some(found)
+        }
+    }
+    if text.IsEmpty(prefix) {
+        if function.actionFunction {
+            prefix = "action "
+        } else {
+            if function.constructor {
+                prefix = "ctor "
+            } else {
+                if function.taskFunction {
+                    prefix = "task "
+                } else {
+                    prefix = "extern c fn " if optionStringPresent(function.cSymbol) else "fn "
+                }
+            }
+        }
+    }
+    if function.blocking {
+        prefix = "@blocking " + prefix
+    } else {
+        if function.callback {
+            prefix = "@callback " + prefix
+        }
+    }
+    symbolAttributeDetails(&function.attributes, true) + prefix
+}
+
+// Spells a function signature as the language service presents it.
+fn symbolFunctionDetail(&function functionDeclaration) String {
+    const receiver Option<receiverKind> = match function.receiver {
+        None: .None
+        Some(kind): .Some(kind)
+    }
+    const parameters = symbolParameterList(&function.parameters, receiver)
+    var result = symbolFunctionPrefix(&function) + metadataShortName(function.name) +
+        symbolFunctionTypeParameters(&function) + "(" + parameters + ")"
+    if !function.constructor return result + " " + displayTypeSyntax(&function.returnType)
+    var arguments = symbolTypeArgumentNames(&function.returnType)
+    if function.returnType.name == "Result" && arguments.len() == 2 {
+        result += " Result<" + symbolArgument(&arguments, 1) + ">"
+    }
+    result
+}
+
+fn symbolContractMethodDetail(&method contractMethod) String {
+    var result = "fn " + method.name + "(" + symbolReceiverDetail(method.receiver)
+    var pending = collections.NewList<parameter>()
+    while !method.parameters.IsEmpty() {
+        var value = match method.parameters.PopFront() {
+            None: panic("parameter list invariant failed")
+            Some(found): found
+        }
+        result += ", " + symbolParameterDetail(&value)
+        pending.PushFront($value)
+    }
+    while !pending.IsEmpty() {
+        const value = match pending.PopFront() {
+            None: panic("parameter restore invariant failed")
+            Some(found): found
+        }
+        method.parameters.PushFront($value)
+    }
+    result + ") " + displayTypeSyntax(&method.returnType)
+}
+
+fn symbolFieldDetail(&sources arena<projectSource>, &field structField) String {
+    const result = field.name + " " + displayTypeSyntax(&field.type)
+    const span = match field.defaultSpan {
+        None: {
+            return result
+        }
+        Some(found): found
+    }
+    if span.source >= sources.len() return result
+    const source = compilerProjectSourceContents(&sources, span.source)
+    const size = text.ByteLen(source)
+    if span.offset > size || span.length > size - span.offset return result
+    const expression = symbolTrim(applicationSlice(source, span.offset, span.offset + span.length))
+    if text.IsEmpty(expression) return result
+    result + " = " + expression
+}
+
+fn symbolEnumVariantDetail(&variant enumVariant) String {
+    var payload = match replace variant.payloadType with .None {
+        None: {
+            return text.Copy(variant.name)
+        }
+        Some(found): found
+    }
+    var result = variant.name + "("
+    match copyFirStringOption(variant.payloadName) {
+        None: {}
+        Some(name): {
+            result += name + " "
+        }
+    }
+    result += displayTypeSyntax(&payload) + ")"
+    variant.payloadType = .Some(payload)
+    result
+}
+
+// Names the types a workflow declares for its failures; they carry no
+// documentation of their own.
+fn symbolGeneratedWorkflowTypes(&source program) own arena<String> {
+    var result = newArena<String>()
+    var index u64 = 0
+    while index < source.functions.len() {
+        var value = match source.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        match replace value.workflow with .None {
+            None: {}
+            Some(workflow): {
+                match copyFirStringOption(workflow.failureStruct) {
+                    None: {}
+                    Some(name): {
+                        discard result.add($name)
+                    }
+                }
+                match copyFirStringOption(workflow.failureEnum) {
+                    None: {}
+                    Some(name): {
+                        discard result.add($name)
+                    }
+                }
+                value.workflow = .Some(workflow)
+            }
+        }
+        source.functions.restore(index, $value)
+        index += 1
+    }
+    result
+}

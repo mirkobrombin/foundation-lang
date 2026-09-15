@@ -1,0 +1,316 @@
+package foundation.compiler
+
+import std.text
+
+struct docEntry {
+    name String
+    id u64
+}
+
+struct docMethodGroup {
+    owner String
+    entries own arena<docEntry>
+}
+
+// The exported API of one package, each list ordered by short name.
+struct docPackage {
+    name String
+    structs own arena<docEntry>
+    enums own arena<docEntry>
+    contracts own arena<docEntry>
+    attributes own arena<docEntry>
+    functions own arena<docEntry>
+    methodGroups own arena<docMethodGroup>
+}
+
+fn compareDocEntry(left docEntry, right docEntry) i32 {
+    const order = text.Compare(left.name, right.name)
+    if order != 0 return order
+    if left.id < right.id return -1
+    if left.id > right.id return 1
+    0
+}
+
+fn compareDocPackage(left docPackage, right docPackage) i32 {
+    text.Compare(left.name, right.name)
+}
+
+fn docPackageName(name String) String {
+    "main" if text.IsEmpty(name) else text.Copy(name)
+}
+
+fn docGeneratedSource(contents String) bool {
+    const trimmed = symbolTrim(contents)
+    text.StartsWith(trimmed, "// foundation:generated package/v1") ||
+        text.StartsWith(trimmed, "// foundation:generated application/v1")
+}
+
+// Flags the sources whose declarations the reference documents: the root
+// sources when known, else every source outside the SDK and package cache.
+// Generated sources never qualify.
+fn docProjectFlags(&sources arena<projectSource>, &roots arena<u64>) own arena<bool> {
+    var result = newArena<bool>()
+    var index u64 = 0
+    while index < sources.len() {
+        const source = match sources.take(index) {
+            None: panic("project source slot is empty")
+            Some(found): found
+        }
+        var selected = !text.EndsWith(source.path, ".foundation.generated.fn") &&
+            !docGeneratedSource(source.contents)
+        if selected {
+            if roots.len() != 0 {
+                selected = formatOffsetKnown(&roots, index)
+            } else {
+                selected = !text.StartsWith(source.path, "std/") &&
+                    !text.StartsWith(source.path, "foundation/") &&
+                    !text.StartsWith(source.path, "packages/")
+            }
+        }
+        discard result.add(selected)
+        sources.restore(index, $source)
+        index += 1
+    }
+    result
+}
+
+fn docInProject(&flags arena<bool>, source u64) bool {
+    source < flags.len() && formatFlag(&flags, source)
+}
+
+fn newDocPackage(name String) docPackage {
+    docPackage {
+        name = text.Copy(name)
+        structs = newArena<docEntry>()
+        enums = newArena<docEntry>()
+        contracts = newArena<docEntry>()
+        attributes = newArena<docEntry>()
+        functions = newArena<docEntry>()
+        methodGroups = newArena<docMethodGroup>()
+    }
+}
+
+fn docPackageIndex(&packages arena<docPackage>, name String) u64 {
+    const packageName = docPackageName(name)
+    var index u64 = 0
+    while index < packages.len() {
+        const value = match packages.take(index) {
+            None: panic("documentation package slot is empty")
+            Some(found): found
+        }
+        const same = value.name == packageName
+        packages.restore(index, $value)
+        if same return index
+        index += 1
+    }
+    packages.add(newDocPackage(packageName))
+}
+
+// Adds one declaration to a package list. Kinds 0 through 4 select structs,
+// enums, contracts, attributes, and functions.
+fn addDocEntry(
+    &packages arena<docPackage>,
+    packageName String,
+    kind u64,
+    name String,
+    id u64
+) void {
+    const index = docPackageIndex(&packages, packageName)
+    var value = match packages.take(index) {
+        None: panic("documentation package slot is empty")
+        Some(found): found
+    }
+    const entry = docEntry { name = metadataShortName(name) id = id }
+    if kind == 0 {
+        discard value.structs.add($entry)
+    } else {
+        if kind == 1 {
+            discard value.enums.add($entry)
+        } else {
+            if kind == 2 {
+                discard value.contracts.add($entry)
+            } else {
+                if kind == 3 {
+                    discard value.attributes.add($entry)
+                } else {
+                    discard value.functions.add($entry)
+                }
+            }
+        }
+    }
+    packages.restore(index, $value)
+}
+
+fn addDocMethod(
+    &packages arena<docPackage>,
+    packageName String,
+    owner String,
+    name String,
+    id u64
+) void {
+    const index = docPackageIndex(&packages, packageName)
+    var value = match packages.take(index) {
+        None: panic("documentation package slot is empty")
+        Some(found): found
+    }
+    var group u64 = 0
+    while group < value.methodGroups.len() {
+        var selected = match value.methodGroups.take(group) {
+            None: panic("documentation method group slot is empty")
+            Some(found): found
+        }
+        const same = selected.owner == owner
+        if same {
+            discard selected.entries.add(docEntry { name = metadataShortName(name) id = id })
+        }
+        value.methodGroups.restore(group, $selected)
+        if same {
+            packages.restore(index, $value)
+            return
+        }
+        group += 1
+    }
+    var entries = newArena<docEntry>()
+    discard entries.add(docEntry { name = metadataShortName(name) id = id })
+    discard value.methodGroups.add(docMethodGroup { owner = text.Copy(owner) entries = entries })
+    packages.restore(index, $value)
+}
+
+fn sortDocPackage(&value docPackage) void {
+    sortArena<docEntry>(&value.structs, compareDocEntry)
+    sortArena<docEntry>(&value.enums, compareDocEntry)
+    sortArena<docEntry>(&value.contracts, compareDocEntry)
+    sortArena<docEntry>(&value.attributes, compareDocEntry)
+    sortArena<docEntry>(&value.functions, compareDocEntry)
+    var index u64 = 0
+    while index < value.methodGroups.len() {
+        var group = match value.methodGroups.take(index) {
+            None: panic("documentation method group slot is empty")
+            Some(found): found
+        }
+        sortArena<docEntry>(&group.entries, compareDocEntry)
+        value.methodGroups.restore(index, $group)
+        index += 1
+    }
+}
+
+fn collectDocTypes(
+    &syntax program,
+    &flags arena<bool>,
+    &packages arena<docPackage>,
+    &exportedTypes arena<String>,
+    &contracts arena<String>
+) void {
+    var index u64 = 0
+    while index < syntax.structs.len() {
+        const value = match syntax.structs.take(index) {
+            None: panic("struct slot is empty")
+            Some(found): found
+        }
+        if value.exported && docInProject(&flags, value.span.source) {
+            addDocEntry(&packages, value.packageName, 0, value.name, index)
+            discard exportedTypes.add(text.Copy(value.name))
+        }
+        syntax.structs.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < syntax.enums.len() {
+        const value = match syntax.enums.take(index) {
+            None: panic("enum slot is empty")
+            Some(found): found
+        }
+        if value.exported && value.builtin.Matches("None") &&
+            docInProject(&flags, value.span.source) {
+            addDocEntry(&packages, value.packageName, 1, value.name, index)
+            discard exportedTypes.add(text.Copy(value.name))
+        }
+        syntax.enums.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < syntax.contracts.len() {
+        const value = match syntax.contracts.take(index) {
+            None: panic("contract slot is empty")
+            Some(found): found
+        }
+        discard contracts.add(text.Copy(value.name))
+        if value.exported && docInProject(&flags, value.span.source) {
+            addDocEntry(&packages, value.packageName, 2, value.name, index)
+            discard exportedTypes.add(text.Copy(value.name))
+        }
+        syntax.contracts.restore(index, $value)
+        index += 1
+    }
+}
+
+// Groups the documented declarations of the project sources by package.
+fn collectDocPackages(
+    &syntax program,
+    &sources arena<projectSource>,
+    &flags arena<bool>
+) own arena<docPackage> {
+    var packages = newArena<docPackage>()
+    var index u64 = 0
+    while index < sources.len() {
+        if docInProject(&flags, index) {
+            const source = match sources.take(index) {
+                None: panic("project source slot is empty")
+                Some(found): found
+            }
+            discard docPackageIndex(&packages, source.packageName)
+            sources.restore(index, $source)
+        }
+        index += 1
+    }
+    var exportedTypes = newArena<String>()
+    var contracts = newArena<String>()
+    collectDocTypes(&syntax, &flags, &packages, &exportedTypes, &contracts)
+    index = 0
+    while index < syntax.attributeDeclarations.len() {
+        const value = match syntax.attributeDeclarations.take(index) {
+            None: panic("attribute declaration slot is empty")
+            Some(found): found
+        }
+        if value.exported && docInProject(&flags, value.span.source) {
+            addDocEntry(&packages, value.packageName, 3, value.name, index)
+        }
+        syntax.attributeDeclarations.restore(index, $value)
+        index += 1
+    }
+    index = 0
+    while index < syntax.functions.len() {
+        const value = match syntax.functions.take(index) {
+            None: panic("function slot is empty")
+            Some(found): found
+        }
+        const documented = value.exported && !value.closure &&
+            !optionStringPresent(value.testName) &&
+            !text.Contains(value.name, "$field_default.") &&
+            docInProject(&flags, value.span.source)
+        if documented {
+            if text.IsEmpty(value.ownerType) {
+                addDocEntry(&packages, value.packageName, 4, value.name, index)
+            } else {
+                if arenaContainsString(&exportedTypes, value.ownerType) &&
+                    !arenaContainsString(&contracts, value.ownerType) {
+                    addDocMethod(&packages, value.packageName, value.ownerType, value.name, index)
+                }
+            }
+        }
+        syntax.functions.restore(index, $value)
+        index += 1
+    }
+    sortArena<docPackage>(&packages, compareDocPackage)
+    index = 0
+    while index < packages.len() {
+        var value = match packages.take(index) {
+            None: panic("documentation package slot is empty")
+            Some(found): found
+        }
+        sortDocPackage(&value)
+        packages.restore(index, $value)
+        index += 1
+    }
+    packages
+}

@@ -26,6 +26,8 @@ fn compilerUsage() String {
         "[--triple <llvm-triple>] [--cpu <name>] [--features <list>]\n" +
         "  foundationc-selfhost emit-fsm <source-or-project> -o <output> " +
         "--format <mermaid|graphviz> [--machine <name>]\n" +
+        "  foundationc-selfhost documentation <source-or-project> -o <output.md> " +
+        "[--target <platform>]\n" +
         "  foundationc-selfhost emit-app-plan <source-or-project> -o <output.json>\n" +
         "  foundationc-selfhost emit-openapi <source-or-project> -o <output.json> " +
         "[--title <title>] [--version <version>]\n" +
@@ -303,6 +305,20 @@ fn runCompilerCommand(args [String]) Option<i32> {
             }
             Some(value): {
                 return .Some(runCompilerEmitMetadata(
+                        compilerArgument(args, 1),
+                        compilerArgument(args, 3),
+                        value))
+            }
+        }
+    }
+    if command == "documentation" {
+        const target = parseCompilerOutputTarget(args)
+        match target {
+            None: {
+                return .None
+            }
+            Some(value): {
+                return .Some(runCompilerDocumentation(
                         compilerArgument(args, 1),
                         compilerArgument(args, 3),
                         value))
