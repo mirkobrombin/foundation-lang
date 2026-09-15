@@ -293,6 +293,30 @@ unsigned int integerValueBits(Type type) {
     }
 }
 
+// Freestanding triples use 32-bit or 64-bit usize and isize, so a conversion involving either is
+// infallible only when it is infallible at both widths.
+Type withPointerWidth(Type type, bool wide) {
+    if (type.kind == TypeKind::Usize) {
+        return wide ? u64Type : u32Type;
+    }
+    if (type.kind == TypeKind::Isize) {
+        return wide ? i64Type : i32Type;
+    }
+    return type;
+}
+
+bool numericConversionIsInfallible(Type source, Type target);
+
+bool portableNumericConversionIsInfallible(Type source, Type target) {
+    if (source == target) {
+        return true;
+    }
+    return numericConversionIsInfallible(withPointerWidth(source, false),
+                                         withPointerWidth(target, false)) &&
+           numericConversionIsInfallible(withPointerWidth(source, true),
+                                         withPointerWidth(target, true));
+}
+
 bool numericConversionIsInfallible(Type source, Type target) {
     if (source == target) {
         return true;
@@ -1663,6 +1687,9 @@ class Analyzer {
             }
             semantic.returnType = function.inferredReturn ? invalidType
                                                           : resolveType(function.returnType);
+            if (options_.target == TargetPlatform::Freestanding) {
+                rejectFreestandingDeclaration(function);
+            }
             if (function.blocking) {
                 const auto count = static_cast<std::size_t>(std::count_if(
                     function.attributes.begin(), function.attributes.end(),
@@ -3159,6 +3186,11 @@ class Analyzer {
         }
 
         if (const auto *selection = std::get_if<SelectStatement>(&statement.value)) {
+            if (options_.target == TargetPlatform::Freestanding) {
+                diagnostics_.error("FDN2187",
+                                   "select is not available for the freestanding target",
+                                   statement.span);
+            }
             if (!program_.functions[currentFunction_].task) {
                 diagnostics_.error("FDN2174", "select is only available inside a task",
                                    statement.span);
@@ -3356,6 +3388,14 @@ class Analyzer {
                 diagnostics_.error("FDN2005",
                                    "integer literal does not fit " +
                                        std::string(typeName(type)),
+                                   expression.span);
+            } else if (options_.target == TargetPlatform::Freestanding &&
+                       (type.kind == TypeKind::Usize || type.kind == TypeKind::Isize) &&
+                       !integerLiteralFits(withPointerWidth(type, false), integer->magnitude,
+                                           integer->negative)) {
+                diagnostics_.error("FDN2005",
+                                   "integer literal does not fit the portable " +
+                                       std::string(typeName(type)) + " range",
                                    expression.span);
             }
         } else if (const auto *floating =
@@ -3704,7 +3744,33 @@ class Analyzer {
                     0, {target}};
     }
 
+    void rejectFreestandingDeclaration(const Function &function) {
+        if (function.task) {
+            diagnostics_.error("FDN2186", "tasks are not available for the freestanding target",
+                               function.span);
+        }
+        if (function.blocking || function.callback) {
+            diagnostics_.error("FDN2188",
+                               std::string(function.blocking ? "@blocking" : "@callback") +
+                                   " imports are not available for the freestanding target",
+                               function.span);
+        }
+        if (function.workflow.has_value()) {
+            for (const auto &step : function.workflow->steps) {
+                if (step.attempts > 1) {
+                    diagnostics_.error(
+                        "FDN2189", "workflow retry is not available for the freestanding target",
+                        step.span);
+                }
+            }
+        }
+    }
+
     Type analyzeSpawn(AstExpressionId, const SpawnExpression &spawn, SourceSpan span) {
+        if (options_.target == TargetPlatform::Freestanding) {
+            diagnostics_.error("FDN2186", "spawn is not available for the freestanding target",
+                               span);
+        }
         if (!std::holds_alternative<CallExpression>(program_.expressions[spawn.call].value)) {
             static_cast<void>(analyzeExpression(spawn.call));
             diagnostics_.error("FDN2163", "spawn requires a direct task call", span);
@@ -4734,6 +4800,11 @@ class Analyzer {
             } else if (containsBorrow(payload)) {
                 diagnostics_.error("FDN2165", "channel payload cannot contain a borrow", span);
             }
+            if (options_.target == TargetPlatform::Freestanding) {
+                diagnostics_.error("FDN2187",
+                                   "channels are not available for the freestanding target",
+                                   span);
+            }
             CallTarget target;
             target.kind = CallTargetKind::Channel;
             target.typeArguments.push_back(payload);
@@ -5369,7 +5440,9 @@ class Analyzer {
                 target.kind = CallTargetKind::NumericConversion;
                 target.typeArguments = {sourceType, *targetType};
                 model_.callTargets[id] = std::move(target);
-                if (numericConversionIsInfallible(sourceType, *targetType)) {
+                if (options_.target == TargetPlatform::Freestanding
+                        ? portableNumericConversionIsInfallible(sourceType, *targetType)
+                        : numericConversionIsInfallible(sourceType, *targetType)) {
                     return *targetType;
                 }
                 const auto result = enums_.find("Result");
@@ -5462,6 +5535,12 @@ class Analyzer {
         }
         if ((sourceType.kind == TypeKind::Sender || sourceType.kind == TypeKind::Receiver) &&
             sourceType.arguments.size() == 1) {
+            if (options_.target == TargetPlatform::Freestanding) {
+                diagnostics_.error("FDN2187",
+                                   "channel operations are not available for the freestanding "
+                                   "target",
+                                   span);
+            }
             rejectNamedArguments(member.argumentNames, "channel operation", span);
             const auto send = sourceType.kind == TypeKind::Sender && member.member == "send";
             const auto receive =
@@ -5554,6 +5633,12 @@ class Analyzer {
         }
         auto base = sourceType;
         if (base.kind == TypeKind::Task) {
+            if (options_.target == TargetPlatform::Freestanding) {
+                diagnostics_.error("FDN2186",
+                                   "Task operations are not available for the freestanding "
+                                   "target",
+                                   span);
+            }
             rejectNamedArguments(member.argumentNames, "Task.wait", span);
             for (const auto argument : member.arguments) {
                 static_cast<void>(analyzeExpression(argument));

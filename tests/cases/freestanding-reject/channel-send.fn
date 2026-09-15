@@ -1,0 +1,3 @@
+fn deliver($sender Sender<i32>) Result<void, ChannelError> {
+    sender.send(1)
+}

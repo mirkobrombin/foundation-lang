@@ -4652,6 +4652,42 @@ if(BUILD_TESTING)
             -DCODE=FDN1144
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
     )
+    set(FOUNDATION_FREESTANDING_REJECTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/cases/freestanding-reject)
+    foreach(freestanding_case IN ITEMS
+            "task-declaration;FDN2186"
+            "spawn;FDN2186"
+            "channel-construction;FDN2187"
+            "channel-send;FDN2187"
+            "select;FDN2187"
+            "blocking-import;FDN2188"
+            "callback-import;FDN2188"
+            "retry;FDN2189"
+            "import-fs;FDN3011"
+            "import-concurrent;FDN3011"
+            "import-collections;FDN3011"
+            "main;FDN3012"
+            "usize-literal;FDN2005"
+            "uuid-new-v4;FDN2190")
+        list(GET freestanding_case 0 freestanding_name)
+        list(GET freestanding_case 1 freestanding_code)
+        add_test(
+            NAME compiler.check.freestanding-reject.${freestanding_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=$<TARGET_FILE:foundationc>
+                -DSOURCE=${FOUNDATION_FREESTANDING_REJECTS}/${freestanding_name}.fn
+                -DCODE=${freestanding_code}
+                -DTARGET=freestanding
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-reject.cmake
+        )
+    endforeach()
+    add_test(
+        NAME compiler.check.freestanding-selection
+        COMMAND ${CMAKE_COMMAND}
+            -DCOMPILER=$<TARGET_FILE:foundationc>
+            -DPROJECT=${CMAKE_CURRENT_SOURCE_DIR}/tests/projects/freestanding-selection
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/freestanding-selection-test
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-freestanding-selection.cmake
+    )
     add_test(
         NAME compiler.run.environment
         COMMAND ${CMAKE_COMMAND}

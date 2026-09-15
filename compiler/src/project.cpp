@@ -686,13 +686,19 @@ void linkBlock(Program &program, AstBlockId id, const std::string &currentPackag
 }
 
 ImportAliases validateImports(const Program &program, const SymbolTable &symbols,
+                              const std::unordered_set<std::string> &hostedSdkPackages,
                               Diagnostics &diagnostics) {
     ImportAliases aliases;
     std::unordered_set<std::string> packages;
     for (const auto &imported : program.imports) {
         const auto alias = imported.alias.empty() ? defaultAlias(imported.packageName)
                                                   : imported.alias;
-        if (!symbols.contains(imported.packageName)) {
+        if (hostedSdkPackages.contains(imported.packageName)) {
+            diagnostics.error("FDN3011",
+                              "SDK package " + imported.packageName +
+                                  " is not available for the freestanding target",
+                              imported.span);
+        } else if (!symbols.contains(imported.packageName)) {
             diagnostics.error("FDN3005", "package not found: " + imported.packageName,
                               imported.span);
         }
@@ -874,8 +880,9 @@ void rejectCycles(const std::vector<ParsedFile> &files, const SymbolTable &symbo
 }
 
 void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnostics,
-              bool &foundMain) {
-    auto aliases = validateImports(file.program, symbols, diagnostics);
+              bool &foundMain, TargetPlatform target,
+              const std::unordered_set<std::string> &hostedSdkPackages) {
+    auto aliases = validateImports(file.program, symbols, hostedSdkPackages, diagnostics);
     rejectAliasShadows(file.program, aliases, diagnostics);
     const auto packageName = file.program.packageName;
     const auto &sourcePath = file.sourcePath;
@@ -998,6 +1005,10 @@ void linkFile(ParsedFile &file, const SymbolTable &symbols, Diagnostics &diagnos
             function.ownerType = internalName(packageName, function.ownerType);
             function.name = function.ownerType + '.' + function.name;
         } else if (function.name == "main") {
+            if (target == TargetPlatform::Freestanding) {
+                diagnostics.error("FDN3012", "freestanding code cannot declare main",
+                                  function.span);
+            }
             if (foundMain) {
                 diagnostics.error("FDN3010", "project declares more than one main function",
                                   function.span);
@@ -1232,6 +1243,9 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
 
     LoadedProject loaded;
     std::vector<ParsedFile> files;
+    // Under the freestanding target, SDK packages outside the freestanding set leave the graph,
+    // so their hosted natives and platform declarations are never linked.
+    std::unordered_set<std::string> hostedSdkPackages;
     for (std::size_t index = 0; index < paths.size(); ++index) {
         const auto contents = readFile(paths[index], overlayContents);
         const auto identity = sourceIdentity(paths[index]).generic_string();
@@ -1262,6 +1276,12 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
             program.packageName = directoryInput || packageInput ? "main" : "";
         }
         loaded.sources.back().packageName = program.packageName;
+        if (target == TargetPlatform::Freestanding &&
+            libraryDisplay != libraryDisplayPaths.end() &&
+            !freestandingSdkPackage(program.packageName)) {
+            hostedSdkPackages.insert(program.packageName);
+            continue;
+        }
         files.push_back({std::move(program), displayPath});
     }
     if (diagnostics.hasErrors()) {
@@ -1273,7 +1293,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
     rejectCycles(files, symbols, diagnostics);
     bool foundMain{};
     for (auto &file : files) {
-        linkFile(file, symbols, diagnostics, foundMain);
+        linkFile(file, symbols, diagnostics, foundMain, target, hostedSdkPackages);
     }
 
     for (auto &file : files) {

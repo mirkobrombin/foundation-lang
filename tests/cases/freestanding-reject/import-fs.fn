@@ -1,0 +1,5 @@
+import std.fs
+
+fn value() i32 {
+    1
+}

@@ -1113,6 +1113,7 @@ ProjectAnalysis analyzeProject(const std::filesystem::path &path,
             return analysis;
         }
     }
+    options.target = target;
     analysis.semantic = analyze(analysis.program, analysis.diagnostics, options);
     return analysis;
 }
@@ -1121,7 +1122,10 @@ Compilation compile(const std::filesystem::path &path,
                     const std::vector<SourceOverlay> &overlays,
                     TargetPlatform target) {
     Compilation compilation;
-    auto analysis = analyzeProject(path, overlays, {}, ProjectMode::Production, target);
+    auto analysis = analyzeProject(
+        path, overlays,
+        AnalyzeOptions{.requireMain = target != TargetPlatform::Freestanding},
+        ProjectMode::Production, target);
     compilation.sources = std::move(analysis.sources);
     compilation.diagnostics = std::move(analysis.diagnostics);
     if (!analysis.semantic.has_value()) {

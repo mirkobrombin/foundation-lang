@@ -4,6 +4,7 @@
 #include "foundation/ast.hpp"
 #include "foundation/diagnostic.hpp"
 #include "foundation/fir.hpp"
+#include "foundation/target.hpp"
 #include "foundation/type.hpp"
 
 #include <cstddef>
@@ -278,6 +279,7 @@ struct SemanticModel {
 struct AnalyzeOptions {
     bool requireMain{true};
     bool retainInvalidModel{};
+    TargetPlatform target{hostTargetPlatform()};
 };
 
 [[nodiscard]] std::optional<SemanticModel> analyze(const Program &program,

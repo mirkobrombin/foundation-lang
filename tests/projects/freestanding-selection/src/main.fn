@@ -1,0 +1,40 @@
+package test.freestanding_selection
+
+struct Board {
+    id u32
+}
+
+@target(hosted)
+methods Board {
+    fn Label() String {
+        "hosted-methods"
+    }
+}
+
+@target(freestanding)
+methods Board {
+    fn Label() String {
+        "freestanding-methods"
+    }
+}
+
+@target(hosted)
+fn environment() String {
+    "hosted-only"
+}
+
+@target(freestanding)
+fn environment() String {
+    "freestanding-only"
+}
+
+@target(hosted)
+fn main() i32 {
+    print(environment() + Board.Label())
+    0
+}
+
+@target(freestanding)
+extern c fn SelectionLabel() String as selection_label {
+    environment() + Board.Label()
+}

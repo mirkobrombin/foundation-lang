@@ -1,0 +1,2 @@
+@blocking
+extern c fn nativeSleep(delay u64) i32 as native_sleep

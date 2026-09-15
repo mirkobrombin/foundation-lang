@@ -1,0 +1,8 @@
+task compute() i32 {
+    1
+}
+
+fn run() i32 {
+    const pending = spawn compute()
+    $pending.wait()
+}

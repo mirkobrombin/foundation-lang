@@ -1,0 +1,5 @@
+fn open() void {
+    const Channel { sender receiver } = channel<i32>(1)
+    discard sender
+    discard receiver
+}

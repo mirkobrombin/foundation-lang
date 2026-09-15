@@ -1,0 +1,6 @@
+fn choose($receiver Receiver<i32>) Result<i32, ChannelError> {
+    select {
+        const value = receiver.receive(): return .Ok(value)
+        else error: return .Err(error)
+    }
+}

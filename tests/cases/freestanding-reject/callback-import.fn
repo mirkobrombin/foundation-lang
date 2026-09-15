@@ -1,0 +1,2 @@
+@callback
+extern c fn nativeRead(value u64, &result i32) i32 as native_read_start

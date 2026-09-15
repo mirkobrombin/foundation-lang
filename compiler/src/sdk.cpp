@@ -97,4 +97,15 @@ std::filesystem::path sdkAsset(const std::filesystem::path &relative,
     return fallback;
 }
 
+bool freestandingSdkPackage(std::string_view packageName) {
+    constexpr std::string_view packages[] = {"std.prelude", "std.text",    "std.align",
+                                             "std.path",    "std.pattern", "std.json"};
+    for (const auto package : packages) {
+        if (package == packageName) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace foundation
