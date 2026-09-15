@@ -214,7 +214,19 @@ fn analyzeSemanticContractMethod(
         None: {}
         Some(baseExpression): { target.receiver = .Some(baseExpression) }
     }
-    target.receiverType = copySemanticType(&sourceType)
+    // A constrained view receiver borrows the argument itself, so it stays a
+    // pointer even when the concrete type is copyable; an own receiver moves it.
+    var receiverTarget = copySemanticType(&constrainedType)
+    if constrained && semantic.receiver.Matches("View") && !sourceType.kind.Matches("View") {
+        target.receiverType = unarySemanticType(.View, $receiverTarget)
+    } else {
+        if constrained && semantic.receiver.Matches("Own") {
+            target.receiverType = unarySemanticType(.Own, $receiverTarget)
+        } else {
+            discard receiverTarget
+            target.receiverType = copySemanticType(&sourceType)
+        }
+    }
     target.constrainedType = constrainedType
     target.contractID = contractType.declaration
     target.method = method
