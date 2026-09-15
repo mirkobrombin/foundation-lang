@@ -14,6 +14,9 @@ if(NOT emit_result EQUAL 0)
     message(FATAL_ERROR "C emission failed:\n${emit_output}${emit_error}")
 endif()
 
+get_filename_component(runtime_source_directory "${RUNTIME_SOURCE}" DIRECTORY)
+set(runtime_core_source "${runtime_source_directory}/core.c")
+
 if(C_COMPILER_ID STREQUAL "MSVC")
     set(executable "${OUTPUT}.exe")
     set(object_directory "${OUTPUT}.objects")
@@ -21,7 +24,8 @@ if(C_COMPILER_ID STREQUAL "MSVC")
     file(MAKE_DIRECTORY "${object_directory}")
     execute_process(
         COMMAND "${C_COMPILER}" /nologo /std:c11 /O2 /W4 /WX "${GENERATED}"
-                "${RUNTIME_SOURCE}" "/I${RUNTIME_INCLUDE}" bcrypt.lib
+                "${RUNTIME_SOURCE}" "${runtime_core_source}" "/I${RUNTIME_INCLUDE}"
+                bcrypt.lib
                 "/Fe:${executable}" "/Fo:${object_directory}/" /link /STACK:16777216
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
@@ -31,7 +35,8 @@ else()
     set(executable "${OUTPUT}")
     execute_process(
         COMMAND "${C_COMPILER}" -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror
-                "${GENERATED}" "${RUNTIME_SOURCE}" -I "${RUNTIME_INCLUDE}" -o "${executable}"
+                "${GENERATED}" "${RUNTIME_SOURCE}" "${runtime_core_source}"
+                -I "${RUNTIME_INCLUDE}" -o "${executable}"
         RESULT_VARIABLE build_result
         OUTPUT_VARIABLE build_output
         ERROR_VARIABLE build_error

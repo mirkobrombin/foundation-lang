@@ -150,8 +150,9 @@ fn compilerExecutablePath(directory String, name String) String {
     path.Join(directory, name + ".exe")
 }
 
-fn compilerRuntimeSources() [22]String {
+fn compilerRuntimeSources() [23]String {
     [
+        "core.c",
         "runtime.c",
         "fs_host.c",
         "process.c",

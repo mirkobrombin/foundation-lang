@@ -10,6 +10,7 @@ foreach(required_path IN ITEMS "${COMPILER}" "${MINGW_C_COMPILER}" "${WINE}")
 endforeach()
 
 set(runtime_sources
+    "${ROOT}/runtime/src/core.c"
     "${ROOT}/runtime/src/runtime.c"
     "${ROOT}/runtime/src/crypto.c"
     "${ROOT}/runtime/src/task.c"

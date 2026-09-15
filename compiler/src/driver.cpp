@@ -510,6 +510,7 @@ std::vector<std::string> compilerArguments(const std::filesystem::path &generate
     const auto runtimeInclude =
         sdkAsset("runtime/include", std::filesystem::path{FOUNDATION_RUNTIME_INCLUDE});
     const std::vector<std::filesystem::path> runtimeSources{
+        sdkAsset("runtime/src/core.c", std::filesystem::path{FOUNDATION_RUNTIME_CORE_SOURCE}),
         sdkAsset("runtime/src/runtime.c", std::filesystem::path{FOUNDATION_RUNTIME_SOURCE}),
         sdkAsset("runtime/src/fs_host.c",
                  std::filesystem::path{FOUNDATION_RUNTIME_FS_HOST_SOURCE}),
@@ -649,6 +650,7 @@ std::filesystem::path runtimeIncludeDirectory() {
 
 std::vector<std::filesystem::path> runtimeSourceFiles() {
     return {
+        sdkAsset("runtime/src/core.c", std::filesystem::path{FOUNDATION_RUNTIME_CORE_SOURCE}),
         sdkAsset("runtime/src/runtime.c", std::filesystem::path{FOUNDATION_RUNTIME_SOURCE}),
         sdkAsset("runtime/src/fs_host.c",
                  std::filesystem::path{FOUNDATION_RUNTIME_FS_HOST_SOURCE}),

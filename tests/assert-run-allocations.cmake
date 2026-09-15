@@ -4,7 +4,9 @@ if(NOT DEFINED COMPILER OR NOT DEFINED C_COMPILER OR NOT DEFINED C_COMPILER_ID O
     message(FATAL_ERROR "allocation run assertion is missing an input")
 endif()
 
-set(runtime_sources "${RUNTIME_SOURCE}")
+get_filename_component(runtime_source_directory "${RUNTIME_SOURCE}" DIRECTORY)
+set(runtime_core_source "${runtime_source_directory}/core.c")
+set(runtime_sources "${RUNTIME_SOURCE}" "${runtime_core_source}")
 if(DEFINED RUNTIME_CRYPTO_SOURCE)
     list(APPEND runtime_sources "${RUNTIME_CRYPTO_SOURCE}")
 endif()

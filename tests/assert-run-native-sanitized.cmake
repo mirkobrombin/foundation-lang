@@ -26,11 +26,14 @@ if(NOT header_result EQUAL 0)
 endif()
 
 get_filename_component(header_directory "${HEADER}" DIRECTORY)
+get_filename_component(runtime_source_directory "${RUNTIME_SOURCE}" DIRECTORY)
+set(runtime_core_source "${runtime_source_directory}/core.c")
 execute_process(
     COMMAND "${C_COMPILER}" -std=c11 -g -fno-omit-frame-pointer
             -DFOUNDATION_VERIFY_ALLOCATIONS
             -fsanitize=address,undefined -Wall -Wextra -Wpedantic -Werror
-            "${GENERATED}" "${RUNTIME_SOURCE}" "${NATIVE}" "${NATIVE_SECOND}"
+            "${GENERATED}" "${RUNTIME_SOURCE}" "${runtime_core_source}" "${NATIVE}"
+            "${NATIVE_SECOND}"
             -I "${RUNTIME_INCLUDE}" -I "${header_directory}" -o "${OUTPUT}"
     RESULT_VARIABLE build_result
     OUTPUT_VARIABLE build_output

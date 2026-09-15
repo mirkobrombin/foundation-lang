@@ -88,6 +88,7 @@ set(FOUNDATION_V2_SOURCE "" CACHE PATH
     "Path to the pinned go-foundation v2 source used by compatibility tests")
 
 add_library(foundation_runtime STATIC
+    runtime/src/core.c
     runtime/src/runtime.c
     runtime/src/fs_host.c
     runtime/src/process.c
@@ -338,6 +339,8 @@ target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_ARCHIVER="${FOUNDATION_ARCHIVER_NAME}"
     FOUNDATION_RUNTIME_INCLUDE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/include"
     FOUNDATION_RUNTIME_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/runtime.c"
+    FOUNDATION_RUNTIME_CORE_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/core.c"
+    FOUNDATION_RUNTIME_CORE_PRINT_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/core_print.c"
     FOUNDATION_RUNTIME_FS_HOST_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/fs_host.c"
     FOUNDATION_RUNTIME_PROCESS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/process.c"
     FOUNDATION_RUNTIME_PROCESS_STREAM_POSIX_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/process_stream_posix.c"
