@@ -55,6 +55,29 @@ fn projectRelativePath(base String, target String) String {
     }
 }
 
+fn projectPortablePath(value String) String {
+    if !text.Contains(value, "\\") return text.Copy(value)
+    var builder = text.NewBuilder()
+    var index u64 = 0
+    while index < text.ByteLen(value) {
+        const byte = text.ByteAt(value, index) else error {
+            discard error
+            return text.Copy(value)
+        }
+        const written = builder.WriteCodePoint(47 if byte == 92 else byte) else error {
+            discard error
+            return text.Copy(value)
+        }
+        discard written
+        index += 1
+    }
+    const portable = builder.Finish() else error {
+        discard error
+        return text.Copy(value)
+    }
+    portable
+}
+
 fn addProjectInputFile(
     &inputs arena<projectInputFile>,
     &seen arena<String>,
@@ -122,9 +145,11 @@ fn appendProjectSourceRoot(
                 if projectTreeEntryIsFile(entry.Kind) &&
                     path.Extension(entry.Path) == ".fn" {
                     const fullPath = path.Join(sourceRoot, entry.Path)
-                    const relative = projectRelativePath(packageRoot, fullPath)
+                    // Display paths name sources with forward slashes on every host, as stage0 does.
+                    const relative = projectPortablePath(
+                        projectRelativePath(packageRoot, fullPath))
                     const display = relative if text.IsEmpty(displayPrefix) else
-                    path.Join(displayPrefix, relative)
+                    projectPortablePath(displayPrefix) + "/" + relative
                     addProjectInputFile(&inputs, &seen, fullPath, display)
                 }
             }
