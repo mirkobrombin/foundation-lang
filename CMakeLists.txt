@@ -4784,7 +4784,9 @@ if(BUILD_TESTING)
             endif()
         endforeach()
         set(FOUNDATION_FREESTANDING_MODES deterministic cli-reject cpu-reject)
-        if(FOUNDATION_LLVM_READELF)
+        # The Arm and RISC-V builds need a Clang with those targets, not just the configured one.
+        if(FOUNDATION_LLVM_READELF AND FOUNDATION_WASM_CLANG AND
+           FOUNDATION_WASM_TARGET_RESULT EQUAL 0)
             list(APPEND FOUNDATION_FREESTANDING_MODES cpu)
         endif()
         if(NOT WIN32)
@@ -4806,6 +4808,7 @@ if(BUILD_TESTING)
                 NAME compiler.build.freestanding-${mode}
                 COMMAND ${CMAKE_COMMAND} ${FOUNDATION_FREESTANDING_ARGUMENTS}
                     -DMODE=${mode}
+                    -DCLANG=${FOUNDATION_WASM_CLANG}
                     -DPROJECT=${FOUNDATION_FREESTANDING_LIBRARY}
                     -DWORK=${CMAKE_CURRENT_BINARY_DIR}/freestanding-${mode}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert-freestanding-library.cmake
