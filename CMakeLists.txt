@@ -485,6 +485,7 @@ add_custom_target(foundation_selfhost_verify
         "FOUNDATION_SDK_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
         "FOUNDATION_CLANG=${FOUNDATION_SELFHOST_CLANG}"
         "FOUNDATION_C_COMPILER=${FOUNDATION_SELFHOST_C_COMPILER}"
+        "FOUNDATION_ARCHIVER=${FOUNDATION_ARCHIVER_NAME}"
         ${CMAKE_COMMAND}
         -DCOMPILER=$<TARGET_FILE:foundationc_selfhost>
         -DSTAGE0=$<TARGET_FILE:foundationc>
@@ -4755,7 +4756,9 @@ if(BUILD_TESTING)
                         compiler.run.freestanding-${run}-${backend})
                 endforeach()
             endif()
-            if(FOUNDATION_WASM_CLANG AND FOUNDATION_WASM_LINKER)
+            # The compiler emits the wasm32 object itself, so its LLVM needs the WebAssembly target.
+            if(FOUNDATION_WASM_CLANG AND FOUNDATION_WASM_LINKER AND
+               "WebAssembly" IN_LIST LLVM_TARGETS_TO_BUILD)
                 add_test(
                     NAME compiler.build.freestanding-wasm32-${backend}
                     COMMAND ${CMAKE_COMMAND} ${FOUNDATION_FREESTANDING_ARGUMENTS}
