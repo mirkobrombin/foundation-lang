@@ -1716,7 +1716,9 @@ std::vector<std::string> freestandingCompilerArguments(
                                        "-Werror",
                                        "-ffunction-sections",
                                        "-fdata-sections",
-                                       "-DFOUNDATION_FREESTANDING=1"};
+                                       "-DFOUNDATION_FREESTANDING=1",
+                                       // The archive is static, so library.h must not import.
+                                       "-DFOUNDATION_LIBRARY_STATIC=1"};
     if (target.cpuSelected) {
         arguments.insert(arguments.end(), {"-Xclang", "-target-cpu", "-Xclang", target.cpu});
     }
