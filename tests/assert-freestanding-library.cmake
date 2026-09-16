@@ -336,6 +336,8 @@ elseif(MODE STREQUAL "wasm")
             message(FATAL_ERROR "wasm mode requires ${required}")
         endif()
     endforeach()
+    # Only the probed Clang is known to target wasm32, so the archive is built with it as well.
+    set(cc_arguments --cc "${CLANG}")
     build_library("${project}" "${WORK}/dist" "wasm32-unknown-unknown")
     archive_path(archive "${WORK}/dist")
     get_filename_component(linker_directory "${LINKER}" DIRECTORY)
