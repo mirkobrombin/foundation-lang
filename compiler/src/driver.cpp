@@ -1942,7 +1942,7 @@ int buildFreestandingLibrary(const std::filesystem::path &source,
     const auto artifactName = "lib" + packageInterface->library + ".a";
     const auto artifact = temporary->path() / artifactName;
     Diagnostics archiveDiagnostics;
-    if (!writeDeterministicArchive(artifact, members, archiveDiagnostics)) {
+    if (!writeDeterministicArchive(artifact, members, target->triple, archiveDiagnostics)) {
         std::cerr << renderDiagnostics(source.string(), {}, archiveDiagnostics);
         return 1;
     }

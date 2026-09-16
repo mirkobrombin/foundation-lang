@@ -6581,7 +6581,7 @@ std::string defaultLlvmTargetTriple() {
 }
 
 bool writeDeterministicArchive(const std::filesystem::path &output,
-                               const std::vector<ArchiveMember> &members,
+                               const std::vector<ArchiveMember> &members, std::string_view triple,
                                Diagnostics &diagnostics) {
     std::vector<llvm::NewArchiveMember> entries;
     entries.reserve(members.size());
@@ -6600,9 +6600,12 @@ bool writeDeterministicArchive(const std::filesystem::path &output,
         entry->Perms = 0644;
         entries.push_back(std::move(*entry));
     }
+    const llvm::Triple parsedTriple{std::string(triple)};
+    const auto kind = parsedTriple.isOSBinFormatMachO() ? llvm::object::Archive::K_DARWIN
+                                                        : llvm::object::Archive::K_GNU;
     if (auto error = llvm::writeArchive(output.string(), entries,
-                                        llvm::SymtabWritingMode::NormalSymtab,
-                                        llvm::object::Archive::K_GNU, true, false)) {
+                                        llvm::SymtabWritingMode::NormalSymtab, kind, true,
+                                        false)) {
         diagnostics.error("FDN8004",
                           "cannot write static archive: " + llvm::toString(std::move(error)), {});
         return false;

@@ -52,11 +52,12 @@ struct ArchiveMember {
     std::filesystem::path path;
 };
 
-// Writes a GNU archive with a symbol table. Timestamps and owners are zero and every mode is
-// 0644, so equal members produce equal bytes.
+// Writes an archive with a symbol table in the format the triple's linker reads: Darwin for
+// Mach-O targets and GNU elsewhere. Timestamps and owners are zero and every mode is 0644, so
+// equal members produce equal bytes.
 [[nodiscard]] bool writeDeterministicArchive(const std::filesystem::path &output,
                                              const std::vector<ArchiveMember> &members,
-                                             Diagnostics &diagnostics);
+                                             std::string_view triple, Diagnostics &diagnostics);
 [[nodiscard]] bool emitLlvmObject(
     const FirProgram &program, const std::filesystem::path &output,
     std::string_view sourcePath, const LlvmCodegenOptions &options,
