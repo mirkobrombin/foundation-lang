@@ -276,7 +276,8 @@ foreach(version IN ITEMS 0.1.0 1.0.0 2.0.0)
     file(MAKE_DIRECTORY "${sdk_project}/src")
     file(WRITE "${sdk_project}/foundation.package"
         "format foundation.package/v1\nname selfhost.sdk\nversion 0.1.0\nsdk ^${version}\nsource src\n")
-    file(COPY_FILE "${hello}" "${sdk_project}/src/main.fn")
+    file(WRITE "${sdk_project}/src/main.fn"
+        "package selfhost.sdk\n\nfn main() i32 {\n    0\n}\n")
     if(version STREQUAL "2.0.0")
         require_rejected_parity("future SDK requirement" 1 "SDK 1\\.0\\.0 does not satisfy"
             package resolve "${sdk_project}")
