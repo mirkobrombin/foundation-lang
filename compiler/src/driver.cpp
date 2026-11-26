@@ -1719,6 +1719,10 @@ std::vector<std::string> freestandingCompilerArguments(
                                        "-DFOUNDATION_FREESTANDING=1",
                                        // The archive is static, so library.h must not import.
                                        "-DFOUNDATION_LIBRARY_STATIC=1"};
+    if (target.coff) {
+        // Clang's incremental linking mode stamps COFF objects with the current time.
+        arguments.push_back("-mno-incremental-linker-compatible");
+    }
     if (target.cpuSelected) {
         arguments.insert(arguments.end(), {"-Xclang", "-target-cpu", "-Xclang", target.cpu});
     }

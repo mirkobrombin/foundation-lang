@@ -6631,6 +6631,7 @@ std::optional<LlvmTargetSelection> selectLlvmTarget(std::string_view triple,
     initializeLlvmTargets();
     LlvmTargetSelection selection;
     selection.triple = llvm::Triple::normalize(triple);
+    selection.coff = llvm::Triple(selection.triple).isOSBinFormatCOFF();
     selection.cpu = cpu.value_or("generic");
     selection.cpuSelected = cpu.has_value();
     std::string error;

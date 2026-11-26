@@ -35,6 +35,7 @@ struct LlvmTargetSelection {
     // False when the CPU defaults to generic, a name Clang rejects for some triples.
     bool cpuSelected{};
     std::vector<std::string> features;
+    bool coff{};
 };
 
 [[nodiscard]] std::string defaultLlvmTargetTriple();
