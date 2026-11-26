@@ -328,3 +328,21 @@ fn packageRequirementAccepts(
             comparePackagePrecedence(candidate, packageRequirementUpperBound(requirement)) < 0
     }
 }
+
+fn packageSDKVersion() packageVersion {
+    match parsePackageVersion("1.0.0") {
+        None: panic("compiler SDK version is invalid")
+        Some(value): value
+    }
+}
+
+fn packageSdkAccepts(requirement packageRequirement, sdk packageVersion) bool {
+    packageRequirementAccepts(requirement, sdk) ||
+        (sdk.major == 1 && packageRequirementAccepts(requirement, packageVersion {
+            major = 0
+            minor = 1
+            patch = 0
+            prerelease = ""
+            build = ""
+        }))
+}

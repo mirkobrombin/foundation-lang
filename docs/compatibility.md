@@ -30,9 +30,10 @@ diagnostic wording, compiler bugs, panic text, source formatting, or advisory FC
 for a soundness or security defect may reject code that relied on the defect. Such a change needs a
 release note, a stable diagnostic, and a migration path when one can be provided.
 
-The pre-release `sdk <requirement>` manifest directive remains accepted for existing projects. It
-selects a toolchain range and retains its original meaning. A manifest selects either `language 1`
-or `sdk`, never both. `foundationc package init` writes `language 1`.
+The legacy `sdk <requirement>` directive selects a toolchain range. The 1.x toolchain also accepts
+requirements that matched the 0.1.0 preview SDK so existing manifests and locks remain usable.
+A manifest selects either `language 1` or `sdk`, never both. `foundationc package init` writes
+`language 1`.
 
 ## Toolchain versions
 

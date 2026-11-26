@@ -197,7 +197,7 @@ collectPackageCatalog(const std::filesystem::path &rootManifestPath,
 
         for (auto &candidate : discovered) {
             if (!dependency.requirement.accepts(candidate.manifest.version) ||
-                !candidate.manifest.sdk.accepts(sdk)) {
+                !packageSdkAccepts(candidate.manifest.sdk, sdk)) {
                 continue;
             }
             auto manifest = normalizeManifest(candidate.root / "foundation.package",

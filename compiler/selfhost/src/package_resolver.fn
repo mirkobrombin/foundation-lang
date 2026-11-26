@@ -158,7 +158,7 @@ fn resolverCandidateMatches(
     &entry packageResolverEntry,
     sdk packageVersion
 ) bool {
-    if !packageRequirementAccepts(candidate.manifest.sdk, sdk) return false
+    if !packageSdkAccepts(candidate.manifest.sdk, sdk) return false
     var index u64 = 0
     while index < entry.constraints.len() {
         const constraint = match entry.constraints.take(index) {
@@ -636,7 +636,7 @@ fn resolvePackageGraph(
         value = .None
         errors = newPackageErrors()
     }
-    if !packageRequirementAccepts(root.sdk, sdk) {
+    if !packageSdkAccepts(root.sdk, sdk) {
         addPackageError(&result.errors, rootManifestPath, 1, 1, "FDN4050",
             "SDK " + packageVersionString(sdk) + " does not satisfy root requirement " +
             packageRequirementString(root.sdk))

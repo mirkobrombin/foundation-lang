@@ -1,4 +1,5 @@
 #include "foundation/driver.hpp"
+#include "foundation/package.hpp"
 #include "foundation/package_cli.hpp"
 
 #include <filesystem>
@@ -386,7 +387,7 @@ int main(int argc, char** argv) {
     if (argc == 2) {
         const std::string_view command = argv[1];
         if (command == "version" || command == "--version") {
-            std::cout << "foundationc 1.0.0\n";
+            std::cout << "foundationc " << foundation::packageSdkVersion().string() << '\n';
             return 0;
         }
         if (command == "help" || command == "--help" || command == "-h") {

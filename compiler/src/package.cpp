@@ -539,6 +539,16 @@ bool PackageRequirement::accepts(const PackageVersion &candidate) const {
            comparePrecedence(candidate, upperBound(*this)) == std::strong_ordering::less;
 }
 
+const PackageVersion &packageSdkVersion() {
+    static const auto version = *parsePackageVersion(FOUNDATION_SDK_VERSION);
+    return version;
+}
+
+bool packageSdkAccepts(const PackageRequirement &requirement, const PackageVersion &sdk) {
+    return requirement.accepts(sdk) ||
+           (sdk.major == 1 && requirement.accepts(PackageVersion{0, 1, 0, {}, {}}));
+}
+
 std::optional<PackageVersion> parsePackageVersion(std::string_view text) {
     PackageVersion result;
     const auto buildOffset = text.find('+');

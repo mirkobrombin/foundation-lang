@@ -395,7 +395,7 @@ std::optional<std::vector<std::filesystem::path>> formatterSources(
             return std::nullopt;
         }
         if (sameProject) {
-            const auto sdk = *parsePackageVersion("0.1.0");
+            const auto &sdk = packageSdkVersion();
             const auto project = loadLockedPackageProject(
                 *manifest, sdk, hostTargetPlatform(), defaultPackageCachePath(), false);
             if (!project.value.has_value()) {
@@ -905,7 +905,7 @@ nativeBuildInputs(const std::filesystem::path &source, ProjectMode mode,
     NativeBuildInputs result;
     const auto manifestPath = discoverPackageManifest(source);
     if (manifestPath.has_value()) {
-        const auto sdk = *parsePackageVersion("0.1.0");
+        const auto &sdk = packageSdkVersion();
         const auto project = loadLockedPackageProject(
             *manifestPath, sdk, target, defaultPackageCachePath(), mode == ProjectMode::Test);
         if (!project.value.has_value()) {

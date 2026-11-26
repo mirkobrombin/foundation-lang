@@ -152,13 +152,6 @@ fn packageCacheOption(
     }
 }
 
-fn packageSDKVersion() packageVersion {
-    match parsePackageVersion("0.1.0") {
-        None: panic("compiler SDK version is invalid")
-        Some(value): value
-    }
-}
-
 fn resolvePackageOptions(
     &options packageOptions,
     target targetPlatform
@@ -308,7 +301,10 @@ fn initializePackageProject(project String, name String) i32 {
     }
     var manifest = newPackageManifest()
     manifest.name = text.Copy(name)
-    manifest.version = packageSDKVersion()
+    manifest.version = match parsePackageVersion("0.1.0") {
+        None: panic("initial package version is invalid")
+        Some(value): value
+    }
     manifest.language = 1
     manifest.languageExplicit = true
     manifest.sdk = match parsePackageRequirement("*") {
@@ -519,10 +515,7 @@ fn verifyPackageCommand(&options packageOptions) i32 {
         }
         Some(value): value
     }
-    const sdk = match parsePackageVersion("0.1.0") {
-        None: panic("compiler SDK version invariant failed")
-        Some(value): value
-    }
+    const sdk = packageSDKVersion()
     var loaded = loadLockedPackageProject(
         manifestPath,
         sdk,

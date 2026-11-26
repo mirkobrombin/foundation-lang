@@ -296,7 +296,7 @@ fn collectPackageCatalog(
                 Some(value): value
             }
             if packageRequirementAccepts(dependency.requirement, candidate.manifest.version) &&
-                packageRequirementAccepts(candidate.manifest.sdk, sdk) {
+                packageSdkAccepts(candidate.manifest.sdk, sdk) {
                 const candidateRoot = text.Copy(candidate.root)
                 const normalized = normalizePackageManifest(
                     path.Join(candidateRoot, "foundation.package"),

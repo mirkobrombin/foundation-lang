@@ -334,6 +334,8 @@ else()
 endif()
 get_filename_component(FOUNDATION_C_COMPILER_NAME "${CMAKE_C_COMPILER}" NAME)
 get_filename_component(FOUNDATION_ARCHIVER_NAME "${CMAKE_AR}" NAME)
+set_property(SOURCE compiler/src/package.cpp APPEND PROPERTY
+    COMPILE_DEFINITIONS FOUNDATION_SDK_VERSION="${PROJECT_VERSION}")
 target_compile_definitions(foundation_compiler PRIVATE
     FOUNDATION_C_COMPILER="${FOUNDATION_C_COMPILER_NAME}"
     FOUNDATION_C_COMPILER_ID="${CMAKE_C_COMPILER_ID}"

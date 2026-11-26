@@ -184,7 +184,7 @@ loadLockedPackageProject(const std::filesystem::path &manifestPath,
         result.errors = manifest.errors;
         return result;
     }
-    if (!manifest.value->sdk.accepts(sdk)) {
+    if (!packageSdkAccepts(manifest.value->sdk, sdk)) {
         addError(result.errors, manifestPath, "FDN4110",
                  "package manifest does not support SDK " + sdk.string());
         return result;
@@ -304,7 +304,7 @@ loadLockedPackageProject(const std::filesystem::path &manifestPath,
         }
         if (dependencyManifest.value->name != package.name ||
             dependencyManifest.value->version != package.version ||
-            !dependencyManifest.value->sdk.accepts(sdk)) {
+            !packageSdkAccepts(dependencyManifest.value->sdk, sdk)) {
             addError(result.errors, packageRoot / "foundation.package", "FDN4112",
                      "locked package identity or SDK requirement does not match");
             return result;
