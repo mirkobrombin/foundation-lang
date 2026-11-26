@@ -316,7 +316,7 @@ jobs:
       - name: Build pinned SDL
         run: |
           prefix="${{ github.workspace }}/build/deps/sdl-prefix"
-          cmake -S build/deps/sdl -B build/deps/sdl-build -G Ninja \
+          cmake -S build/deps/sdl -B build/deps/build-sdl -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$prefix" \
             -DSDL_SHARED=ON \
@@ -324,7 +324,7 @@ jobs:
             -DSDL_TEST_LIBRARY=OFF \
             -DSDL_TESTS=OFF \
             -DSDL_EXAMPLES=OFF
-          cmake --build build/deps/sdl-build --target install --parallel 3
+          cmake --build build/deps/build-sdl --target install --parallel 3
           echo "CPATH=$prefix/include${CPATH:+:$CPATH}" >> "$GITHUB_ENV"
           echo "LIBRARY_PATH=$prefix/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
@@ -489,7 +489,7 @@ jobs:
       - name: Build pinned SDL
         run: |
           prefix="${{ github.workspace }}/build/deps/sdl-prefix"
-          cmake -S build/deps/sdl -B build/deps/sdl-build -G Ninja \
+          cmake -S build/deps/sdl -B build/deps/build-sdl -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$prefix" \
             -DSDL_SHARED=ON \
@@ -497,7 +497,7 @@ jobs:
             -DSDL_TEST_LIBRARY=OFF \
             -DSDL_TESTS=OFF \
             -DSDL_EXAMPLES=OFF
-          cmake --build build/deps/sdl-build --target install --parallel 3
+          cmake --build build/deps/build-sdl --target install --parallel 3
           echo "CPATH=$prefix/include${CPATH:+:$CPATH}" >> "$GITHUB_ENV"
           echo "LIBRARY_PATH=$prefix/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
           echo "DYLD_LIBRARY_PATH=$prefix/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> "$GITHUB_ENV"
@@ -616,7 +616,7 @@ jobs:
         shell: pwsh
         run: |
           $prefix = Join-Path "${{ github.workspace }}" "build\deps\sdl-prefix"
-          cmake -S build/deps/sdl -B build/deps/sdl-build -A x64 `
+          cmake -S build/deps/sdl -B build/deps/build-sdl -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
             "-DCMAKE_INSTALL_PREFIX=$prefix" `
             -DSDL_SHARED=ON `
@@ -625,7 +625,7 @@ jobs:
             -DSDL_TESTS=OFF `
             -DSDL_EXAMPLES=OFF
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake --build build/deps/sdl-build --config Release --target install
+          cmake --build build/deps/build-sdl --config Release --target install
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "INCLUDE=$prefix\include;$env:INCLUDE" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "LIB=$prefix\lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
