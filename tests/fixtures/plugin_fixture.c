@@ -94,7 +94,8 @@ FDN_PLUGIN_EXPORT int32_t FDN_PLUGIN_CALL foundation_plugin_query_v1(
     descriptor->sdk_major = FDN_PLUGIN_SDK_MAJOR;
     descriptor->sdk_minor = FDN_PLUGIN_SDK_MINOR;
 #if defined(FDN_PLUGIN_FIXTURE_OTHER_SDK)
-    descriptor->sdk_minor += 1;
+    descriptor->sdk_major = UINT32_C(0);
+    descriptor->sdk_minor = UINT32_C(1);
 #endif
     descriptor->contract_hash = FDN_PLUGIN_LIFECYCLE_CONTRACT_HASH;
 #if defined(FDN_PLUGIN_FIXTURE_CONTRACT_MISMATCH)

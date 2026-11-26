@@ -204,7 +204,7 @@ PackageParseResult<PackageResolution> resolve(const PackageOptions& options,
     if (!manifest.value.has_value()) {
         return {std::nullopt, manifest.errors};
     }
-    const auto sdk = *parsePackageVersion("0.1.0");
+    const auto &sdk = packageSdkVersion();
     return resolveProjectPackages(path, *manifest.value, sdk, target, options.registries);
 }
 
@@ -215,7 +215,7 @@ int requirementsCommand(const PackageOptions& options) {
         return printErrors(manifest.errors);
     }
     const auto target = options.target.value_or(hostTargetPlatform());
-    const auto sdk = *parsePackageVersion("0.1.0");
+    const auto &sdk = packageSdkVersion();
     const auto catalog = collectPackageCatalog(path, *manifest.value, sdk, target,
                                                std::span<const PackageRegistryRoot>{});
     if (!catalog.value.has_value()) {
@@ -526,7 +526,7 @@ int verifyCommand(const PackageOptions& options) {
         return printErrors(errors);
     }
     const auto loaded = loadLockedPackageProject(
-        manifestPath(options.project), *parsePackageVersion("0.1.0"), lock.value->target, cache);
+        manifestPath(options.project), packageSdkVersion(), lock.value->target, cache);
     if (!loaded.value.has_value()) {
         return printErrors(loaded.errors);
     }

@@ -1057,7 +1057,7 @@ std::optional<LoadedProject> loadProject(const std::filesystem::path &input,
     const auto packageInput = packageManifest.has_value();
     std::filesystem::path projectRoot = input;
     if (packageInput) {
-        const auto sdk = *parsePackageVersion("0.1.0");
+        const auto &sdk = packageSdkVersion();
         const auto package = loadLockedPackageProject(
             *packageManifest, sdk, target, defaultPackageCachePath(),
             mode == ProjectMode::Test);

@@ -379,7 +379,7 @@ fn loadLockedPackageProject(
         }
         Some(value): value
     }
-    if !packageRequirementAccepts(manifest.sdk, sdk) {
+    if !packageSdkAccepts(manifest.sdk, sdk) {
         addPackageError(&result.errors, manifestPath, 1, 1, "FDN4110",
             "package manifest does not support SDK " + packageVersionString(sdk))
         return result
@@ -496,7 +496,7 @@ fn loadLockedPackageProject(
         }
         if dependencyManifest.name != locked.name ||
             !samePackageVersion(dependencyManifest.version, locked.version) ||
-            !packageRequirementAccepts(dependencyManifest.sdk, sdk) {
+            !packageSdkAccepts(dependencyManifest.sdk, sdk) {
             addPackageError(&result.errors, dependencyManifestPath, 1, 1, "FDN4112",
                 "locked package identity or SDK requirement does not match")
             lock.packages.restore(packageIndex, $locked)

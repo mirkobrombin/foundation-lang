@@ -83,7 +83,7 @@ std::string pathText(const std::vector<std::string> &path) {
 
 bool matches(const PackageCandidate &candidate, const std::vector<Constraint> &constraints,
              const PackageVersion &sdk) {
-    if (!candidate.manifest.sdk.accepts(sdk)) {
+    if (!packageSdkAccepts(candidate.manifest.sdk, sdk)) {
         return false;
     }
     return std::all_of(constraints.begin(), constraints.end(), [&](const auto &constraint) {
@@ -319,7 +319,7 @@ resolvePackageGraph(const std::filesystem::path &rootManifestPath,
                     const PackageManifest &root, const PackageVersion &sdk,
                     TargetPlatform target, std::span<const PackageCandidate> inputCatalog) {
     PackageParseResult<PackageResolution> result;
-    if (!root.sdk.accepts(sdk)) {
+    if (!packageSdkAccepts(root.sdk, sdk)) {
         result.errors.push_back({rootManifestPath, 1, 1, "FDN4050",
                                  "SDK " + sdk.string() + " does not satisfy root requirement " +
                                      root.sdk.string()});

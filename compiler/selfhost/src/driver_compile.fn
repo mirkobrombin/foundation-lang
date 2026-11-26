@@ -367,10 +367,7 @@ fn addCompilerPackageNativeOptions(
         }
         Some(value): value
     }
-    const sdk = match parsePackageVersion("0.1.0") {
-        None: panic("compiler SDK version invariant failed")
-        Some(value): value
-    }
+    const sdk = packageSDKVersion()
     const target = hostTargetPlatform()
     var loaded = loadLockedPackageProject(
         manifestPath,

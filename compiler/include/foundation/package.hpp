@@ -214,6 +214,9 @@ template <typename T> struct PackageParseResult {
 };
 
 [[nodiscard]] std::optional<PackageVersion> parsePackageVersion(std::string_view text);
+[[nodiscard]] const PackageVersion &packageSdkVersion();
+[[nodiscard]] bool packageSdkAccepts(const PackageRequirement &requirement,
+                                     const PackageVersion &sdk);
 [[nodiscard]] bool isValidPackageName(std::string_view value);
 [[nodiscard]] std::optional<PackageRequirement>
 parsePackageRequirement(std::string_view text);
