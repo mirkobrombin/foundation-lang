@@ -349,6 +349,26 @@ jobs:
             -DCONFIG=Release `
             -P tools/release/package-sdk.cmake
 
+      - name: Check extracted Windows SDK
+        if: runner.os == 'Windows'
+        shell: cmd
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set VS_PATH=%%i
+          call "%VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=${{ matrix.msvc-architecture }} -host_arch=${{ matrix.msvc-architecture }} || exit /b 1
+          mkdir "%RUNNER_TEMP%\sdk" || exit /b 1
+          for %%i in (build\release-assets\foundation-*.zip) do tar.exe -xf "%%i" -C "%RUNNER_TEMP%\sdk" || exit /b 1
+          for /d %%i in ("%RUNNER_TEMP%\sdk\foundation-*") do set "SDK_ROOT=%%i"
+          if not defined SDK_ROOT exit /b 1
+          set "FOUNDATION_SDK_ROOT="
+          set "FOUNDATION_C_COMPILER="
+          set "FOUNDATION_ARCHIVER="
+          set "CC="
+          set "TMPDIR=%RUNNER_TEMP%"
+          "%ProgramFiles%\Git\bin\bash.exe" tools/release/check-sdk.sh "%SDK_ROOT%" "%TAG:~1%" .exe || exit /b 1
+          cmake "-DCOMPILER=%SDK_ROOT%\bin\foundationc-selfhost.exe" "-DSOURCE=%CD%\tests\projects\native-interface" "-DWORK=%RUNNER_TEMP%\sdk-library-check" -DC_COMPILER=cl.exe -DCXX_COMPILER=cl.exe -DC_COMPILER_ID=MSVC -DSYSTEM_NAME=Windows -P tests\assert-library-artifacts.cmake || exit /b 1
+
       - name: Upload Unix assets
         if: runner.os != 'Windows'
         env:

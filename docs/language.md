@@ -1,7 +1,7 @@
 # Language specification
 
-Status: Foundation Language 1 specification. The compiler and SDK remain on the 0.1 toolchain
-line; implementation state is maintained in the [README](../README.md#status). Accepted and
+Status: Foundation Language 1 specification. Implementation state is maintained in the
+[README](../README.md#status). Accepted and
 rejected conformance fixtures exercise executable rules through the compiler entry point.
 
 ## Source text

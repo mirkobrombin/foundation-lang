@@ -114,9 +114,9 @@ builds.
 ## Status
 
 Foundation 1 is the current language level and its permanent compatibility line. A project that
-declares `language 1` is not tied to one compiler release. The compiler and SDK remain on the 0.1
-toolchain line until the first tagged binary release; source builds are the current installation
-path.
+declares `language 1` is not tied to one compiler release. Compiler and SDK releases carry their
+own versions. See the [compatibility contract](docs/compatibility.md) for the native library and
+plugin ABI guarantees.
 
 Documentation uses three state labels. `Implemented` means the repository contains the feature and
 its tests. `Optional` means the implementation exists but needs an external dependency or host
