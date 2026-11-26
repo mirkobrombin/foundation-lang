@@ -3,8 +3,19 @@ package foundation.compiler
 import std.format
 import std.text
 
+@target(linux)
 fn exportStaticLibraryPath(&value packageInterface) String {
-    "native/lib/" + compilerStaticLibraryFilename(value.library)
+    "native/lib/" + compilerStaticLibraryFilename(value.library, false)
+}
+
+@target(macos)
+fn exportStaticLibraryPath(&value packageInterface) String {
+    "native/lib/" + compilerStaticLibraryFilename(value.library, false)
+}
+
+@target(windows)
+fn exportStaticLibraryPath(&value packageInterface) String {
+    "native/lib/" + compilerStaticLibraryFilename(value.library, true)
 }
 
 fn exportCrc32(value String) u64 {

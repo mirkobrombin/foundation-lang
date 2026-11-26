@@ -84,14 +84,31 @@ fn compilerConfiguredProgram(name String, fallback String) String {
     }
 }
 
+@target(linux)
+fn compilerDefaultCProgram() String {
+    "cc"
+}
+
+@target(macos)
+fn compilerDefaultCProgram() String {
+    "cc"
+}
+
+@target(windows)
+fn compilerDefaultCProgram() String {
+    compilerConfiguredProgram("FOUNDATION_CLANG", "clang")
+}
+
 fn compilerProgram(backend compilerBackend) String {
     match backend {
         Llvm: compilerConfiguredProgram("FOUNDATION_CLANG", "clang")
         C: {
             match packageEnvironment("FOUNDATION_C_COMPILER") {
-                None: compilerConfiguredProgram("CC", "cc")
+                None: compilerConfiguredProgram("CC", compilerDefaultCProgram())
                 Some(value): {
-                    if text.IsEmpty(value) return compilerConfiguredProgram("CC", "cc")
+                    if text.IsEmpty(value) {
+                        return compilerConfiguredProgram("CC", compilerDefaultCProgram())
+                    }
                     value
                 }
             }
