@@ -19,7 +19,7 @@ static char* foundation_ui_dtoa(char* destination, double value) {
 #endif
 #if defined(_MSC_VER)
 #pragma warning(push)
-#pragma warning(disable : 4116 4244 4267 4701 5287)
+#pragma warning(disable : 4116 4244 4267 4305 4701 5287)
 #endif
 #define FOUNDATION_UI_PROVIDER_IMPLEMENTATION
 #include "sdl_ui_internal.h"
