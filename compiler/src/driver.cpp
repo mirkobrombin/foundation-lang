@@ -16,6 +16,8 @@
 #include "foundation/sdk.hpp"
 #include "foundation/sema.hpp"
 
+#include <llvm/TargetParser/Triple.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -1722,6 +1724,11 @@ std::vector<std::string> freestandingCompilerArguments(
     if (target.coff) {
         // Clang's incremental linking mode stamps COFF objects with the current time.
         arguments.push_back("-mno-incremental-linker-compatible");
+    }
+    const llvm::Triple triple(target.triple);
+    if (triple.isAArch64() && triple.isOSLinux()) {
+        // The freestanding archive cannot depend on compiler-rt's outlined atomics.
+        arguments.push_back("-mno-outline-atomics");
     }
     if (target.cpuSelected) {
         arguments.insert(arguments.end(), {"-Xclang", "-target-cpu", "-Xclang", target.cpu});
