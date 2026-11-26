@@ -236,7 +236,7 @@ fn compileCompilerLibraryLlvm(
 
 fn archiveCompilerLibrary(output String, &objects arena<String>, msvc bool) i32 {
     const fallback = "lib.exe" if msvc else "ar"
-    const archiver = compilerConfiguredProgram("FOUNDATION_ARCHIVER", fallback)
+    const archiver = compilerToolPath(compilerConfiguredProgram("FOUNDATION_ARCHIVER", fallback))
     var command = match openCompilerProcess(archiver) {
         None: {
             return 1

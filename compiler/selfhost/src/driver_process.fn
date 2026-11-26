@@ -88,6 +88,58 @@ fn compilerConfiguredProgram(name String, fallback String) String {
 }
 
 @target(linux)
+fn compilerToolPath(program String) String {
+    text.Copy(program)
+}
+
+@target(macos)
+fn compilerToolPath(program String) String {
+    text.Copy(program)
+}
+
+@target(windows)
+fn compilerToolPath(program String) String {
+    if text.Contains(program, "\\") || text.Contains(program, "/") ||
+        text.Contains(program, ":") {
+        return text.Copy(program)
+    }
+    const search = compilerConfiguredProgram("PATH", "")
+    const name = text.Copy(program) if text.Contains(program, ".") else program + ".exe"
+    const length = text.ByteLen(search)
+    var start u64 = 0
+    var end u64 = 0
+    var quoted = false
+    while end <= length {
+        if end == length || (packageByteAt(search, end) == 59 && !quoted) {
+            const entry = packageSlice(search, start, end)
+            const wrapped = text.ByteLen(entry) >= 2 && text.StartsWith(entry, "\"") &&
+                text.EndsWith(entry, "\"")
+            const directory = packageSlice(entry, 1, text.ByteLen(entry) - 1) if wrapped else entry
+            if !quoted && path.IsAbsolute(directory) && text.ByteLen(directory) > 1 &&
+                (packageByteAt(directory, 1) == 58 ||
+                text.StartsWith(directory, "\\\\") || text.StartsWith(directory, "//")) {
+                const candidate = path.Join(directory, name)
+                match fs.IsDirectory(candidate) {
+                    Ok(isDirectory): {
+                        if !isDirectory return candidate
+                    }
+                    Err(error): {
+                        discard error
+                    }
+                }
+            }
+            start = end + 1
+        }
+        if end < length && packageByteAt(search, end) == 34 {
+            quoted = !quoted
+        }
+        end = end + 1
+    }
+    compilerProcessFailure("cannot find native tool on PATH: " + program)
+    ""
+}
+
+@target(linux)
 fn compilerDefaultCProgram() String {
     "cc"
 }
@@ -102,7 +154,7 @@ fn compilerDefaultCProgram() String {
     compilerConfiguredProgram("FOUNDATION_CLANG", "clang")
 }
 
-fn compilerProgram(backend compilerBackend) String {
+fn compilerProgramName(backend compilerBackend) String {
     match backend {
         Llvm: compilerConfiguredProgram("FOUNDATION_CLANG", "clang")
         C: {
@@ -117,6 +169,10 @@ fn compilerProgram(backend compilerBackend) String {
             }
         }
     }
+}
+
+fn compilerProgram(backend compilerBackend) String {
+    compilerToolPath(compilerProgramName(backend))
 }
 
 @target(linux)

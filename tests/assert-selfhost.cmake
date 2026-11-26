@@ -604,6 +604,20 @@ if(DEFINED C_COMPILER AND NOT C_COMPILER STREQUAL "")
         "-DREADELF=${READELF}")
 endif()
 
+if(SYSTEM_NAME STREQUAL "Windows" AND EXISTS "$ENV{FOUNDATION_CLANG}")
+    get_filename_component(clang_directory "$ENV{FOUNDATION_CLANG}" DIRECTORY)
+    get_filename_component(clang_name "$ENV{FOUNDATION_CLANG}" NAME)
+    run_checked("build-library with native tools on PATH"
+        "${CMAKE_COMMAND}" -E env "--modify" "PATH=path_list_prepend:${clang_directory}"
+        "FOUNDATION_CLANG=${clang_name}" --unset=FOUNDATION_C_COMPILER
+        --unset=FOUNDATION_ARCHIVER --unset=CC
+        "${COMPILER}" build-library "${library_project}"
+        -o "${library_work}/path-tools" --kind static --backend llvm)
+    if(NOT EXISTS "${library_work}/path-tools/lib/sample_native.lib")
+        message(FATAL_ERROR "build-library did not publish a static library with tools on PATH")
+    endif()
+endif()
+
 set(export_work "${PARITY_DIRECTORY}/export")
 set(export_project "${export_work}/project")
 file(MAKE_DIRECTORY "${export_project}")
