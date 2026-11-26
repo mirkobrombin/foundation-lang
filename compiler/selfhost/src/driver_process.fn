@@ -43,7 +43,7 @@ fn compilerAddArgument(
     true
 }
 
-fn compilerRelayOutput(output process.Output) bool {
+fn compilerRelayOutput(output process.Output, forwardStdout bool) bool {
     const stdout = output.StdoutText() else error {
         discard error
         compilerProcessFailure("cannot read native compiler output")
@@ -54,23 +54,26 @@ fn compilerRelayOutput(output process.Output) bool {
         compilerProcessFailure("cannot read native compiler diagnostics")
         return false
     }
-    if !text.IsEmpty(stdout) {
+    if forwardStdout && !text.IsEmpty(stdout) {
         discard io.WriteStdoutText(stdout)
     }
     if !text.IsEmpty(stderr) {
         discard io.WriteStderrText(stderr)
     }
+    if !forwardStdout && output.ExitCode != 0 && !text.IsEmpty(stdout) {
+        discard io.WriteStderrText(stdout)
+    }
     true
 }
 
-fn compilerRunCommand($command own process.Command) i32 {
+fn compilerRunCommand($command own process.Command, forwardStdout bool) i32 {
     var running = command
     const output = running.Capture() else error {
         discard error
         compilerProcessFailure("cannot start native compiler")
         return 1
     }
-    if !compilerRelayOutput(output) return 1
+    if !compilerRelayOutput(output, forwardStdout) return 1
     output.ExitCode
 }
 
@@ -299,7 +302,7 @@ fn compileGeneratedC(
         !compilerAddArgument(&command, outputPath) {
         return 1
     }
-    compilerRunCommand($command)
+    compilerRunCommand($command, true)
 }
 
 fn emitLlvmFromC(
@@ -333,7 +336,7 @@ fn emitLlvmFromC(
     ) && compilerAddArgument(&command, "-o") &&
         compilerAddArgument(&command, outputPath)
     if !ready return 1
-    compilerRunCommand($command)
+    compilerRunCommand($command, true)
 }
 
 fn compileGeneratedLlvm(
@@ -397,7 +400,7 @@ fn compileGeneratedLlvm(
         !compilerAddArgument(&command, outputPath) {
         return 1
     }
-    compilerRunCommand($command)
+    compilerRunCommand($command, true)
 }
 
 fn runCompiledProgram(
@@ -416,5 +419,5 @@ fn runCompiledProgram(
     }
     var command = opened
     if !compilerAddArenaArguments(&command, &arguments) return 1
-    compilerRunCommand($command)
+    compilerRunCommand($command, true)
 }

@@ -207,7 +207,7 @@ fn compileCompilerLibraryObject(
         compilerAddPrefixMap(&command, sdkRoot, "foundation-sdk") &&
         compilerAddPrefixMap(&command, path.Parent(source), "source")
     if !ready return 1
-    compilerRunCommand($command)
+    compilerRunCommand($command, false)
 }
 
 fn compileCompilerLibraryLlvm(
@@ -231,7 +231,7 @@ fn compileCompilerLibraryLlvm(
         compilerAddArgument(&command, output) &&
         compilerAddPrefixMap(&command, path.Parent(generated), "source")
     if !ready return 1
-    compilerRunCommand($command)
+    compilerRunCommand($command, false)
 }
 
 fn archiveCompilerLibrary(output String, &objects arena<String>, msvc bool) i32 {
@@ -254,7 +254,7 @@ fn archiveCompilerLibrary(output String, &objects arena<String>, msvc bool) i32 
         }
     }
     if !compilerAddArenaArguments(&command, &objects) return 1
-    compilerRunCommand($command)
+    compilerRunCommand($command, false)
 }
 
 @target(linux)
@@ -355,5 +355,5 @@ fn linkCompilerSharedLibrary(
         index += 1
     }
     if !compilerAddArgument(&command, "-o") || !compilerAddArgument(&command, output) return 1
-    compilerRunCommand($command)
+    compilerRunCommand($command, false)
 }
