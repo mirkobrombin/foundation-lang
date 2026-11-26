@@ -95,7 +95,7 @@ fn parseCompilerLibraryArguments(
                 shared = .Some(value == "shared")
             } else {
                 if option == "--native" {
-                    discard options.inputs.add($value)
+                    addCompilerNativeInput(&options.inputs, $value)
                 } else {
                     if option == "--backend" && !options.backendSeen {
                         match parseCompilerBackend(value) {

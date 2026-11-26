@@ -356,6 +356,22 @@ fn compilerNativeTargetActive(
     }
 }
 
+fn addCompilerNativeInput(&inputs arena<String>, $value String) void {
+    const identity = projectSourceIdentity(value)
+    var index u64 = 0
+    while index < inputs.len() {
+        const input = match inputs.take(index) {
+            None: panic("native input slot is empty")
+            Some(found): found
+        }
+        const duplicate = projectSourceIdentity(input) == identity
+        inputs.restore(index, $input)
+        if duplicate return
+        index += 1
+    }
+    discard inputs.add($value)
+}
+
 fn addCompilerPackageNativeOptions(
     input String,
     mode projectMode,
@@ -399,9 +415,7 @@ fn addCompilerPackageNativeOptions(
                 const sourcePath = path.Join(sourcePackage.packageRoot, source.path)
                 match fs.Kind(sourcePath) {
                     Ok(File): {
-                        if !arenaContainsString(&options.inputs, sourcePath) {
-                            discard options.inputs.add(text.Copy(sourcePath))
-                        }
+                        addCompilerNativeInput(&options.inputs, $sourcePath)
                     }
                     _: {
                         compilerProcessFailure(

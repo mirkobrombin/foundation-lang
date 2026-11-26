@@ -112,7 +112,7 @@ fn parseCompilerNativeOption(
     const option = compilerArgument(args, index)
     const value = compilerArgument(args, index + 1)
     if option == "--native" {
-        discard options.inputs.add($value)
+        addCompilerNativeInput(&options.inputs, $value)
         return true
     }
     if option == "--native-link" && compilerNativeLinkValid(value) {

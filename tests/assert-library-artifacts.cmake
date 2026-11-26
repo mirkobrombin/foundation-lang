@@ -145,6 +145,7 @@ set(repeat_dist "${WORK}/shared-repeat")
 execute_process(
     COMMAND "${COMPILER}" build-library "${repeat_project}" -o "${repeat_dist}"
             --kind shared --backend llvm
+            --native "${repeat_project}/native/libfuse/./increment.c"
             --native "${repeat_project}/native/libfuse/increment.c"
     RESULT_VARIABLE repeat_result
     OUTPUT_QUIET
