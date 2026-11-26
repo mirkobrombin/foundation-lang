@@ -53,8 +53,45 @@ fn compilerSharedLibraryLinkFilename(name String) String {
     name + ".dll"
 }
 
-fn compilerStaticLibraryFilename(name String) String {
+fn compilerStaticLibraryFilename(name String, msvc bool) String {
+    if msvc return name + ".lib"
     "lib" + name + ".a"
+}
+
+@target(linux)
+fn compilerLibraryUsesMsvc() Option<bool> {
+    .Some(false)
+}
+
+@target(macos)
+fn compilerLibraryUsesMsvc() Option<bool> {
+    .Some(false)
+}
+
+@target(windows)
+fn compilerLibraryUsesMsvc() Option<bool> {
+    var command = match openCompilerProcess(compilerProgram(.C)) {
+        None: {
+            return .None
+        }
+        Some(found): found
+    }
+    if !compilerAddArgument(&command, "-dumpmachine") return .None
+    const output = command.Capture() else error {
+        discard error
+        compilerProcessFailure("cannot query the native compiler target")
+        return .None
+    }
+    const triple = output.StdoutText() else error {
+        discard error
+        compilerProcessFailure("cannot read the native compiler target")
+        return .None
+    }
+    if output.ExitCode != 0 || text.IsEmpty(triple) {
+        compilerProcessFailure("cannot determine the native compiler target")
+        return .None
+    }
+    .Some(text.Contains(triple, "-windows-msvc"))
 }
 
 fn compilerLibraryRuntimeSymbols(prefix String, suffix String) String {
@@ -197,18 +234,26 @@ fn compileCompilerLibraryLlvm(
     compilerRunCommand($command)
 }
 
-fn archiveCompilerLibrary(output String, &objects arena<String>) i32 {
-    const archiver = compilerConfiguredProgram("FOUNDATION_ARCHIVER", "ar")
+fn archiveCompilerLibrary(output String, &objects arena<String>, msvc bool) i32 {
+    const fallback = "lib.exe" if msvc else "ar"
+    const archiver = compilerConfiguredProgram("FOUNDATION_ARCHIVER", fallback)
     var command = match openCompilerProcess(archiver) {
         None: {
             return 1
         }
         Some(found): found
     }
-    if !compilerAddArgument(&command, "rcs") || !compilerAddArgument(&command, output) ||
-        !compilerAddArenaArguments(&command, &objects) {
-        return 1
+    if msvc {
+        if !compilerAddArgument(&command, "/NOLOGO") || !compilerAddArgument(&command, "/Brepro") ||
+            !compilerAddArgument(&command, "/OUT:" + output) {
+            return 1
+        }
+    } else {
+        if !compilerAddArgument(&command, "rcs") || !compilerAddArgument(&command, output) {
+            return 1
+        }
     }
+    if !compilerAddArenaArguments(&command, &objects) return 1
     compilerRunCommand($command)
 }
 
@@ -217,9 +262,11 @@ fn addCompilerSharedLinkOptions(
     &command process.Command,
     artifactName String,
     control String,
-    importLibrary String
+    importLibrary String,
+    msvc bool
 ) bool {
     discard importLibrary
+    discard msvc
     compilerAddArgument(&command, "-Wl,--no-undefined") &&
         compilerAddArgument(&command, "-Wl,-soname," + artifactName) &&
         compilerAddArgument(&command, "-Wl,--version-script," + control) &&
@@ -231,9 +278,11 @@ fn addCompilerSharedLinkOptions(
     &command process.Command,
     artifactName String,
     control String,
-    importLibrary String
+    importLibrary String,
+    msvc bool
 ) bool {
     discard importLibrary
+    discard msvc
     compilerAddArgument(&command, "-Wl,-undefined,error") &&
         compilerAddArgument(&command, "-Wl,-install_name,@rpath/" + artifactName) &&
         compilerAddArgument(&command, "-Wl,-exported_symbols_list," + control) &&
@@ -247,9 +296,21 @@ fn addCompilerSharedLinkOptions(
     &command process.Command,
     artifactName String,
     control String,
-    importLibrary String
+    importLibrary String,
+    msvc bool
 ) bool {
     discard artifactName
+    if msvc {
+        return compilerAddArgument(&command, "-Xlinker") &&
+            compilerAddArgument(&command, "/Brepro") &&
+            compilerAddArgument(&command, "-Xlinker") &&
+            compilerAddArgument(&command, "/DEF:" + control) &&
+            compilerAddArgument(&command, "-Xlinker") &&
+            compilerAddArgument(&command, "/IMPLIB:" + importLibrary) &&
+            compilerAddArgument(&command, "-lbcrypt") && compilerAddArgument(&command, "-lgdi32") &&
+            compilerAddArgument(&command, "-liphlpapi") &&
+            compilerAddArgument(&command, "-luser32") && compilerAddArgument(&command, "-lws2_32")
+    }
     compilerAddArgument(&command, "-Wl,--no-undefined") &&
         compilerAddArgument(&command, control) &&
         compilerAddArgument(&command, "-Wl,--out-implib," + importLibrary) &&
@@ -266,7 +327,8 @@ fn linkCompilerSharedLibrary(
     &objects arena<String>,
     &described packageInterface,
     control String,
-    importLibrary String
+    importLibrary String,
+    msvc bool
 ) i32 {
     var command = match openCompilerProcess(compilerProgram(.C)) {
         None: {
@@ -277,7 +339,7 @@ fn linkCompilerSharedLibrary(
     const artifactName = path.FileName(output)
     if !compilerAddArgument(&command, "-shared") ||
         !compilerAddArenaArguments(&command, &objects) ||
-        !addCompilerSharedLinkOptions(&command, artifactName, control, importLibrary) {
+        !addCompilerSharedLinkOptions(&command, artifactName, control, importLibrary, msvc) {
         return 1
     }
     var index u64 = 0

@@ -418,9 +418,15 @@ fn buildCompilerLibraryIn(
     const library = text.Copy(described.library)
     const header = emitSelfHostedPackageCHeader(&lowered.program, packageName, library)
     const interfaceText = renderPackageInterfaceJSON(&described)
+    const msvc = match compilerLibraryUsesMsvc() {
+        None: {
+            return 1
+        }
+        Some(found): found
+    }
     if writeCompilerOutput(path.Join(temporary, "foundation_abi.h"), header) != 0 return 1
     var objects = newArena<String>()
-    const pic = shared || positionIndependent
+    const pic = !msvc && (shared || positionIndependent)
     if !compileCompilerLibraryObjects(
         temporary, sdkRoot, pic, &lowered, packageName, &options, &objects) {
         return 1
@@ -428,18 +434,18 @@ fn buildCompilerLibraryIn(
     const artifactName = if shared {
         compilerSharedLibraryFilename(library, described.soVersion)
     } else {
-        compilerStaticLibraryFilename(library)
+        compilerStaticLibraryFilename(library, msvc)
     }
     const artifactPath = path.Join(temporary, artifactName)
-    const importLibrary = path.Join(temporary, compilerStaticLibraryFilename(library))
+    const importLibrary = path.Join(temporary, compilerStaticLibraryFilename(library, msvc))
     if shared {
         const control = path.Join(temporary, compilerLibraryControlName())
         if writeCompilerOutput(control, compilerLibraryControl(&described)) != 0 return 1
         const linked = linkCompilerSharedLibrary(
-            artifactPath, &objects, &described, control, importLibrary)
+            artifactPath, &objects, &described, control, importLibrary, msvc)
         if linked != 0 return 1
     } else {
-        if archiveCompilerLibrary(artifactPath, &objects) != 0 return 1
+        if archiveCompilerLibrary(artifactPath, &objects, msvc) != 0 return 1
     }
     publishCompilerLibrary(
         outputDirectory,
